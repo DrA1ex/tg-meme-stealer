@@ -152,7 +152,7 @@ Useful setup commands:
 /settemplate unknownAuthor anonymous
 ```
 
-`/test N` reads the latest `N` source messages, applies the draft parser, and does not write anything to the database. `/preview N` shows an example post that would be selected for the weekly top. `/done` prints the final config snippet you can copy into `config.json`.
+`/test N` reads the latest `N` source messages, applies the draft parser, and does not write anything to the database. `/preview N` shows an example post that would be selected for the weekly top. `/done` saves the draft into `config.json`. If `config.json` already exists, it is copied to `config.json.old` first.
 
 ### Recommended Setup Workflow
 
@@ -200,13 +200,13 @@ or:
 /preview 100
 ```
 
-8. Print the final config snippet:
+8. Save the final config:
 
 ```text
 /done
 ```
 
-9. Copy the printed snippet into `config.json`, then run:
+9. Run a sync with the saved config:
 
 ```bash
 npm run sync

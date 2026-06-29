@@ -1,11 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import path from 'node:path';
 import {
   addParsingRule,
   createSetupDraft,
   formatDraftConfig,
   formatPreviewPost,
   parseJsonArgument,
+  saveDraftConfig,
   selectWeekPreviewPost,
   setParsingRules,
   setSourceMode,
@@ -95,6 +98,35 @@ test('summarizeParsedPosts and preview select best weekly post', () => {
   });
   assert.match(rendered, /Post 1 by Alice score=10/);
   assert.match(rendered, /Media: 1 item\(s\): photo#1/);
+});
+
+test('saveDraftConfig creates config when missing', async () => {
+  const dir = await fs.mkdtemp('/private/tmp/tg-memes-config-');
+  const configPath = path.join(dir, 'config.json');
+  const draft = createSetupDraft({ sync: { source: { mode: 'all' } }, parsing: { filters: [] }, templates: {} });
+
+  const result = await saveDraftConfig(draft, configPath);
+  const saved = JSON.parse(await fs.readFile(configPath, 'utf8'));
+
+  assert.equal(result.configPath, configPath);
+  assert.deepEqual(saved.sync.source, { mode: 'all' });
+  await assert.rejects(fs.access(`${configPath}.old`));
+});
+
+test('saveDraftConfig backs up and deep-merges existing config', async () => {
+  const dir = await fs.mkdtemp('/private/tmp/tg-memes-config-');
+  const configPath = path.join(dir, 'config.json');
+  await fs.writeFile(configPath, JSON.stringify({ publish: { dryRun: true }, sync: { pageSize: 50 } }, null, 2));
+  const draft = createSetupDraft({ sync: { source: { mode: 'user' } }, parsing: { filters: [] }, templates: {} });
+
+  await saveDraftConfig(draft, configPath);
+  const saved = JSON.parse(await fs.readFile(configPath, 'utf8'));
+  const backup = JSON.parse(await fs.readFile(`${configPath}.old`, 'utf8'));
+
+  assert.equal(saved.publish.dryRun, true);
+  assert.equal(saved.sync.pageSize, 50);
+  assert.deepEqual(saved.sync.source, { mode: 'user' });
+  assert.deepEqual(backup, { publish: { dryRun: true }, sync: { pageSize: 50 } });
 });
 
 function post({ messageId, likes, dislikes, daysAgo }) {

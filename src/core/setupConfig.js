@@ -1,4 +1,7 @@
 import { formatPostCaption } from './format.js';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import { deepMerge } from '../config/index.js';
 
 const PARSING_KEYS = new Set(['filters', 'author', 'likes', 'dislikes']);
 
@@ -50,6 +53,22 @@ export function buildDraftConfig(draft) {
 
 export function formatDraftConfig(draft) {
   return JSON.stringify(buildDraftConfig(draft), null, 2);
+}
+
+export async function saveDraftConfig(draft, configPath = 'config.json') {
+  const resolvedPath = path.resolve(configPath);
+  const backupPath = `${resolvedPath}.old`;
+  const existingConfig = await readJsonIfExists(resolvedPath);
+  const nextConfig = deepMerge(existingConfig, buildDraftConfig(draft));
+
+  try {
+    await fs.copyFile(resolvedPath, backupPath);
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+  }
+
+  await fs.writeFile(resolvedPath, `${JSON.stringify(nextConfig, null, 2)}\n`);
+  return { configPath: resolvedPath, backupPath };
 }
 
 export function summarizeParsedPosts({ posts, scanned }, options = {}) {
@@ -147,4 +166,13 @@ function formatPreviewMediaSummary(post) {
 
   const ids = media.map((item) => `${item.mediaKind || 'media'}#${item.messageId || 'unknown'}`).join(', ');
   return `Media: ${media.length} item(s): ${ids}`;
+}
+
+async function readJsonIfExists(filePath) {
+  try {
+    return JSON.parse(await fs.readFile(filePath, 'utf8'));
+  } catch (error) {
+    if (error.code === 'ENOENT') return {};
+    throw error;
+  }
 }

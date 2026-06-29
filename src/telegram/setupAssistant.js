@@ -4,6 +4,7 @@ import {
   formatDraftConfig,
   formatPreviewPost,
   parseJsonArgument,
+  saveDraftConfig,
   selectWeekPreviewPost,
   setParsingRules,
   setSourceMode,
@@ -98,7 +99,13 @@ export class SetupAssistant {
 
   async done(ctx) {
     const draft = this.getDraft(ctx);
-    await ctx.reply(`Final config:\n${formatDraftConfig(draft)}`);
+    const result = await saveDraftConfig(draft);
+    await ctx.reply([
+      `Config saved: ${result.configPath}`,
+      `Backup: ${result.backupPath}`,
+      '',
+      `Final config snippet:\n${formatDraftConfig(draft)}`
+    ].join('\n'));
     this.sessions.delete(ctx.from.id);
   }
 
