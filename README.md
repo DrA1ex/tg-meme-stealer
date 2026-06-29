@@ -10,7 +10,7 @@ It supports text posts, photos, videos, albums, configurable parsing rules, QR l
 
 - Scans a Telegram group or channel with a user account.
 - Supports QR login for the userbot session.
-- Stores posts in SQLite with `chat_id`, `message_id`, `author`, `text`, `likes`, `dislikes`, and structured `data`.
+- Stores posts in SQLite with `chat_id`, `message_id`, extracted `author`, `text`, `likes`, `dislikes`, and structured `data`.
 - Handles text posts, photos, videos, and albums.
 - Refreshes recent posts because like/dislike counters can change.
 - Removes recently deleted source posts from the local database.
@@ -147,6 +147,9 @@ Useful setup commands:
 /setauthor {"source":"message","path":"message","regex":"(?:^|\\n)By\\s+(.+?)(?:\\n|$)","group":1}
 /setlikes {"source":"message","path":"replyMarkup.rows[].buttons[].text","regex":"👍\\s*([\\d\\s,.]+[km]?)","group":1,"transform":"count","aggregate":"sum"}
 /setdislikes {"source":"message","path":"replyMarkup.rows[].buttons[].text","regex":"👎\\s*([\\d\\s,.]+[km]?)","group":1,"transform":"count","aggregate":"sum"}
+/settemplate postCaption {{position}}. By {{author}}\n👍 {{likes}}  👎 {{dislikes}}\n\n{{text}}
+/settemplate title.week Weekly community picks
+/settemplate unknownAuthor anonymous
 ```
 
 `/test N` reads the latest `N` source messages, applies the draft parser, and does not write anything to the database. `/preview N` shows an example post that would be selected for the weekly top. `/done` prints the final config snippet you can copy into `config.json`.
@@ -214,7 +217,7 @@ npm run sync
 The `parsing` section controls which messages are stored and how fields are extracted.
 
 - `filters` decides whether a message is eligible.
-- `author`, `likes`, and `dislikes` extract values.
+- `author`, `likes`, and `dislikes` extract values. `author` means the parsed display author extracted by rules, not necessarily the Telegram sender.
 - Extractors support `source`, `path`, `regex`, `group`, `transform`, and `aggregate`.
 - Supported sources are `message` and `sender`.
 - Paths can expand arrays with `[]`, for example `replyMarkup.rows[].buttons[].text`.
@@ -273,7 +276,7 @@ Require both media and a hashtag:
 
 ### Extractor Transforms
 
-Extractor transforms are used for `author`, `likes`, and `dislikes`:
+Extractor transforms are used for `author`, `likes`, and `dislikes`. The `author` extractor controls the display author used in captions:
 
 - `trim`
 - `count`
@@ -333,13 +336,41 @@ Example:
 Post caption variables:
 
 - `position`
-- `author`
+- `author`: extracted display author, not necessarily the Telegram sender
 - `likes`
 - `dislikes`
 - `score`
 - `text`
 - `messageId`
 - `chatId`
+
+Setup mode can edit templates with:
+
+```text
+/settemplate <key> <value>
+```
+
+Supported keys:
+
+- `postCaption`
+- `unknownAuthor`
+- `maxTextLength`
+- `title.month`
+- `title.week`
+- `title.fresh`
+- `stats.summary`
+- `stats.topPost`
+
+Examples:
+
+```text
+/settemplate postCaption #{{position}} {{author}} | 👍 {{likes}} 👎 {{dislikes}}\n\n{{text}}
+/settemplate title.month Best posts this month
+/settemplate maxTextLength 500
+/settemplate stats.topPost Top month post: #{{messageId}}, score {{score}}
+```
+
+Run `/preview N` after changing templates to see the final rendered post. Setup preview does not upload media; it prints the number of media items and their source message ids.
 
 ## Running
 

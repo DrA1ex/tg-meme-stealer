@@ -9,6 +9,7 @@ import {
   selectWeekPreviewPost,
   setParsingRules,
   setSourceMode,
+  setTemplateValue,
   summarizeParsedPosts
 } from '../src/core/setupConfig.js';
 
@@ -19,10 +20,9 @@ test('setup draft keeps only source and parsing config', () => {
     telegram: { botToken: 'secret' }
   });
 
-  assert.deepEqual(draft, {
-    sync: { source: { mode: 'user' } },
-    parsing: { filters: [{ transform: 'hasContent' }] }
-  });
+  assert.deepEqual(draft.sync, { source: { mode: 'user' } });
+  assert.deepEqual(draft.parsing, { filters: [{ transform: 'hasContent' }] });
+  assert.deepEqual(draft.templates, {});
 });
 
 test('setup helpers update mode and parser rules', () => {
@@ -49,22 +49,52 @@ test('formatDraftConfig returns final config snippet', () => {
 
   assert.deepEqual(parsed, {
     sync: { source: { mode: 'all' } },
-    parsing: { filters: [] }
+    parsing: { filters: [] },
+    templates: {}
   });
+});
+
+test('setup helpers update publish templates', () => {
+  const draft = createSetupDraft({ sync: { source: { mode: 'user' } }, parsing: {}, templates: {} });
+
+  setTemplateValue(draft, 'postCaption', 'Post {{messageId}} by {{author}}');
+  setTemplateValue(draft, 'title.week', 'Weekly best');
+  setTemplateValue(draft, 'unknownAuthor', 'anonymous');
+  setTemplateValue(draft, 'maxTextLength', '120');
+  setTemplateValue(draft, 'stats.summary', 'Stats {{totalCount}}');
+
+  assert.equal(draft.templates.publish.postCaption, 'Post {{messageId}} by {{author}}');
+  assert.equal(draft.templates.publish.selectionTitles.week, 'Weekly best');
+  assert.equal(draft.templates.publish.unknownAuthor, 'anonymous');
+  assert.equal(draft.templates.publish.maxTextLength, 120);
+  assert.equal(draft.templates.stats.summary, 'Stats {{totalCount}}');
 });
 
 test('summarizeParsedPosts and preview select best weekly post', () => {
   const posts = [
     post({ messageId: 1, likes: 10, dislikes: 0, daysAgo: 1 }),
     post({ messageId: 2, likes: 20, dislikes: 15, daysAgo: 1 }),
-    post({ messageId: 3, likes: 100, dislikes: 0, daysAgo: 10 })
+    post({ messageId: 3, likes: 100, dislikes: 0, daysAgo: 10 }),
+    post({ messageId: 4, likes: 2, dislikes: 0, daysAgo: 1 }),
+    post({ messageId: 5, likes: 3, dislikes: 0, daysAgo: 1 }),
+    post({ messageId: 6, likes: 4, dislikes: 0, daysAgo: 1 })
   ];
   const summary = summarizeParsedPosts({ scanned: 30, posts });
   const preview = selectWeekPreviewPost(posts, new Date('2026-06-29T00:00:00.000Z'));
 
   assert.match(summary, /Scanned messages: 30/);
+  assert.match(summary, /Matched posts: 6/);
+  assert.match(summary, /Shown rows: 6/);
+  assert.match(summary, /# \| id \| author \| likes \| dislikes \| media \| text/);
+  assert.match(summary, /6 \| 6 \| Alice/);
   assert.equal(preview.messageId, 1);
-  assert.match(formatPreviewPost(preview), /👍 10/);
+  const rendered = formatPreviewPost(preview, {
+    publish: {
+      postCaption: 'Post {{messageId}} by {{author}} score={{score}}'
+    }
+  });
+  assert.match(rendered, /Post 1 by Alice score=10/);
+  assert.match(rendered, /Media: 1 item\(s\): photo#1/);
 });
 
 function post({ messageId, likes, dislikes, daysAgo }) {
@@ -77,6 +107,6 @@ function post({ messageId, likes, dislikes, daysAgo }) {
     likes,
     dislikes,
     messageDate: new Date(now.getTime() - daysAgo * 24 * 60 * 60 * 1000).toISOString(),
-    data: { media: [{ mediaKind: 'photo' }] }
+    data: { media: [{ mediaKind: 'photo', messageId }] }
   };
 }

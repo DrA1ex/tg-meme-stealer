@@ -7,7 +7,8 @@ export function createSetupDraft(config) {
     sync: {
       source: structuredClone(config.sync?.source || { mode: 'user' })
     },
-    parsing: structuredClone(config.parsing || {})
+    parsing: structuredClone(config.parsing || {}),
+    templates: structuredClone(config.templates || {})
   };
 }
 
@@ -42,7 +43,8 @@ export function buildDraftConfig(draft) {
     sync: {
       source: draft.sync.source
     },
-    parsing: draft.parsing
+    parsing: draft.parsing,
+    templates: draft.templates
   };
 }
 
@@ -50,15 +52,29 @@ export function formatDraftConfig(draft) {
   return JSON.stringify(buildDraftConfig(draft), null, 2);
 }
 
-export function summarizeParsedPosts({ posts, scanned }) {
+export function summarizeParsedPosts({ posts, scanned }, options = {}) {
+  const maxRows = options.maxRows || posts.length;
   const lines = [
     `Scanned messages: ${scanned}`,
-    `Matched posts: ${posts.length}`
+    `Matched posts: ${posts.length}`,
+    `Shown rows: ${Math.min(posts.length, maxRows)}`,
+    '',
+    ['#', 'id', 'author', 'likes', 'dislikes', 'media', 'text'].join(' | '),
+    ['-', '--', '------', '-----', '--------', '-----', '----'].join(' | ')
   ];
 
-  for (const post of posts.slice(0, 5)) {
+  for (let index = 0; index < Math.min(posts.length, maxRows); index += 1) {
+    const post = posts[index];
     const media = post.data?.media?.map((item) => item.mediaKind).join(', ') || 'text';
-    lines.push(`#${post.messageId}: ${post.author || 'author?'} | 👍 ${post.likes} 👎 ${post.dislikes} | ${media}`);
+    lines.push([
+      index + 1,
+      post.messageId,
+      formatCell(post.author || 'missing', 18),
+      post.likes ?? 0,
+      post.dislikes ?? 0,
+      formatCell(media, 12),
+      formatCell(post.text || '', 32)
+    ].join(' | '));
   }
 
   return lines.join('\n');
@@ -73,7 +89,22 @@ export function selectWeekPreviewPost(posts, now = new Date()) {
 
 export function formatPreviewPost(post, templates = {}) {
   if (!post) return 'No matching posts found for the last week.';
-  return formatPostCaption(post, 0, templates);
+  return [
+    formatPostCaption(post, 0, templates),
+    '',
+    formatPreviewMediaSummary(post)
+  ].join('\n');
+}
+
+export function setTemplateValue(draft, key, value) {
+  const path = templatePathForKey(key);
+  let target = draft.templates;
+  for (const part of path.slice(0, -1)) {
+    target[part] = target[part] || {};
+    target = target[part];
+  }
+  target[path[path.length - 1]] = key === 'maxTextLength' ? Number(value) : String(value);
+  return draft;
 }
 
 function normalizeRules(rules) {
@@ -84,4 +115,36 @@ function assertParsingKey(key) {
   if (!PARSING_KEYS.has(key)) {
     throw new Error(`Unknown parsing key: ${key}`);
   }
+}
+
+function templatePathForKey(key) {
+  const paths = {
+    postCaption: ['publish', 'postCaption'],
+    unknownAuthor: ['publish', 'unknownAuthor'],
+    maxTextLength: ['publish', 'maxTextLength'],
+    'title.month': ['publish', 'selectionTitles', 'month'],
+    'title.week': ['publish', 'selectionTitles', 'week'],
+    'title.fresh': ['publish', 'selectionTitles', 'fresh'],
+    'stats.summary': ['stats', 'summary'],
+    'stats.topPost': ['stats', 'topPost']
+  };
+  if (!paths[key]) {
+    throw new Error(`Unknown template key: ${key}`);
+  }
+  return paths[key];
+}
+
+function formatCell(value, maxLength) {
+  const normalized = String(value).replace(/\s+/g, ' ').trim();
+  if (!normalized) return 'missing';
+  if (normalized.length <= maxLength) return normalized;
+  return `${normalized.slice(0, maxLength - 1)}…`;
+}
+
+function formatPreviewMediaSummary(post) {
+  const media = post.data?.media || [];
+  if (!media.length) return 'Media: none';
+
+  const ids = media.map((item) => `${item.mediaKind || 'media'}#${item.messageId || 'unknown'}`).join(', ');
+  return `Media: ${media.length} item(s): ${ids}`;
 }
