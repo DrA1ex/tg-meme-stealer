@@ -151,6 +151,64 @@ Useful setup commands:
 
 `/test N` reads the latest `N` source messages, applies the draft parser, and does not write anything to the database. `/preview N` shows an example post that would be selected for the weekly top. `/done` prints the final config snippet you can copy into `config.json`.
 
+### Recommended Setup Workflow
+
+1. Start setup mode:
+
+```bash
+npm run setup
+```
+
+2. Open a private chat with your bot as `TELEGRAM_ADMIN_ID` and start a draft:
+
+```text
+/setup
+```
+
+3. Choose who to scan:
+
+```text
+/mode user
+```
+
+or:
+
+```text
+/mode all
+```
+
+4. Start with a broad filter:
+
+```text
+/setfilter {"source":"message","transform":"hasContent"}
+```
+
+5. Test recent messages:
+
+```text
+/test 30
+```
+
+6. Add stricter filters or parser rules until the matched posts look correct.
+
+7. Preview the post that would win the weekly selection:
+
+```text
+/preview 100
+```
+
+8. Print the final config snippet:
+
+```text
+/done
+```
+
+9. Copy the printed snippet into `config.json`, then run:
+
+```bash
+npm run sync
+```
+
 ## Parsing Rules
 
 The `parsing` section controls which messages are stored and how fields are extracted.
@@ -161,18 +219,95 @@ The `parsing` section controls which messages are stored and how fields are extr
 - Supported sources are `message` and `sender`.
 - Paths can expand arrays with `[]`, for example `replyMarkup.rows[].buttons[].text`.
 
-Built-in transforms include:
+### Rule Shape
+
+Most rules use this shape:
+
+```json
+{
+  "source": "message",
+  "path": "text",
+  "regex": "#meme",
+  "group": 0,
+  "transform": "bool",
+  "aggregate": "sum"
+}
+```
+
+Fields:
+
+- `source`: where to read data from. Use `message` or `sender`.
+- `path`: dot path inside the source object. Optional; if omitted, the whole source object is used.
+- `regex`: optional JavaScript regular expression string.
+- `group`: regex capture group to use. Defaults to `0`.
+- `transform`: converts the extracted value.
+- `aggregate`: for numeric extractors. Use `sum` to add all matches.
+
+### Filter Transforms
+
+Filters return true or false. Useful transforms:
+
+- `hasContent`: true when the message has text or media.
+- `hasMedia`: true for photos, videos, and other supported media.
+- `isPhoto`: true for photo messages.
+- `isVideo`: true for video messages.
+- `exists`: true when the value exists and is not empty.
+- `notEmpty`: true when the string is not empty.
+- `bool`: true for non-empty strings, non-zero numbers, and `true`.
+
+Filter examples:
+
+```text
+/setfilter {"source":"message","transform":"hasContent"}
+/setfilter {"source":"message","transform":"hasMedia"}
+/setfilter {"source":"message","transform":"isPhoto"}
+/setfilter {"source":"message","transform":"isVideo"}
+/setfilter {"source":"message","path":"text","regex":"#meme","transform":"bool"}
+```
+
+Require both media and a hashtag:
+
+```text
+/setfilter [{"source":"message","transform":"hasMedia"},{"source":"message","path":"text","regex":"#meme","transform":"bool"}]
+```
+
+### Extractor Transforms
+
+Extractor transforms are used for `author`, `likes`, and `dislikes`:
 
 - `trim`
 - `count`
 - `telegramUsername`
-- `exists`
-- `notEmpty`
-- `isPhoto`
-- `isVideo`
-- `hasMedia`
-- `hasContent`
-- `bool`
+
+Extractor examples:
+
+```text
+/setauthor {"source":"message","path":"text","regex":"(?:^|\\n)By\\s+(.+?)(?:\\n|$)","group":1,"transform":"trim"}
+/setauthor [{"source":"message","path":"text","regex":"(?:^|\\n)By\\s+(.+?)(?:\\n|$)","group":1,"transform":"trim"},{"source":"sender","path":"firstName","transform":"trim"}]
+/setauthor {"source":"sender","path":"username","regex":"(.+)","group":1,"transform":"telegramUsername"}
+/setlikes {"source":"message","path":"replyMarkup.rows[].buttons[].text","regex":"👍\\s*([\\d\\s,.]+[km]?)","group":1,"transform":"count","aggregate":"sum"}
+/setdislikes {"source":"message","path":"replyMarkup.rows[].buttons[].text","regex":"👎\\s*([\\d\\s,.]+[km]?)","group":1,"transform":"count","aggregate":"sum"}
+```
+
+Custom button labels:
+
+```text
+/setlikes {"source":"message","path":"replyMarkup.rows[].buttons[].text","regex":"like=([\\d.,k]+)","group":1,"transform":"count","aggregate":"sum"}
+/setdislikes {"source":"message","path":"replyMarkup.rows[].buttons[].text","regex":"dislike=([\\d.,k]+)","group":1,"transform":"count","aggregate":"sum"}
+```
+
+### Useful Message Paths
+
+Depending on the source message shape, useful paths may include:
+
+- `text`
+- `message`
+- `sender.firstName`
+- `sender.username`
+- `markup.buttons[].text`
+- `replyMarkup.rows[].buttons[].text`
+
+If a path does not match anything, run `/test 30` with a broader filter and adjust the path. The project keeps compatibility with mtcute-style fields and older Telegram-client field names where possible.
 
 ## Templates
 
