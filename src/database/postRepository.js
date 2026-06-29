@@ -130,6 +130,36 @@ export class PostRepository {
     }));
   }
 
+  async getControversialPosts({ chatId, sinceIso, untilIso, limit, threshold }) {
+    const params = [String(chatId), sinceIso];
+    let untilClause = '';
+    if (untilIso) {
+      untilClause = 'AND message_date < ?';
+      params.push(untilIso);
+    }
+    params.push(threshold, limit);
+
+    const rows = await this.all(
+      `
+        SELECT chat_id AS chatId, message_id AS messageId, author, text, likes, dislikes, data, message_date AS messageDate
+        FROM posts
+        WHERE chat_id = ?
+          AND message_date >= ?
+          ${untilClause}
+          AND (CASE WHEN likes > dislikes THEN likes ELSE dislikes END) > 0
+          AND ABS(likes - dislikes) <= (CASE WHEN likes > dislikes THEN likes ELSE dislikes END) * ?
+        ORDER BY (CASE WHEN likes > dislikes THEN likes ELSE dislikes END) DESC, message_date DESC
+        LIMIT ?
+      `,
+      params
+    );
+
+    return rows.map((row) => ({
+      ...row,
+      data: JSON.parse(row.data || '{}')
+    }));
+  }
+
   async createPublication({ selectionKey, title, periodStart, periodEnd, status, posts, data = {} }) {
     const publishedAt = new Date().toISOString();
 

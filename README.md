@@ -18,6 +18,7 @@ It supports text posts, photos, videos, albums, configurable parsing rules, QR l
   - best posts from the last month;
   - best posts from the last week;
   - best fresh posts from the last 24 hours.
+- Publishes controversial selections where likes and dislikes are close by a configurable threshold.
 - Keeps a publication log in SQLite.
 - Provides admin-only bot commands for stats and parser setup.
 - Uses templates for published captions and admin stats.
@@ -169,25 +170,37 @@ Common options:
     }
   },
   "publish": {
-    "monthTopLimit": 10,
-    "weekTopLimit": 10,
-    "freshTopLimit": 5,
-    "freshWindowHours": 24,
-    "dryRun": false
+    "dryRun": false,
+    "selections": {
+      "best": {
+        "week": {
+          "enabled": true,
+          "time": "10:10",
+          "limit": 10,
+          "template": "Best posts from the last week ({{count}})"
+        }
+      },
+      "controversial": {
+        "week": {
+          "enabled": true,
+          "time": "11:10",
+          "limit": 10,
+          "threshold": 0.3,
+          "template": "Most controversial posts from the last week ({{count}})"
+        }
+      }
+    }
   },
   "schedule": {
     "timezone": "Europe/Moscow",
-    "syncIntervalHours": 24,
-    "publish": {
-      "fresh": { "enabled": true, "time": "10:00" },
-      "week": { "enabled": true, "time": "10:10" },
-      "month": { "enabled": true, "time": "10:20" }
-    }
+    "syncIntervalHours": 24
   }
 }
 ```
 
 `logging.level` can be `debug`, `info`, `warn`, `error`, or `silent`. Sync logs include the scan window, each Telegram history request, fetched message counts, matched post counts, saved rows, skipped old posts, and deleted-post cleanup.
+
+Publication schedules use `schedule.timezone`. Each enabled selection under `publish.selections` has its own local `time`, `limit`, and header `template`. The `day` period uses `windowHours`; controversial selections also use `threshold`. A threshold of `0.3` means likes and dislikes may differ by at most 30% of the larger reaction count.
 
 ## Userbot Login
 
@@ -239,7 +252,7 @@ Useful setup commands:
 /setlikes {"source":"message","path":"replyMarkup.rows[].buttons[].text","regex":"👍\\s*([\\d\\s,.]+[km]?)","group":1,"transform":"count","aggregate":"sum"}
 /setdislikes {"source":"message","path":"replyMarkup.rows[].buttons[].text","regex":"👎\\s*([\\d\\s,.]+[km]?)","group":1,"transform":"count","aggregate":"sum"}
 /settemplate postCaption {{position}}. By {{author}}\n👍 {{likes}}  👎 {{dislikes}}\nMedia: {{mediaSummary}}\n\n{{text}}
-/settemplate title.week Weekly community picks
+/settemplate selection.best.week.template Weekly community picks ({{count}})
 /settemplate unknownAuthor anonymous
 ```
 
@@ -405,7 +418,7 @@ If a path does not match anything, run `/test 30` with a broader filter and adju
 
 ## Templates
 
-Published captions and admin stats can be customized in `templates`.
+Published captions and admin stats can be customized in `templates`. Selection headers are configured in `publish.selections.*.*.template`.
 
 Example:
 
@@ -413,12 +426,23 @@ Example:
 {
   "templates": {
     "publish": {
-      "selectionTitles": {
-        "week": "Best posts from the last week"
-      },
       "postCaption": "{{position}}. By {{author}}\n👍 {{likes}}  👎 {{dislikes}}\nMedia: {{mediaSummary}}\n\n{{text}}",
       "unknownAuthor": "unknown",
       "maxTextLength": 700
+    }
+  },
+  "publish": {
+    "selections": {
+      "best": {
+        "week": {
+          "template": "Best posts from the last week ({{count}})"
+        }
+      },
+      "controversial": {
+        "week": {
+          "template": "Most controversial posts from the last week ({{count}})"
+        }
+      }
     }
   }
 }
@@ -449,9 +473,12 @@ Supported keys:
 - `postCaption`
 - `unknownAuthor`
 - `maxTextLength`
-- `title.month`
-- `title.week`
-- `title.fresh`
+- `selection.best.month.template`
+- `selection.best.week.template`
+- `selection.best.day.template`
+- `selection.controversial.month.template`
+- `selection.controversial.week.template`
+- `selection.controversial.day.template`
 - `stats.summary`
 - `stats.topPost`
 
@@ -459,7 +486,8 @@ Examples:
 
 ```text
 /settemplate postCaption #{{position}} {{author}} | 👍 {{likes}} 👎 {{dislikes}}\nMedia: {{mediaSummary}}\n\n{{text}}
-/settemplate title.month Best posts this month
+/settemplate selection.best.month.template Best posts this month ({{count}})
+/settemplate selection.controversial.week.template Controversial posts this week ({{count}})
 /settemplate maxTextLength 500
 /settemplate stats.topPost Top month post: #{{messageId}}, score {{score}}
 ```
@@ -500,13 +528,13 @@ npm run backfill -- 90
 
 Backfill adds missing posts from the requested period. Existing posts are updated only inside `sync.refreshRecentDays`; older existing rows are left unchanged.
 
-Run one publish cycle without running sync first. Without arguments this publishes all enabled selection types: month, week, and day.
+Run one publish cycle without running sync first. Without arguments this publishes all enabled selections.
 
 ```bash
 npm run publish
 ```
 
-Publish only one selection:
+Publish only one best selection:
 
 ```bash
 npm run publish -- month
@@ -514,16 +542,18 @@ npm run publish -- week
 npm run publish -- day
 ```
 
-`day` publishes the fresh selection, using `publish.freshWindowHours` as the time window. The internal key `fresh` is also accepted:
+These short aliases map to `best.month`, `best.week`, and `best.day`. Publish controversial selections with explicit keys:
 
 ```bash
-npm run publish -- fresh
+npm run publish -- controversial.month
+npm run publish -- controversial.week
+npm run publish -- controversial.day
 ```
 
 Multiple selection types can be passed in one command:
 
 ```bash
-npm run publish -- week day
+npm run publish -- best.week controversial.week
 ```
 
 Run sync and publish once:

@@ -1,3 +1,5 @@
+import { getScheduledPublishEntries } from '../core/selection.js';
+
 export class Scheduler {
   constructor(config, handlers) {
     this.config = config;
@@ -24,9 +26,8 @@ export class Scheduler {
   }
 
   schedulePublications(now = new Date()) {
-    for (const [key, entry] of Object.entries(this.config.schedule.publish || {})) {
-      if (!entry.enabled) continue;
-      this.schedulePublication(key, entry.time, now);
+    for (const entry of getScheduledPublishEntries(this.config)) {
+      this.schedulePublication(entry.key, entry.time, now);
     }
   }
 

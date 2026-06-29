@@ -17,14 +17,16 @@ import {
   summarizeParsedPosts
 } from '../src/core/setupConfig.js';
 
-test('setup draft keeps only source and parsing config', () => {
+test('setup draft keeps editable sync, publish, parsing and template config', () => {
   const draft = createSetupDraft({
     sync: { source: { mode: 'user' }, pageSize: 100 },
+    publish: { dryRun: false, selections: { best: { week: { template: 'Best week' } } } },
     parsing: { filters: [{ transform: 'hasContent' }] },
     telegram: { botToken: 'secret' }
   });
 
   assert.deepEqual(draft.sync, { source: { mode: 'user' } });
+  assert.deepEqual(draft.publish, { dryRun: false, selections: { best: { week: { template: 'Best week' } } } });
   assert.deepEqual(draft.parsing, { filters: [{ transform: 'hasContent' }] });
   assert.deepEqual(draft.templates, {});
 });
@@ -48,11 +50,12 @@ test('parseJsonArgument reads JSON after command', () => {
 });
 
 test('formatDraftConfig returns final config snippet', () => {
-  const draft = createSetupDraft({ sync: { source: { mode: 'all' } }, parsing: { filters: [] } });
+  const draft = createSetupDraft({ sync: { source: { mode: 'all' } }, parsing: { filters: [] }, publish: { dryRun: false } });
   const parsed = JSON.parse(formatDraftConfig(draft));
 
   assert.deepEqual(parsed, {
     sync: { source: { mode: 'all' } },
+    publish: { dryRun: false },
     parsing: { filters: [] },
     templates: {}
   });
@@ -62,13 +65,15 @@ test('setup helpers update publish templates', () => {
   const draft = createSetupDraft({ sync: { source: { mode: 'user' } }, parsing: {}, templates: {} });
 
   setTemplateValue(draft, 'postCaption', 'Post {{messageId}} by {{author}}');
-  setTemplateValue(draft, 'title.week', 'Weekly best');
+  setTemplateValue(draft, 'selection.best.week.template', 'Weekly best {{count}}');
+  setTemplateValue(draft, 'selection.controversial.week.template', 'Controversial {{count}}');
   setTemplateValue(draft, 'unknownAuthor', 'anonymous');
   setTemplateValue(draft, 'maxTextLength', '120');
   setTemplateValue(draft, 'stats.summary', 'Stats {{totalCount}}');
 
   assert.equal(draft.templates.publish.postCaption, 'Post {{messageId}} by {{author}}');
-  assert.equal(draft.templates.publish.selectionTitles.week, 'Weekly best');
+  assert.equal(draft.publish.selections.best.week.template, 'Weekly best {{count}}');
+  assert.equal(draft.publish.selections.controversial.week.template, 'Controversial {{count}}');
   assert.equal(draft.templates.publish.unknownAuthor, 'anonymous');
   assert.equal(draft.templates.publish.maxTextLength, 120);
   assert.equal(draft.templates.stats.summary, 'Stats {{totalCount}}');

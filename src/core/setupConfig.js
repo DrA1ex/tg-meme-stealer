@@ -11,6 +11,7 @@ export function createSetupDraft(config) {
       source: structuredClone(config.sync?.source || { mode: 'user' })
     },
     parsing: structuredClone(config.parsing || {}),
+    publish: structuredClone(config.publish || {}),
     templates: structuredClone(config.templates || {})
   };
 }
@@ -47,6 +48,7 @@ export function buildDraftConfig(draft) {
       source: draft.sync.source
     },
     parsing: draft.parsing,
+    publish: draft.publish,
     templates: draft.templates
   };
 }
@@ -122,7 +124,7 @@ export function formatPreviewPost(post, templates = {}) {
 
 export function setTemplateValue(draft, key, value) {
   const path = templatePathForKey(key);
-  let target = draft.templates;
+  let target = key.startsWith('selection.') ? draft : draft.templates;
   for (const part of path.slice(0, -1)) {
     target[part] = target[part] || {};
     target = target[part];
@@ -146,9 +148,12 @@ function templatePathForKey(key) {
     postCaption: ['publish', 'postCaption'],
     unknownAuthor: ['publish', 'unknownAuthor'],
     maxTextLength: ['publish', 'maxTextLength'],
-    'title.month': ['publish', 'selectionTitles', 'month'],
-    'title.week': ['publish', 'selectionTitles', 'week'],
-    'title.fresh': ['publish', 'selectionTitles', 'fresh'],
+    'selection.best.month.template': ['publish', 'selections', 'best', 'month', 'template'],
+    'selection.best.week.template': ['publish', 'selections', 'best', 'week', 'template'],
+    'selection.best.day.template': ['publish', 'selections', 'best', 'day', 'template'],
+    'selection.controversial.month.template': ['publish', 'selections', 'controversial', 'month', 'template'],
+    'selection.controversial.week.template': ['publish', 'selections', 'controversial', 'week', 'template'],
+    'selection.controversial.day.template': ['publish', 'selections', 'controversial', 'day', 'template'],
     'stats.summary': ['stats', 'summary'],
     'stats.topPost': ['stats', 'topPost']
   };

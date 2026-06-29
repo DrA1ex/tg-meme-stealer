@@ -74,19 +74,57 @@
     ]
   },
   "publish": {
-    "monthTopLimit": 10,
-    "weekTopLimit": 10,
-    "freshTopLimit": 5,
-    "freshWindowHours": 24,
-    "dryRun": false
+    "dryRun": false,
+    "selections": {
+      "best": {
+        "month": {
+          "enabled": true,
+          "time": "10:20",
+          "limit": 10,
+          "template": "Best posts from the last month ({{count}})"
+        },
+        "week": {
+          "enabled": true,
+          "time": "10:10",
+          "limit": 10,
+          "template": "Best posts from the last week ({{count}})"
+        },
+        "day": {
+          "enabled": true,
+          "time": "10:00",
+          "limit": 5,
+          "windowHours": 24,
+          "template": "Best fresh posts ({{count}})"
+        }
+      },
+      "controversial": {
+        "month": {
+          "enabled": true,
+          "time": "11:20",
+          "limit": 10,
+          "threshold": 0.3,
+          "template": "Most controversial posts from the last month ({{count}})"
+        },
+        "week": {
+          "enabled": false,
+          "time": "11:10",
+          "limit": 10,
+          "threshold": 0.3,
+          "template": "Most controversial posts from the last week ({{count}})"
+        },
+        "day": {
+          "enabled": false,
+          "time": "11:00",
+          "limit": 5,
+          "windowHours": 24,
+          "threshold": 0.3,
+          "template": "Most controversial fresh posts ({{count}})"
+        }
+      }
+    }
   },
   "templates": {
     "publish": {
-      "selectionTitles": {
-        "month": "Best posts from the last month",
-        "week": "Best posts from the last week",
-        "fresh": "Best fresh posts"
-      },
       "postCaption": "{{position}}. By {{author}}\n👍 {{likes}}  👎 {{dislikes}}\nMedia: {{mediaSummary}}\n\n{{text}}",
       "unknownAuthor": "unknown",
       "maxTextLength": 700
@@ -100,20 +138,6 @@
     "enabled": true,
     "timezone": "Europe/Moscow",
     "syncIntervalHours": 24,
-    "runOnStart": true,
-    "publish": {
-      "fresh": {
-        "enabled": true,
-        "time": "10:00"
-      },
-      "week": {
-        "enabled": true,
-        "time": "10:10"
-      },
-      "month": {
-        "enabled": true,
-        "time": "10:20"
-      }
-    }
+    "runOnStart": true
   }
 }

@@ -6,7 +6,7 @@ test('deepMerge preserves defaults and overrides nested values', () => {
   const result = deepMerge(
     {
       telegram: { apiId: 1, apiHash: 'default' },
-      publish: { monthTopLimit: 10, dryRun: false }
+      publish: { dryRun: false, selections: { best: { week: { limit: 10 } } } }
     },
     {
       telegram: { apiHash: 'custom' },
@@ -16,7 +16,7 @@ test('deepMerge preserves defaults and overrides nested values', () => {
 
   assert.deepEqual(result, {
     telegram: { apiId: 1, apiHash: 'custom' },
-    publish: { monthTopLimit: 10, dryRun: true }
+    publish: { dryRun: true, selections: { best: { week: { limit: 10 } } } }
   });
 });
 
