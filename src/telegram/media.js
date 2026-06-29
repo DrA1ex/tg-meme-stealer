@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createLogger } from '../core/logger.js';
+import { normalizeTelegramPeerId } from './peer.js';
 import { withTelegramRetry } from './retry.js';
 import { TelegramThrottle } from './throttle.js';
 
@@ -58,9 +59,10 @@ export class MediaDownloader {
 
   async loadMessage(chatId, messageId) {
     this.logger.info('Requesting message', { chatId, messageId });
+    const peerId = normalizeTelegramPeerId(chatId);
     await this.throttle.wait('media');
     const messages = await withTelegramRetry(
-      () => this.client.getMessages(chatId, [messageId]),
+      () => this.client.getMessages(peerId, [messageId]),
       { label: 'getMessages' }
     );
     return messages[0] || null;

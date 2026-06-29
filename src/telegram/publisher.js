@@ -1,7 +1,9 @@
 import { Telegraf } from 'telegraf';
 import { formatSelectionHeader } from '../core/format.js';
+import { createLogger } from '../core/logger.js';
 import { loadSelections } from '../core/selection.js';
 import { buildStats, formatStats } from '../core/stats.js';
+import { withBotApiRetry } from './retry.js';
 import { sendRichPost } from './richPost.js';
 
 export class SelectionPublisher {
@@ -11,6 +13,7 @@ export class SelectionPublisher {
     this.setupAssistant = setupAssistant;
     this.config = config;
     this.bot = new Telegraf(config.telegram.botToken);
+    this.logger = createLogger(config, 'publisher');
     this.configureCommands();
   }
 
@@ -30,6 +33,11 @@ export class SelectionPublisher {
 
   async publishAll(now = new Date(), keys = null) {
     const selections = await loadSelections(this.repository, this.config, now, keys);
+    this.logger.info('Publish cycle started', {
+      targetChatId: this.config.telegram.publishChannelId,
+      keys: keys || 'all',
+      selections: selections.length
+    });
     for (const selection of selections) {
       await this.publishSelection(selection);
     }
@@ -37,15 +45,32 @@ export class SelectionPublisher {
   }
 
   async publishSelection(selection) {
-    if (selection.posts.length === 0) return;
+    if (selection.posts.length === 0) {
+      this.logger.info('Selection skipped: no posts', { selection: selection.key });
+      return;
+    }
 
     if (this.config.publish.dryRun) {
-      console.log(`[dry-run] ${selection.title}: ${selection.posts.length} posts`);
+      this.logger.info('Selection dry-run', {
+        selection: selection.key,
+        title: selection.title,
+        posts: selection.posts.length,
+        targetChatId: this.config.telegram.publishChannelId
+      });
       await this.recordPublication(selection, 'dry_run');
       return;
     }
 
-    await this.bot.telegram.sendMessage(this.config.telegram.publishChannelId, formatSelectionHeader(selection.title));
+    this.logger.info('Publishing selection header', {
+      selection: selection.key,
+      title: selection.title,
+      posts: selection.posts.length,
+      targetChatId: this.config.telegram.publishChannelId
+    });
+    await withBotApiRetry(
+      () => this.bot.telegram.sendMessage(this.config.telegram.publishChannelId, formatSelectionHeader(selection.title)),
+      { label: 'sendSelectionHeader' }
+    );
 
     for (let index = 0; index < selection.posts.length; index += 1) {
       await this.publishPost(selection.posts[index], index);
@@ -54,6 +79,12 @@ export class SelectionPublisher {
   }
 
   async publishPost(post, index) {
+    this.logger.info('Publishing post', {
+      targetChatId: this.config.telegram.publishChannelId,
+      sourceChatId: post.chatId,
+      messageId: post.messageId,
+      position: index + 1
+    });
     await sendRichPost({
       telegram: this.bot.telegram,
       chatId: this.config.telegram.publishChannelId,

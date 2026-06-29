@@ -57,7 +57,7 @@ function numberFromEnv(value) {
   return parsed;
 }
 
-function validateConfig(config) {
+export function validateConfig(config) {
   const required = [
     ['telegram', 'apiId'],
     ['telegram', 'apiHash'],
@@ -77,5 +77,9 @@ function validateConfig(config) {
 
   if ((config.sync?.source?.mode || 'user') === 'user' && (config.telegram.targetUserId === undefined || config.telegram.targetUserId === '')) {
     throw new Error('Missing config value: telegram.targetUserId');
+  }
+
+  if (String(config.telegram.sourceChatId) === String(config.telegram.publishChannelId)) {
+    throw new Error('telegram.sourceChatId and telegram.publishChannelId must be different');
   }
 }

@@ -1,6 +1,7 @@
 import { parseMessagesToPosts } from '../core/postParser.js';
 import { subtractDays } from '../core/date.js';
 import { createLogger } from '../core/logger.js';
+import { normalizeTelegramPeerId } from './peer.js';
 import { withTelegramRetry } from './retry.js';
 import { TelegramThrottle } from './throttle.js';
 
@@ -302,14 +303,15 @@ export class TelegramScanner {
   }
 
   async getHistory(params) {
+    const peerId = normalizeTelegramPeerId(this.config.telegram.sourceChatId);
     this.logger.info('Requesting history', {
-      chatId: this.config.telegram.sourceChatId,
+      chatId: peerId,
       limit: params.limit,
       hasOffset: Boolean(params.offset)
     });
     await this.throttle.wait('history');
     const history = await withTelegramRetry(
-      () => this.client.getHistory(this.config.telegram.sourceChatId, params),
+      () => this.client.getHistory(peerId, params),
       { label: 'getHistory' }
     );
     this.logger.debug('History request completed', { hasNext: Boolean(history.next) });

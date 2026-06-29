@@ -20,3 +20,22 @@ test('MediaDownloader.cleanupFiles deletes temporary media files', async () => {
   assert.equal(await downloader.cleanupFiles([{ path: filePath }, { path: path.join(dir, 'missing.jpg') }]), 1);
   await assert.rejects(fs.access(filePath));
 });
+
+test('MediaDownloader.loadMessage passes numeric peer ids to mtcute', async () => {
+  const calls = [];
+  const downloader = new MediaDownloader({
+    client: {
+      getMessages: async (...args) => {
+        calls.push(args);
+        return [{ id: 10 }];
+      }
+    },
+    config: {
+      logging: { level: 'silent' },
+      sync: { mediaDir: '/private/tmp', throttle: { enabled: false } }
+    }
+  });
+
+  assert.deepEqual(await downloader.loadMessage('-1001341205233', 10), { id: 10 });
+  assert.deepEqual(calls, [[-1001341205233, [10]]]);
+});

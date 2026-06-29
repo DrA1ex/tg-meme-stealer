@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { applyEnv, deepMerge } from '../src/config/index.js';
+import { applyEnv, deepMerge, validateConfig } from '../src/config/index.js';
 
 test('deepMerge preserves defaults and overrides nested values', () => {
   const result = deepMerge(
@@ -47,4 +47,24 @@ test('applyEnv maps secrets and telegram ids from environment', () => {
     publishChannelId: -1002,
     botToken: 'token'
   });
+});
+
+test('validateConfig rejects identical source and publish chats', () => {
+  assert.throws(
+    () => validateConfig({
+      telegram: {
+        apiId: 123,
+        apiHash: 'hash',
+        sessionFile: 'sessions/user.session',
+        sourceChatId: -1001,
+        targetUserId: 42,
+        adminId: 99,
+        publishChannelId: -1001,
+        botToken: 'token'
+      },
+      database: { path: 'data/posts.sqlite' },
+      sync: { source: { mode: 'user' } }
+    }),
+    /sourceChatId and telegram\.publishChannelId must be different/
+  );
 });
