@@ -17,10 +17,18 @@ if (command === 'session') {
   await runSyncAndPublish(config);
 } else if (command === 'setup') {
   const app = await createApp(config);
+  let shuttingDown = false;
   const shutdown = async (signal) => {
-    app.publisher.stopBot(signal);
-    await app.close();
-    process.exit(0);
+    if (shuttingDown) return;
+    shuttingDown = true;
+    try {
+      app.publisher.stopBot(signal);
+      await app.close();
+      process.exit(0);
+    } catch (error) {
+      console.error('Shutdown failed:', error);
+      process.exit(1);
+    }
   };
   process.on('SIGINT', () => shutdown('SIGINT'));
   process.on('SIGTERM', () => shutdown('SIGTERM'));
@@ -38,11 +46,19 @@ if (command === 'session') {
       console.log(`Publish complete: ${publish.map((item) => `${item.key}:${item.count}`).join(',')}`);
     }
   });
+  let shuttingDown = false;
   const shutdown = async (signal) => {
-    scheduler.stop();
-    app.publisher.stopBot(signal);
-    await app.close();
-    process.exit(0);
+    if (shuttingDown) return;
+    shuttingDown = true;
+    try {
+      scheduler.stop();
+      app.publisher.stopBot(signal);
+      await app.close();
+      process.exit(0);
+    } catch (error) {
+      console.error('Shutdown failed:', error);
+      process.exit(1);
+    }
   };
   process.on('SIGINT', () => shutdown('SIGINT'));
   process.on('SIGTERM', () => shutdown('SIGTERM'));

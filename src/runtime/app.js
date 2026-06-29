@@ -14,6 +14,7 @@ export async function createApp(config) {
   const mediaDownloader = new MediaDownloader({ client: userClient, config });
   const setupAssistant = new SetupAssistant({ scanner, mediaDownloader, config });
   const publisher = new SelectionPublisher({ repository, mediaDownloader, setupAssistant, config });
+  let closed = false;
 
   return {
     repository,
@@ -21,10 +22,24 @@ export async function createApp(config) {
     scanner,
     publisher,
     async close() {
-      await userClient.destroy();
+      if (closed) return;
+      closed = true;
+      await safeDestroyUserClient(userClient);
       await repository.close();
     }
   };
+}
+
+async function safeDestroyUserClient(userClient) {
+  try {
+    await userClient.destroy();
+  } catch (error) {
+    if (!isAlreadyClosedStorageError(error)) throw error;
+  }
+}
+
+function isAlreadyClosedStorageError(error) {
+  return String(error?.message || error).includes('database connection is not open');
 }
 
 export async function runSync(config) {
