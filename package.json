@@ -7,6 +7,7 @@
     "start": "node index.js daemon",
     "once": "node index.js sync-and-publish",
     "sync": "node index.js sync",
+    "backfill": "node index.js backfill",
     "publish": "node index.js publish",
     "session": "node index.js session",
     "setup": "node index.js setup",

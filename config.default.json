@@ -5,11 +5,21 @@
   "database": {
     "path": "data/posts.sqlite"
   },
+  "logging": {
+    "level": "info"
+  },
   "sync": {
-    "initialScanMonths": 2,
+    "initialScanDays": 60,
     "refreshRecentDays": 7,
     "pageSize": 100,
     "mediaDir": "tmp/media",
+    "throttle": {
+      "enabled": true,
+      "historyMinMs": 800,
+      "historyMaxMs": 1800,
+      "mediaMinMs": 300,
+      "mediaMaxMs": 900
+    },
     "source": {
       "mode": "user"
     }

@@ -1,5 +1,5 @@
 import { loadConfig } from './src/config/index.js';
-import { createApp, runPublish, runSync, runSyncAndPublish } from './src/runtime/app.js';
+import { createApp, runBackfill, runPublish, runSync, runSyncAndPublish } from './src/runtime/app.js';
 import { Scheduler } from './src/runtime/scheduler.js';
 import { createSession } from './src/telegram/userClient.js';
 
@@ -11,6 +11,8 @@ if (command === 'session') {
   console.log(`Session saved: ${sessionPath}`);
 } else if (command === 'sync') {
   await runSync(config);
+} else if (command === 'backfill') {
+  await runBackfill(config, parseOptionalPositiveInteger(process.argv[3]));
 } else if (command === 'publish') {
   await runPublish(config);
 } else if (command === 'sync-and-publish') {
@@ -66,4 +68,13 @@ if (command === 'session') {
   await scheduler.start();
 } else {
   throw new Error(`Unknown command: ${command}`);
+}
+
+function parseOptionalPositiveInteger(value) {
+  if (value === undefined) return undefined;
+  const number = Number(value);
+  if (!Number.isInteger(number) || number <= 0) {
+    throw new Error(`Expected a positive integer, got: ${value}`);
+  }
+  return number;
 }

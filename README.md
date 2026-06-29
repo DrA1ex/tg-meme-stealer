@@ -72,9 +72,20 @@ Common options:
 
 ```json
 {
+  "logging": {
+    "level": "info"
+  },
   "sync": {
-    "initialScanMonths": 2,
+    "initialScanDays": 60,
     "refreshRecentDays": 7,
+    "pageSize": 100,
+    "throttle": {
+      "enabled": true,
+      "historyMinMs": 800,
+      "historyMaxMs": 1800,
+      "mediaMinMs": 300,
+      "mediaMaxMs": 900
+    },
     "source": {
       "mode": "user"
     }
@@ -97,6 +108,8 @@ Common options:
   }
 }
 ```
+
+`logging.level` can be `debug`, `info`, `warn`, `error`, or `silent`. Sync logs include the scan window, each Telegram history request, fetched message counts, matched post counts, saved rows, skipped old posts, and deleted-post cleanup.
 
 ## Userbot Login
 
@@ -383,6 +396,20 @@ Run one sync:
 npm run sync
 ```
 
+Backfill missing posts for `sync.initialScanDays` without rewriting older existing rows:
+
+```bash
+npm run backfill
+```
+
+Backfill a custom number of days:
+
+```bash
+npm run backfill -- 90
+```
+
+Backfill adds missing posts from the requested period. Existing posts are updated only inside `sync.refreshRecentDays`; older existing rows are left unchanged.
+
 Run one publish cycle:
 
 ```bash
@@ -428,7 +455,9 @@ Main tables:
 - `publications`
 - `publication_posts`
 
-Media is not stored permanently. The database stores Telegram media references in `data.media`; media is downloaded to `sync.mediaDir` only when publishing.
+Media is not stored permanently. The database stores Telegram media references in `data.media`; media is downloaded to `sync.mediaDir` only for preview or publishing and deleted immediately after the rich post is sent or the send attempt fails.
+
+Telegram can return `FLOOD_WAIT` for read-only API calls too, including history reads and media downloads. The app retries after the requested wait and also adds a small random delay before Telegram read calls. Tune `sync.throttle.historyMinMs` / `historyMaxMs` for scanning and `sync.throttle.mediaMinMs` / `mediaMaxMs` for preview and publishing media downloads.
 
 ## Limitations
 

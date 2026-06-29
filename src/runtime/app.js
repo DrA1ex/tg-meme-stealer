@@ -53,6 +53,19 @@ export async function runSync(config) {
   }
 }
 
+export async function runBackfill(config, days) {
+  const app = await createApp(config);
+  try {
+    const result = await app.scanner.backfill(days);
+    console.log(
+      `Backfill complete: days=${result.days}, seen=${result.seen}, added=${result.added}, updated=${result.updated}, skippedExistingOld=${result.skippedExistingOld}`
+    );
+    return result;
+  } finally {
+    await app.close();
+  }
+}
+
 export async function runPublish(config) {
   const app = await createApp(config);
   try {
