@@ -1,4 +1,4 @@
-# tg-memes
+# tg-meme-stealer
 
 Telegram rankings bot for communities where a regular bot cannot be added to the source group.
 
@@ -34,8 +34,8 @@ It supports text posts, photos, videos, albums, configurable parsing rules, QR l
 ## Installation
 
 ```bash
-git clone https://github.com/your-name/tg-memes.git
-cd tg-memes
+git clone https://github.com/DrA1ex/tg-meme-stealer
+cd tg-meme-stealer
 ```
 
 The rest of the setup is covered in the launch flow below.
