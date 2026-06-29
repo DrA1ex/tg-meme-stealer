@@ -14,7 +14,7 @@ if (command === 'session') {
 } else if (command === 'backfill') {
   await runBackfill(config, parseOptionalPositiveInteger(process.argv[3]));
 } else if (command === 'publish') {
-  await runPublish(config);
+  await runPublish(config, parseOptionalList(process.argv.slice(3)));
 } else if (command === 'sync-and-publish') {
   await runSyncAndPublish(config);
 } else if (command === 'setup') {
@@ -77,4 +77,8 @@ function parseOptionalPositiveInteger(value) {
     throw new Error(`Expected a positive integer, got: ${value}`);
   }
   return number;
+}
+
+function parseOptionalList(values) {
+  return values.length > 0 ? values : null;
 }

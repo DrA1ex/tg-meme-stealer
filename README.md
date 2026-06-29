@@ -35,16 +35,11 @@ It supports text posts, photos, videos, albums, configurable parsing rules, QR l
 ```bash
 git clone https://github.com/your-name/tg-memes.git
 cd tg-memes
-npm install
 ```
 
-Create `.env`:
+The rest of the setup is covered in the launch flow below.
 
-```bash
-cp .env.example .env
-```
-
-Fill in:
+Create `.env` from `.env.example` and fill in:
 
 ```dotenv
 TELEGRAM_API_ID=123456
@@ -57,6 +52,89 @@ TELEGRAM_BOT_TOKEN=123456:bot_token
 ```
 
 `TELEGRAM_TARGET_USER_ID` is required when `sync.source.mode` is `"user"`. If you want to scan matching posts from every sender, set `sync.source.mode` to `"all"` in `config.json`.
+
+## Launch Flow
+
+Use this sequence for a new installation.
+
+1. Install dependencies:
+
+```bash
+npm install
+```
+
+2. Create `.env` and fill Telegram credentials, source chat, target channel, admin user, and bot token:
+
+```bash
+cp .env.example .env
+```
+
+3. Create a local config only if you need to override defaults:
+
+```bash
+cp config.default.json config.json
+```
+
+4. Log in the userbot account with QR:
+
+```bash
+npm run session
+```
+
+5. Tune parsing rules in setup mode:
+
+```bash
+npm run setup
+```
+
+Then open a private chat with your bot from `TELEGRAM_ADMIN_ID` and run:
+
+```text
+/setup
+/test 30
+/preview 5 100
+/done
+```
+
+After `/done`, stop setup mode with `Ctrl+C` or keep it running and open another terminal for the next commands.
+
+6. Build the first database window:
+
+```bash
+npm run backfill
+```
+
+`backfill` scans `sync.initialScanDays`, adds missing old posts, and updates existing posts only inside `sync.refreshRecentDays`.
+
+7. Check the admin stats:
+
+```text
+/stats
+```
+
+`/stats` works while `npm run setup` or `npm start` is running, because both start the admin bot.
+
+8. Publish once manually:
+
+```bash
+npm run publish
+```
+
+To publish only one selection:
+
+```bash
+npm run publish -- month
+npm run publish -- week
+npm run publish -- day
+```
+
+9. Start the scheduled app:
+
+```bash
+npm start
+```
+
+For later maintenance, usually run only `npm start`. Use `npm run sync` for one refresh pass, `npm run backfill -- 90` to fill a larger historical window, `npm run publish -- week` to manually publish one selection, and `npm run setup` when parser or template rules need to be changed.
 
 ## Configuration
 
@@ -219,10 +297,10 @@ or:
 /done
 ```
 
-9. Run a sync with the saved config:
+9. Build the first database window with the saved config:
 
 ```bash
-npm run sync
+npm run backfill
 ```
 
 ## Parsing Rules
@@ -388,9 +466,21 @@ Examples:
 
 Run `/preview P M` after changing templates to see the final rendered rich posts. Setup preview sends media content to the admin private chat, but does not publish anything to the target channel and does not write publication records.
 
-## Running
+## Command Reference
 
-Run one sync:
+Create or refresh the mtcute user session:
+
+```bash
+npm run session
+```
+
+Start setup mode for parser and template tuning:
+
+```bash
+npm run setup
+```
+
+Run one recent refresh pass. This updates posts inside `sync.refreshRecentDays` and removes recently deleted source posts from the local database:
 
 ```bash
 npm run sync
@@ -410,10 +500,30 @@ npm run backfill -- 90
 
 Backfill adds missing posts from the requested period. Existing posts are updated only inside `sync.refreshRecentDays`; older existing rows are left unchanged.
 
-Run one publish cycle:
+Run one publish cycle without running sync first. Without arguments this publishes all enabled selection types: month, week, and day.
 
 ```bash
 npm run publish
+```
+
+Publish only one selection:
+
+```bash
+npm run publish -- month
+npm run publish -- week
+npm run publish -- day
+```
+
+`day` publishes the fresh selection, using `publish.freshWindowHours` as the time window. The internal key `fresh` is also accepted:
+
+```bash
+npm run publish -- fresh
+```
+
+Multiple selection types can be passed in one command:
+
+```bash
+npm run publish -- week day
 ```
 
 Run sync and publish once:
@@ -422,13 +532,13 @@ Run sync and publish once:
 npm run once
 ```
 
-Run the daemon:
+Run the daemon for normal operation:
 
 ```bash
 npm start
 ```
 
-The daemon starts the admin bot, runs an initial sync if configured, schedules sync by interval, and schedules each publication type by local time.
+The daemon starts the admin bot, runs sync on startup when `schedule.runOnStart` is enabled, schedules sync by interval, and schedules each publication type by local time.
 
 ## Admin Bot Commands
 

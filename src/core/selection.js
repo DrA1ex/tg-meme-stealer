@@ -2,7 +2,7 @@ import { subtractDays, subtractHours, subtractMonths } from './date.js';
 
 export function buildSelectionSpecs(config, now = new Date(), keys = null) {
   const chatId = config.telegram.sourceChatId;
-  const keySet = keys ? new Set(Array.isArray(keys) ? keys : [keys]) : null;
+  const keySet = keys ? new Set(normalizeSelectionKeys(keys)) : null;
   return [
     {
       key: 'month',
@@ -29,6 +29,17 @@ export function buildSelectionSpecs(config, now = new Date(), keys = null) {
       limit: config.publish.freshTopLimit
     }
   ].filter((spec) => !keySet || keySet.has(spec.key));
+}
+
+export function normalizeSelectionKeys(keys) {
+  const values = Array.isArray(keys) ? keys : [keys];
+  return values
+    .filter((key) => key !== undefined && key !== null && key !== '')
+    .map((key) => {
+      if (key === 'day') return 'fresh';
+      if (['month', 'week', 'fresh'].includes(key)) return key;
+      throw new Error(`Unknown publish selection: ${key}. Expected month, week, day, or fresh.`);
+    });
 }
 
 export async function loadSelections(repository, config, now = new Date(), keys = null) {

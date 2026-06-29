@@ -66,10 +66,10 @@ export async function runBackfill(config, days) {
   }
 }
 
-export async function runPublish(config) {
+export async function runPublish(config, keys = null) {
   const app = await createApp(config);
   try {
-    const result = await app.publisher.publishAll();
+    const result = await app.publisher.publishAll(new Date(), keys);
     console.log(`Publish complete: ${result.map((item) => `${item.key}=${item.count}`).join(', ')}`);
     return result;
   } finally {
