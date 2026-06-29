@@ -1,7 +1,8 @@
 import { Telegraf } from 'telegraf';
-import { formatPostCaption, formatSelectionHeader } from '../core/format.js';
+import { formatSelectionHeader } from '../core/format.js';
 import { loadSelections } from '../core/selection.js';
 import { buildStats, formatStats } from '../core/stats.js';
+import { sendRichPost } from './richPost.js';
 
 export class SelectionPublisher {
   constructor({ repository, mediaDownloader, setupAssistant, config }) {
@@ -53,32 +54,14 @@ export class SelectionPublisher {
   }
 
   async publishPost(post, index) {
-    const files = await this.mediaDownloader.downloadPostMedia(post);
-    const caption = formatPostCaption(post, index, this.config.templates);
-
-    if (files.length === 0) {
-      await this.bot.telegram.sendMessage(this.config.telegram.publishChannelId, caption);
-      return;
-    }
-
-    if (files.length === 1) {
-      const file = files[0];
-      if (file.kind === 'video') {
-        await this.bot.telegram.sendVideo(this.config.telegram.publishChannelId, { source: file.path }, { caption });
-      } else {
-        await this.bot.telegram.sendPhoto(this.config.telegram.publishChannelId, { source: file.path }, { caption });
-      }
-      return;
-    }
-
-    await this.bot.telegram.sendMediaGroup(
-      this.config.telegram.publishChannelId,
-      files.map((file, fileIndex) => ({
-        type: file.kind === 'video' ? 'video' : 'photo',
-        media: { source: file.path },
-        caption: fileIndex === 0 ? caption : undefined
-      }))
-    );
+    await sendRichPost({
+      telegram: this.bot.telegram,
+      chatId: this.config.telegram.publishChannelId,
+      mediaDownloader: this.mediaDownloader,
+      post,
+      index,
+      templates: this.config.templates
+    });
   }
 
   async recordPublication(selection, status) {

@@ -19,11 +19,11 @@ test('formatPostCaption uses configured publish template', () => {
     1,
     {
       publish: {
-        postCaption: '#{{position}} {{author}} score={{score}} text={{text}}',
+        postCaption: '#{{position}} {{author}} score={{score}} media={{mediaSummary}} text={{text}}',
         maxTextLength: 100
       }
     }
   );
 
-  assert.equal(caption, '#2 Alice score=9 text=Long text');
+  assert.equal(caption, '#2 Alice score=9 media=none text=Long text');
 });

@@ -5,12 +5,13 @@ import {
   formatPreviewPost,
   parseJsonArgument,
   saveDraftConfig,
-  selectWeekPreviewPost,
+  selectWeekPreviewPosts,
   setParsingRules,
   setSourceMode,
   setTemplateValue,
   summarizeParsedPosts
 } from '../core/setupConfig.js';
+import { sendRichPost } from './richPost.js';
 
 const SETUP_HELP = [
   'Setup mode commands:',
@@ -22,14 +23,15 @@ const SETUP_HELP = [
   '/setdislikes <json rule or array>',
   '/settemplate <key> <value>',
   '/test [message_count]',
-  '/preview [message_count]',
+  '/preview [post_count] [message_count]',
   '/done',
   '/cancel'
 ].join('\n');
 
 export class SetupAssistant {
-  constructor({ scanner, config }) {
+  constructor({ scanner, mediaDownloader, config }) {
     this.scanner = scanner;
+    this.mediaDownloader = mediaDownloader;
     this.config = config;
     this.sessions = new Map();
   }
@@ -86,15 +88,27 @@ export class SetupAssistant {
   }
 
   async preview(ctx) {
-    const limit = parseLimit(ctx.message.text, 30);
-    const result = await this.scanner.previewRecent(limit, this.getDraft(ctx));
-    const post = selectWeekPreviewPost(result.posts);
+    const { postCount, messageCount } = parsePreviewArgs(ctx.message.text);
+    const result = await this.scanner.previewRecent(messageCount, this.getDraft(ctx));
+    const posts = selectWeekPreviewPosts(result.posts, postCount);
     const draft = this.getDraft(ctx);
-    await ctx.reply([
-      `Preview source: ${result.posts.length} matched posts from ${result.scanned} scanned messages.`,
-      '',
-      formatPreviewPost(post, draft.templates)
-    ].join('\n'));
+    await ctx.reply(`Preview source: ${result.posts.length} matched posts from ${result.scanned} scanned messages. Showing ${posts.length}.`);
+
+    if (!posts.length) {
+      await ctx.reply(formatPreviewPost(null, draft.templates));
+      return;
+    }
+
+    for (let index = 0; index < posts.length; index += 1) {
+      await sendRichPost({
+        telegram: ctx.telegram,
+        chatId: ctx.chat.id,
+        mediaDownloader: this.mediaDownloader,
+        post: posts[index],
+        index,
+        templates: draft.templates
+      });
+    }
   }
 
   async done(ctx) {
@@ -150,6 +164,21 @@ function parseLimit(text, fallback) {
     throw new Error('Limit must be an integer from 1 to 1000');
   }
   return limit;
+}
+
+function parsePreviewArgs(text) {
+  const raw = getArgument(text);
+  if (!raw) return { postCount: 1, messageCount: 30 };
+  const parts = raw.split(/\s+/).map(Number);
+  const [postCount, messageCount = 30] = parts;
+
+  if (!Number.isInteger(postCount) || postCount < 1 || postCount > 20) {
+    throw new Error('Post count must be an integer from 1 to 20');
+  }
+  if (!Number.isInteger(messageCount) || messageCount < 1 || messageCount > 1000) {
+    throw new Error('Message count must be an integer from 1 to 1000');
+  }
+  return { postCount, messageCount };
 }
 
 async function replyLong(ctx, text) {

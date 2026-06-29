@@ -77,7 +77,7 @@
         "week": "Best posts from the last week",
         "fresh": "Best fresh posts"
       },
-      "postCaption": "{{position}}. By {{author}}\n👍 {{likes}}  👎 {{dislikes}}\n\n{{text}}",
+      "postCaption": "{{position}}. By {{author}}\n👍 {{likes}}  👎 {{dislikes}}\nMedia: {{mediaSummary}}\n\n{{text}}",
       "unknownAuthor": "unknown",
       "maxTextLength": 700
     },

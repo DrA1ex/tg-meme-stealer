@@ -10,6 +10,7 @@ import {
   parseJsonArgument,
   saveDraftConfig,
   selectWeekPreviewPost,
+  selectWeekPreviewPosts,
   setParsingRules,
   setSourceMode,
   setTemplateValue,
@@ -84,6 +85,7 @@ test('summarizeParsedPosts and preview select best weekly post', () => {
   ];
   const summary = summarizeParsedPosts({ scanned: 30, posts });
   const preview = selectWeekPreviewPost(posts, new Date('2026-06-29T00:00:00.000Z'));
+  const previews = selectWeekPreviewPosts(posts, 3, new Date('2026-06-29T00:00:00.000Z'));
 
   assert.match(summary, /Scanned messages: 30/);
   assert.match(summary, /Matched posts: 6/);
@@ -91,6 +93,7 @@ test('summarizeParsedPosts and preview select best weekly post', () => {
   assert.match(summary, /# \| id \| author \| likes \| dislikes \| media \| text/);
   assert.match(summary, /6 \| 6 \| Alice/);
   assert.equal(preview.messageId, 1);
+  assert.deepEqual(previews.map((post) => post.messageId), [1, 2, 6]);
   const rendered = formatPreviewPost(preview, {
     publish: {
       postCaption: 'Post {{messageId}} by {{author}} score={{score}}'

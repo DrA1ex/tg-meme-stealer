@@ -14,7 +14,10 @@ export function formatPostCaption(post, index, templates = {}) {
     score: (post.likes || 0) - (post.dislikes || 0),
     text: trimText(post.text, maxTextLength),
     messageId: post.messageId,
-    chatId: post.chatId
+    chatId: post.chatId,
+    mediaCount: getPostMedia(post).length,
+    mediaIds: getPostMedia(post).map((item) => item.messageId || post.messageId).join(', '),
+    mediaSummary: formatPostMediaSummary(post)
   }).trim();
 }
 
@@ -37,4 +40,14 @@ function trimText(text, maxLength) {
   if (!text) return '';
   if (text.length <= maxLength) return text;
   return `${text.slice(0, maxLength - 1).trim()}…`;
+}
+
+export function formatPostMediaSummary(post) {
+  const media = getPostMedia(post);
+  if (!media.length) return 'none';
+  return media.map((item) => `${item.mediaKind || 'media'}#${item.messageId || post.messageId}`).join(', ');
+}
+
+function getPostMedia(post) {
+  return post.data?.media || post.data?.images || [];
 }

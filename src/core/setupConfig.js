@@ -100,10 +100,15 @@ export function summarizeParsedPosts({ posts, scanned }, options = {}) {
 }
 
 export function selectWeekPreviewPost(posts, now = new Date()) {
+  return selectWeekPreviewPosts(posts, 1, now)[0] || null;
+}
+
+export function selectWeekPreviewPosts(posts, limit = 1, now = new Date()) {
   const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
   return posts
     .filter((post) => new Date(post.messageDate) >= weekAgo)
-    .sort((a, b) => b.likes - b.dislikes - (a.likes - a.dislikes) || b.likes - a.likes)[0] || null;
+    .sort((a, b) => b.likes - b.dislikes - (a.likes - a.dislikes) || b.likes - a.likes)
+    .slice(0, limit);
 }
 
 export function formatPreviewPost(post, templates = {}) {

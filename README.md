@@ -133,7 +133,7 @@ Then open a private chat with your bot as `TELEGRAM_ADMIN_ID` and run:
 ```text
 /setup
 /test 30
-/preview 100
+/preview 5 100
 /done
 ```
 
@@ -147,12 +147,12 @@ Useful setup commands:
 /setauthor {"source":"message","path":"message","regex":"(?:^|\\n)By\\s+(.+?)(?:\\n|$)","group":1}
 /setlikes {"source":"message","path":"replyMarkup.rows[].buttons[].text","regex":"👍\\s*([\\d\\s,.]+[km]?)","group":1,"transform":"count","aggregate":"sum"}
 /setdislikes {"source":"message","path":"replyMarkup.rows[].buttons[].text","regex":"👎\\s*([\\d\\s,.]+[km]?)","group":1,"transform":"count","aggregate":"sum"}
-/settemplate postCaption {{position}}. By {{author}}\n👍 {{likes}}  👎 {{dislikes}}\n\n{{text}}
+/settemplate postCaption {{position}}. By {{author}}\n👍 {{likes}}  👎 {{dislikes}}\nMedia: {{mediaSummary}}\n\n{{text}}
 /settemplate title.week Weekly community picks
 /settemplate unknownAuthor anonymous
 ```
 
-`/test N` reads the latest `N` source messages, applies the draft parser, and does not write anything to the database. `/preview N` shows an example post that would be selected for the weekly top. `/done` saves the draft into `config.json`. If `config.json` already exists, it is copied to `config.json.old` first.
+`/test N` reads the latest `N` source messages, applies the draft parser, and does not write anything to the database. `/preview P M` scans the latest `M` messages, selects up to `P` weekly top posts, and sends them as rich posts with media and captions. `/done` saves the draft into `config.json`. If `config.json` already exists, it is copied to `config.json.old` first.
 
 ### Recommended Setup Workflow
 
@@ -197,7 +197,7 @@ or:
 7. Preview the post that would win the weekly selection:
 
 ```text
-/preview 100
+/preview 5 100
 ```
 
 8. Save the final config:
@@ -325,7 +325,7 @@ Example:
       "selectionTitles": {
         "week": "Best posts from the last week"
       },
-      "postCaption": "{{position}}. By {{author}}\n👍 {{likes}}  👎 {{dislikes}}\n\n{{text}}",
+      "postCaption": "{{position}}. By {{author}}\n👍 {{likes}}  👎 {{dislikes}}\nMedia: {{mediaSummary}}\n\n{{text}}",
       "unknownAuthor": "unknown",
       "maxTextLength": 700
     }
@@ -343,6 +343,9 @@ Post caption variables:
 - `text`
 - `messageId`
 - `chatId`
+- `mediaCount`
+- `mediaIds`
+- `mediaSummary`
 
 Setup mode can edit templates with:
 
@@ -364,13 +367,13 @@ Supported keys:
 Examples:
 
 ```text
-/settemplate postCaption #{{position}} {{author}} | 👍 {{likes}} 👎 {{dislikes}}\n\n{{text}}
+/settemplate postCaption #{{position}} {{author}} | 👍 {{likes}} 👎 {{dislikes}}\nMedia: {{mediaSummary}}\n\n{{text}}
 /settemplate title.month Best posts this month
 /settemplate maxTextLength 500
 /settemplate stats.topPost Top month post: #{{messageId}}, score {{score}}
 ```
 
-Run `/preview N` after changing templates to see the final rendered post. Setup preview does not upload media; it prints the number of media items and their source message ids.
+Run `/preview P M` after changing templates to see the final rendered rich posts. Setup preview sends media content to the admin private chat, but does not publish anything to the target channel and does not write publication records.
 
 ## Running
 

@@ -12,7 +12,7 @@ export async function createApp(config) {
   const userClient = await startUserClient(config);
   const scanner = new TelegramScanner({ client: userClient, repository, config });
   const mediaDownloader = new MediaDownloader({ client: userClient, config });
-  const setupAssistant = new SetupAssistant({ scanner, config });
+  const setupAssistant = new SetupAssistant({ scanner, mediaDownloader, config });
   const publisher = new SelectionPublisher({ repository, mediaDownloader, setupAssistant, config });
 
   return {
