@@ -1,0 +1,109 @@
+{
+  "telegram": {
+    "sessionFile": "sessions/mtcute-user.session"
+  },
+  "database": {
+    "path": "data/posts.sqlite"
+  },
+  "sync": {
+    "initialScanMonths": 2,
+    "refreshRecentDays": 7,
+    "pageSize": 100,
+    "mediaDir": "tmp/media",
+    "source": {
+      "mode": "user"
+    }
+  },
+  "parsing": {
+    "filters": [
+      {
+        "source": "message",
+        "transform": "hasContent"
+      }
+    ],
+    "author": [
+      {
+        "source": "message",
+        "path": "message",
+        "regex": "(?:^|\\n)\\s*By\\s+(.+?)(?:\\n|$)",
+        "group": 1,
+        "transform": "trim"
+      },
+      {
+        "source": "sender",
+        "path": "firstName",
+        "transform": "trim"
+      },
+      {
+        "source": "sender",
+        "path": "username",
+        "regex": "(.+)",
+        "group": 1,
+        "transform": "telegramUsername"
+      }
+    ],
+    "likes": [
+      {
+        "source": "message",
+        "path": "replyMarkup.rows[].buttons[].text",
+        "regex": "(?:👍|❤|❤️|🔥|\\+)\\s*([\\d\\s,.]+[km]?)",
+        "group": 1,
+        "transform": "count",
+        "aggregate": "sum"
+      }
+    ],
+    "dislikes": [
+      {
+        "source": "message",
+        "path": "replyMarkup.rows[].buttons[].text",
+        "regex": "(?:👎|-)\\s*([\\d\\s,.]+[km]?)",
+        "group": 1,
+        "transform": "count",
+        "aggregate": "sum"
+      }
+    ]
+  },
+  "publish": {
+    "monthTopLimit": 10,
+    "weekTopLimit": 10,
+    "freshTopLimit": 5,
+    "freshWindowHours": 24,
+    "dryRun": false
+  },
+  "templates": {
+    "publish": {
+      "selectionTitles": {
+        "month": "Best posts from the last month",
+        "week": "Best posts from the last week",
+        "fresh": "Best fresh posts"
+      },
+      "postCaption": "{{position}}. By {{author}}\n👍 {{likes}}  👎 {{dislikes}}\n\n{{text}}",
+      "unknownAuthor": "unknown",
+      "maxTextLength": 700
+    },
+    "stats": {
+      "summary": "Database stats\nTotal posts: {{totalCount}}\nTotal reactions: 👍 {{totalLikes}}  👎 {{totalDislikes}}\nFresh in 24h: {{freshCount}}\nRefresh window: {{recentCount}} posts, 👍 {{recentLikes}}  👎 {{recentDislikes}}",
+      "topPost": "Top month post: #{{messageId}}, 👍 {{likes}}  👎 {{dislikes}}"
+    }
+  },
+  "schedule": {
+    "enabled": true,
+    "timezone": "Europe/Moscow",
+    "syncIntervalHours": 24,
+    "runOnStart": true,
+    "publish": {
+      "fresh": {
+        "enabled": true,
+        "time": "10:00"
+      },
+      "week": {
+        "enabled": true,
+        "time": "10:10"
+      },
+      "month": {
+        "enabled": true,
+        "time": "10:20"
+      }
+    }
+  }
+}

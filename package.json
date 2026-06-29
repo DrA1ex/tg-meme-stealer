@@ -1,0 +1,24 @@
+{
+  "name": "tg-memes",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node index.js daemon",
+    "once": "node index.js sync-and-publish",
+    "sync": "node index.js sync",
+    "publish": "node index.js publish",
+    "session": "node index.js session",
+    "setup": "node index.js setup",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@mtcute/node": "^0.24.0",
+    "dotenv": "^16.4.7",
+    "qr": "^0.5.0",
+    "sqlite": "^5.1.1",
+    "sqlite3": "^5.1.7",
+    "telegraf": "^4.16.3"
+  },
+  "devDependencies": {}
+}
