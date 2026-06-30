@@ -1,10 +1,20 @@
 import { loadConfig } from './src/config/index.js';
+import { createLogger } from './src/core/logger.js';
 import { createApp, runBackfill, runPublish, runSync, runSyncAndPublish } from './src/runtime/app.js';
 import { Scheduler } from './src/runtime/scheduler.js';
 import { createSession } from './src/telegram/userClient.js';
 
 const command = process.argv[2] || 'daemon';
 const config = loadConfig();
+const logger = createLogger(config, 'runtime');
+logger.info('Command starting', {
+  command,
+  sourceChatId: config.telegram.sourceChatId,
+  publishChannelId: config.telegram.publishChannelId,
+  adminId: config.telegram.adminId,
+  databasePath: config.database.path,
+  timezone: config.schedule?.timezone
+});
 
 if (command === 'session') {
   const sessionPath = await createSession(config);
@@ -23,12 +33,14 @@ if (command === 'session') {
   const shutdown = async (signal) => {
     if (shuttingDown) return;
     shuttingDown = true;
+    logger.info('Shutdown requested', { command, signal });
     try {
       await app.publisher.stopBot(signal);
       await app.close();
+      logger.info('Shutdown complete', { command, signal });
       process.exit(0);
     } catch (error) {
-      console.error('Shutdown failed:', error);
+      logger.error('Shutdown failed', { command, signal, error: error?.message || String(error) });
       process.exit(1);
     }
   };
@@ -37,6 +49,7 @@ if (command === 'session') {
   try {
     await app.publisher.launchBot();
     if (!shuttingDown) {
+      logger.info('Setup bot is running', { adminId: config.telegram.adminId });
       console.log('Setup bot is running. Open admin private chat and run /setup.');
     }
   } catch (error) {
@@ -58,13 +71,15 @@ if (command === 'session') {
   const shutdown = async (signal) => {
     if (shuttingDown) return;
     shuttingDown = true;
+    logger.info('Shutdown requested', { command, signal });
     try {
       scheduler.stop();
       await app.publisher.stopBot(signal);
       await app.close();
+      logger.info('Shutdown complete', { command, signal });
       process.exit(0);
     } catch (error) {
-      console.error('Shutdown failed:', error);
+      logger.error('Shutdown failed', { command, signal, error: error?.message || String(error) });
       process.exit(1);
     }
   };
@@ -73,6 +88,7 @@ if (command === 'session') {
   try {
     await app.publisher.launchBot();
     if (!shuttingDown) {
+      logger.info('Daemon bot launched, starting scheduler');
       await scheduler.start();
     }
   } catch (error) {

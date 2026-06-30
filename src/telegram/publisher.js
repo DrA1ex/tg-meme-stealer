@@ -31,7 +31,25 @@ export class SelectionPublisher {
     });
 
     this.bot.use(async (ctx, next) => {
-      if (ctx.from?.id !== Number(this.config.telegram.adminId) || ctx.chat?.type !== 'private') return;
+      const command = getCommandName(ctx);
+      if (ctx.from?.id !== Number(this.config.telegram.adminId) || ctx.chat?.type !== 'private') {
+        if (command) {
+          this.logger.warn('Bot command ignored', {
+            command,
+            fromId: ctx.from?.id,
+            chatId: ctx.chat?.id,
+            chatType: ctx.chat?.type
+          });
+        }
+        return;
+      }
+      if (command) {
+        this.logger.info('Bot command received', {
+          command,
+          fromId: ctx.from?.id,
+          chatId: ctx.chat?.id
+        });
+      }
       await next();
     });
 
@@ -120,16 +138,23 @@ export class SelectionPublisher {
   }
 
   async launchBot() {
+    this.logger.info('Launching bot polling', {
+      adminId: this.config.telegram.adminId,
+      publishChannelId: this.config.telegram.publishChannelId
+    });
     await this.bot.launch();
+    this.logger.info('Bot polling started');
   }
 
   async stopBot(signal = 'SIGTERM') {
+    this.logger.info('Stopping bot polling', { signal });
     try {
       this.bot.stop(signal);
     } catch (error) {
       if (!isBotAlreadyStoppedError(error)) throw error;
     }
     await this.waitForIdle();
+    this.logger.info('Bot polling stopped');
   }
 
   async waitForIdle(timeoutMs = 30000) {
@@ -157,4 +182,10 @@ export class SelectionPublisher {
 
 function isBotAlreadyStoppedError(error) {
   return /not running|not started/i.test(String(error?.message || error));
+}
+
+function getCommandName(ctx) {
+  const text = ctx.message?.text || ctx.update?.message?.text || '';
+  const match = text.match(/^\/([^\s@]+)(?:@\w+)?/);
+  return match?.[1] || '';
 }

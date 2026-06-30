@@ -1,24 +1,42 @@
 import { getScheduledPublishEntries } from '../core/selection.js';
+import { createLogger } from '../core/logger.js';
 
 export class Scheduler {
-  constructor(config, handlers) {
+  constructor(config, handlers, logger = createLogger(config, 'scheduler')) {
     this.config = config;
-    this.handlers = typeof handlers === 'function' ? { sync: handlers, publishAll: handlers } : handlers;
+    this.handlers = typeof handlers === 'function' ? { sync: handlers, publish: handlers } : handlers;
+    this.logger = logger;
     this.timers = new Set();
     this.running = new Set();
   }
 
   async start() {
-    if (!this.config.schedule.enabled) return;
+    if (!this.config.schedule.enabled) {
+      this.logger.info('Scheduler disabled');
+      return;
+    }
+    this.logger.info('Scheduler starting', {
+      timezone: this.config.schedule.timezone,
+      syncIntervalHours: this.config.schedule.syncIntervalHours || this.config.schedule.intervalHours || 24,
+      runOnStart: Boolean(this.config.schedule.runOnStart)
+    });
     if (this.config.schedule.runOnStart) {
+      this.logger.info('Running startup sync');
       await this.run('sync', () => this.handlers.sync());
     }
     this.scheduleSync();
     this.schedulePublications();
+    this.logger.info('Scheduler started', { timers: this.timers.size });
   }
 
   scheduleSync() {
     const intervalMs = (this.config.schedule.syncIntervalHours || this.config.schedule.intervalHours || 24) * 60 * 60 * 1000;
+    const nextRunAt = new Date(Date.now() + intervalMs);
+    this.logger.info('Scheduled sync', {
+      intervalHours: intervalMs / 60 / 60 / 1000,
+      delayMs: intervalMs,
+      nextRunAt
+    });
     this.scheduleTimeout(async () => {
       await this.run('sync', () => this.handlers.sync());
       this.scheduleSync();
@@ -32,10 +50,18 @@ export class Scheduler {
   }
 
   schedulePublication(key, time, now = new Date()) {
-    const delayMs = getDelayUntilLocalTime({
+    const nextRunAt = getNextLocalTimeAsDate({
       now,
       time,
       timezone: this.config.schedule.timezone
+    });
+    const delayMs = nextRunAt.getTime() - now.getTime();
+    this.logger.info('Scheduled publication', {
+      key,
+      time,
+      timezone: this.config.schedule.timezone,
+      delayMs,
+      nextRunAt
     });
     this.scheduleTimeout(async () => {
       await this.run(`publish:${key}`, () => this.handlers.publish(key));
@@ -44,12 +70,22 @@ export class Scheduler {
   }
 
   async run(key, fn) {
-    if (this.running.has(key)) return;
+    if (this.running.has(key)) {
+      this.logger.warn('Scheduled job skipped: already running', { key });
+      return;
+    }
     this.running.add(key);
+    const startedAt = Date.now();
+    this.logger.info('Scheduled job started', { key });
     try {
       await fn();
+      this.logger.info('Scheduled job finished', { key, durationMs: Date.now() - startedAt });
     } catch (error) {
-      console.error(`Scheduled job failed (${key}):`, error);
+      this.logger.error('Scheduled job failed', {
+        key,
+        durationMs: Date.now() - startedAt,
+        error: error?.message || String(error)
+      });
     } finally {
       this.running.delete(key);
     }
@@ -65,8 +101,10 @@ export class Scheduler {
   }
 
   stop() {
+    this.logger.info('Scheduler stopping', { timers: this.timers.size });
     for (const timer of this.timers) clearTimeout(timer);
     this.timers.clear();
+    this.logger.info('Scheduler stopped');
   }
 }
 
