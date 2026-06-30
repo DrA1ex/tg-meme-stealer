@@ -289,6 +289,31 @@ export class TelegramScanner {
     return { scanned: messages.length, posts };
   }
 
+  async getMessageById(messageId) {
+    const peerId = normalizeTelegramPeerId(this.config.telegram.sourceChatId);
+    this.logger.info('Requesting message by id', { chatId: peerId, messageId });
+    await this.throttle.wait('media');
+    const messages = await withTelegramRetry(
+      () => this.client.getMessages(peerId, [messageId]),
+      { label: 'getMessages' }
+    );
+    return messages[0] || null;
+  }
+
+  async previewMessage(messageId, draft = {}) {
+    const message = await this.getMessageById(messageId);
+    if (!message) return { message: null, posts: [] };
+
+    const posts = parseMessagesToPosts([message], {
+      chatId: this.config.telegram.sourceChatId,
+      targetUserId: this.config.telegram.targetUserId,
+      sourceMode: draft.sync?.source?.mode || this.config.sync.source?.mode,
+      parsing: draft.parsing || this.config.parsing
+    });
+
+    return { message, posts };
+  }
+
   async removeDeletedRecentPosts(sinceDate, seenIds) {
     const ids = await this.repository.listPostIdsSince(this.config.telegram.sourceChatId, sinceDate.toISOString());
     let deleted = 0;

@@ -24,7 +24,7 @@ if (command === 'session') {
     if (shuttingDown) return;
     shuttingDown = true;
     try {
-      app.publisher.stopBot(signal);
+      await app.publisher.stopBot(signal);
       await app.close();
       process.exit(0);
     } catch (error) {
@@ -34,8 +34,14 @@ if (command === 'session') {
   };
   process.on('SIGINT', () => shutdown('SIGINT'));
   process.on('SIGTERM', () => shutdown('SIGTERM'));
-  await app.publisher.launchBot();
-  console.log('Setup bot is running. Open admin private chat and run /setup.');
+  try {
+    await app.publisher.launchBot();
+    if (!shuttingDown) {
+      console.log('Setup bot is running. Open admin private chat and run /setup.');
+    }
+  } catch (error) {
+    if (!shuttingDown || !isInterruptedLaunchError(error)) throw error;
+  }
 } else if (command === 'daemon') {
   const app = await createApp(config);
   const scheduler = new Scheduler(config, {
@@ -54,7 +60,7 @@ if (command === 'session') {
     shuttingDown = true;
     try {
       scheduler.stop();
-      app.publisher.stopBot(signal);
+      await app.publisher.stopBot(signal);
       await app.close();
       process.exit(0);
     } catch (error) {
@@ -64,8 +70,14 @@ if (command === 'session') {
   };
   process.on('SIGINT', () => shutdown('SIGINT'));
   process.on('SIGTERM', () => shutdown('SIGTERM'));
-  await app.publisher.launchBot();
-  await scheduler.start();
+  try {
+    await app.publisher.launchBot();
+    if (!shuttingDown) {
+      await scheduler.start();
+    }
+  } catch (error) {
+    if (!shuttingDown || !isInterruptedLaunchError(error)) throw error;
+  }
 } else {
   throw new Error(`Unknown command: ${command}`);
 }
@@ -81,4 +93,9 @@ function parseOptionalPositiveInteger(value) {
 
 function parseOptionalList(values) {
   return values.length > 0 ? values : null;
+}
+
+function isInterruptedLaunchError(error) {
+  return ['ECONNRESET', 'ECONNABORTED', 'EPIPE'].includes(error?.code) ||
+    String(error?.message || '').includes('Client network socket disconnected');
 }

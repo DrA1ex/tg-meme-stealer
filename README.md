@@ -93,6 +93,8 @@ Then open a private chat with your bot from `TELEGRAM_ADMIN_ID` and run:
 ```text
 /setup
 /test 30
+/raw 123456
+/test_message 123456
 /preview 5 100
 /done
 ```
@@ -256,7 +258,7 @@ Useful setup commands:
 /settemplate unknownAuthor anonymous
 ```
 
-`/test N` reads the latest `N` source messages, applies the draft parser, and does not write anything to the database. `/preview P M` scans the latest `M` messages, selects up to `P` weekly top posts, and sends them as rich posts with media and captions. `/done` saves the draft into `config.json`. If `config.json` already exists, it is copied to `config.json.old` first.
+`/test N` reads the latest `N` source messages, applies the draft parser, and does not write anything to the database. `/raw MESSAGE_ID` fetches the current source message directly from Telegram and sends the raw object as a JSON file, which helps choose parser paths. `/test_message MESSAGE_ID` also fetches the current source message directly from Telegram, applies the current draft parser to that message, and shows the extracted fields. Neither command reads from SQLite. `/preview P M` scans the latest `M` messages, selects up to `P` weekly top posts, and sends them as rich posts with media and captions. `/done` saves the draft into `config.json`. If `config.json` already exists, it is copied to `config.json.old` first.
 
 ### Recommended Setup Workflow
 
@@ -296,21 +298,28 @@ or:
 /test 30
 ```
 
-6. Add stricter filters or parser rules until the matched posts look correct.
+6. Inspect a specific source message if parser paths are unclear:
 
-7. Preview the post that would win the weekly selection:
+```text
+/raw 123456
+/test_message 123456
+```
+
+7. Add stricter filters or parser rules until the matched posts look correct.
+
+8. Preview the post that would win the weekly selection:
 
 ```text
 /preview 5 100
 ```
 
-8. Save the final config:
+9. Save the final config:
 
 ```text
 /done
 ```
 
-9. Build the first database window with the saved config:
+10. Build the first database window with the saved config:
 
 ```bash
 npm run backfill

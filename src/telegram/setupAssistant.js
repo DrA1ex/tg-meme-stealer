@@ -23,6 +23,8 @@ const SETUP_HELP = [
   '/setdislikes <json rule or array>',
   '/settemplate <key> <value>',
   '/test [message_count]',
+  '/raw <message_id>',
+  '/test_message <message_id>',
   '/preview [post_count] [message_count]',
   '/done',
   '/cancel'
@@ -46,6 +48,8 @@ export class SetupAssistant {
     bot.command('setdislikes', (ctx) => this.withSession(ctx, () => this.setRules(ctx, 'dislikes')));
     bot.command('settemplate', (ctx) => this.withSession(ctx, () => this.setTemplate(ctx)));
     bot.command('test', (ctx) => this.withSession(ctx, () => this.test(ctx)));
+    bot.command('raw', (ctx) => this.withSession(ctx, () => this.raw(ctx)));
+    bot.command('test_message', (ctx) => this.withSession(ctx, () => this.testMessage(ctx)));
     bot.command('preview', (ctx) => this.withSession(ctx, () => this.preview(ctx)));
     bot.command('done', (ctx) => this.withSession(ctx, () => this.done(ctx)));
     bot.command('cancel', (ctx) => this.cancel(ctx));
@@ -53,7 +57,8 @@ export class SetupAssistant {
 
   async start(ctx) {
     this.sessions.set(ctx.from.id, createSetupDraft(this.config));
-    await ctx.reply(`${SETUP_HELP}\n\nCurrent draft:\n${formatDraftConfig(this.getDraft(ctx))}`);
+    await ctx.reply(`${SETUP_HELP}\n\nCurrent draft:`);
+    await replyJsonCode(ctx, JSON.parse(formatDraftConfig(this.getDraft(ctx))));
   }
 
   async mode(ctx) {
@@ -87,6 +92,31 @@ export class SetupAssistant {
     await replyLong(ctx, summarizeParsedPosts(result));
   }
 
+  async raw(ctx) {
+    const messageId = parseMessageId(ctx.message.text);
+    const message = await this.scanner.getMessageById(messageId);
+    if (!message) {
+      await ctx.reply(`Message not found: ${messageId}`);
+      return;
+    }
+    await replyJsonFile(ctx, message, `telegram-message-${messageId}.json`);
+  }
+
+  async testMessage(ctx) {
+    const messageId = parseMessageId(ctx.message.text);
+    const result = await this.scanner.previewMessage(messageId, this.getDraft(ctx));
+    if (!result.message) {
+      await ctx.reply(`Message not found: ${messageId}`);
+      return;
+    }
+    await replyLong(ctx, summarizeParsedPosts({ scanned: 1, posts: result.posts }));
+    if (!result.posts.length) {
+      await ctx.reply('Message did not match the current parser rules.');
+      return;
+    }
+    await replyJsonCode(ctx, result.posts.length === 1 ? result.posts[0] : result.posts);
+  }
+
   async preview(ctx) {
     const { postCount, messageCount } = parsePreviewArgs(ctx.message.text);
     const result = await this.scanner.previewRecent(messageCount, this.getDraft(ctx));
@@ -118,8 +148,9 @@ export class SetupAssistant {
       `Config saved: ${result.configPath}`,
       `Backup: ${result.backupPath}`,
       '',
-      `Final config snippet:\n${formatDraftConfig(draft)}`
+      'Final config snippet:'
     ].join('\n'));
+    await replyJsonCode(ctx, JSON.parse(formatDraftConfig(draft)));
     this.sessions.delete(ctx.from.id);
   }
 
@@ -166,6 +197,15 @@ function parseLimit(text, fallback) {
   return limit;
 }
 
+function parseMessageId(text) {
+  const raw = getArgument(text);
+  const messageId = Number(raw);
+  if (!Number.isInteger(messageId) || messageId < 1) {
+    throw new Error('Message id must be a positive integer');
+  }
+  return messageId;
+}
+
 function parsePreviewArgs(text) {
   const raw = getArgument(text);
   if (!raw) return { postCount: 1, messageCount: 30 };
@@ -196,4 +236,41 @@ async function replyLong(ctx, text) {
   }
 
   if (chunk) await ctx.reply(chunk);
+}
+
+async function replyJsonCode(ctx, value) {
+  const json = stringifyForSetup(value);
+  const chunkSize = 3400;
+  for (let index = 0; index < json.length; index += chunkSize) {
+    const chunk = json.slice(index, index + chunkSize);
+    await ctx.reply(`<pre><code class="language-json">${escapeHtml(chunk)}</code></pre>`, { parse_mode: 'HTML' });
+  }
+}
+
+async function replyJsonFile(ctx, value, filename) {
+  const json = stringifyForSetup(value);
+  await ctx.replyWithDocument({
+    source: Buffer.from(`${json}\n`, 'utf8'),
+    filename
+  });
+}
+
+export function stringifyForSetup(value) {
+  const seen = new WeakSet();
+  return JSON.stringify(value, (key, item) => {
+    if (typeof item === 'bigint') return item.toString();
+    if (typeof item === 'function') return `[Function ${item.name || 'anonymous'}]`;
+    if (item && typeof item === 'object') {
+      if (seen.has(item)) return '[Circular]';
+      seen.add(item);
+    }
+    return item;
+  }, 2) ?? 'null';
+}
+
+function escapeHtml(value) {
+  return String(value)
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;');
 }

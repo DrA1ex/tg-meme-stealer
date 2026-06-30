@@ -14,10 +14,22 @@ export class SelectionPublisher {
     this.config = config;
     this.bot = new Telegraf(config.telegram.botToken);
     this.logger = createLogger(config, 'publisher');
+    this.activeHandlers = 0;
+    this.idleResolvers = [];
     this.configureCommands();
   }
 
   configureCommands() {
+    this.bot.use(async (ctx, next) => {
+      this.activeHandlers += 1;
+      try {
+        await next();
+      } finally {
+        this.activeHandlers -= 1;
+        this.resolveIdle();
+      }
+    });
+
     this.bot.use(async (ctx, next) => {
       if (ctx.from?.id !== Number(this.config.telegram.adminId) || ctx.chat?.type !== 'private') return;
       await next();
@@ -112,6 +124,37 @@ export class SelectionPublisher {
   }
 
   async stopBot(signal = 'SIGTERM') {
-    this.bot.stop(signal);
+    try {
+      this.bot.stop(signal);
+    } catch (error) {
+      if (!isBotAlreadyStoppedError(error)) throw error;
+    }
+    await this.waitForIdle();
   }
+
+  async waitForIdle(timeoutMs = 30000) {
+    if (this.activeHandlers === 0) return;
+
+    const idle = new Promise((resolve) => {
+      this.idleResolvers.push(resolve);
+    });
+    const timeout = new Promise((resolve) => {
+      setTimeout(() => resolve('timeout'), timeoutMs);
+    });
+
+    const result = await Promise.race([idle, timeout]);
+    if (result === 'timeout') {
+      this.logger.warn('Timed out waiting for active bot handlers', { activeHandlers: this.activeHandlers, timeoutMs });
+    }
+  }
+
+  resolveIdle() {
+    if (this.activeHandlers !== 0) return;
+    const resolvers = this.idleResolvers.splice(0);
+    for (const resolve of resolvers) resolve();
+  }
+}
+
+function isBotAlreadyStoppedError(error) {
+  return /not running|not started/i.test(String(error?.message || error));
 }
