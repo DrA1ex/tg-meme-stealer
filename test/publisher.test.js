@@ -470,6 +470,82 @@ test('SelectionPublisher.replyJobs returns admin jobs table', async () => {
   assert.deepEqual(replies[0].options, { parse_mode: 'Markdown' });
 });
 
+test('SelectionPublisher.replyPublications returns recent publications table', async () => {
+  const replies = [];
+  const publisher = new SelectionPublisher({
+    repository: {
+      listRecentPublications: async (options) => {
+        assert.deepEqual(options, { limit: 10 });
+        return [{
+          id: 7,
+          status: 'published',
+          selectionKey: 'best.week',
+          title: 'Best week',
+          sentCount: 10,
+          expectedCount: 10,
+          updatedAt: '2026-06-29T12:00:00.000Z'
+        }];
+      }
+    },
+    mediaDownloader: {},
+    setupAssistant: null,
+    config: config()
+  });
+
+  await publisher.replyPublications({
+    reply: async (message, options) => replies.push({ message, options })
+  });
+
+  assert.equal(replies.length, 1);
+  assert.match(replies[0].message, /Publications/);
+  assert.match(replies[0].message, /best\.week/);
+  assert.match(replies[0].message, /10\/10/);
+  assert.deepEqual(replies[0].options, { parse_mode: 'Markdown' });
+});
+
+test('SelectionPublisher.replyPublication returns publication posts table', async () => {
+  const replies = [];
+  const publisher = new SelectionPublisher({
+    repository: {
+      getPublicationById: async (id) => {
+        assert.equal(id, 7);
+        return {
+          id: 7,
+          status: 'published',
+          selectionKey: 'best.week',
+          title: 'Best week'
+        };
+      },
+      listPublicationPostsDetailed: async (id) => {
+        assert.equal(id, 7);
+        return [{
+          position: 1,
+          messageId: 123,
+          likes: 50,
+          dislikes: 2,
+          sentAt: '2026-06-29T12:00:00.000Z',
+          botMessageId: 456,
+          author: 'Alice'
+        }];
+      }
+    },
+    mediaDownloader: {},
+    setupAssistant: null,
+    config: config()
+  });
+
+  await publisher.replyPublication({
+    message: { text: '/publication 7' },
+    reply: async (message, options) => replies.push({ message, options })
+  });
+
+  assert.equal(replies.length, 1);
+  assert.match(replies[0].message, /Publication #7/);
+  assert.match(replies[0].message, /123/);
+  assert.match(replies[0].message, /Alice/);
+  assert.deepEqual(replies[0].options, { parse_mode: 'Markdown' });
+});
+
 test('SelectionPublisher.processPublicationQueue marks successful request as published', async () => {
   let finished = null;
   const rows = [];

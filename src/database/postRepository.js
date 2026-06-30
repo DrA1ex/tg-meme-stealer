@@ -239,6 +239,21 @@ export class PostRepository {
     return rows[0] ? deserializePublication(rows[0]) : null;
   }
 
+  async getPublicationById(publicationId) {
+    const rows = await this.all(
+      `
+        SELECT id, key, selection_key AS selectionKey, title, period_start AS periodStart, period_end AS periodEnd,
+               status, created_at AS createdAt, updated_at AS updatedAt,
+               finished_at AS finishedAt, last_error AS lastError, data
+        FROM publications
+        WHERE id = ?
+        LIMIT 1
+      `,
+      [publicationId]
+    );
+    return rows[0] ? deserializePublication(rows[0]) : null;
+  }
+
   async getNextPublicationRequest({ requestTtlHours = 12 } = {}) {
     await this.failExpiredPublicationRequests({ requestTtlHours });
     const rows = await this.all(
@@ -289,6 +304,24 @@ export class PostRepository {
       active: activeRows.map(deserializePublicationJob),
       finished: finishedRows.map(deserializePublicationJob)
     };
+  }
+
+  async listRecentPublications({ limit = 10 } = {}) {
+    const rows = await this.all(
+      `
+        SELECT p.id, p.key, p.selection_key AS selectionKey, p.title,
+               p.status, p.created_at AS createdAt, p.updated_at AS updatedAt,
+               p.finished_at AS finishedAt, p.last_error AS lastError, p.data,
+               COUNT(pp.message_id) AS sentCount
+        FROM publications p
+        LEFT JOIN publication_posts pp ON pp.publication_id = p.id
+        GROUP BY p.id
+        ORDER BY COALESCE(p.updated_at, p.finished_at, p.created_at) DESC, p.id DESC
+        LIMIT ?
+      `,
+      [limit]
+    );
+    return rows.map(deserializePublicationJob);
   }
 
   async failExpiredPublicationRequests({ requestTtlHours = 12 } = {}) {
@@ -367,6 +400,31 @@ export class PostRepository {
         FROM publication_posts
         WHERE publication_id = ?
         ORDER BY position ASC
+      `,
+      [publicationId]
+    );
+  }
+
+  async listPublicationPostsDetailed(publicationId) {
+    return this.all(
+      `
+        SELECT pp.publication_id AS publicationId,
+               pp.chat_id AS chatId,
+               pp.message_id AS messageId,
+               pp.position,
+               pp.likes,
+               pp.dislikes,
+               pp.bot_message_id AS botMessageId,
+               pp.sent_at AS sentAt,
+               posts.author,
+               posts.text,
+               posts.message_date AS messageDate
+        FROM publication_posts pp
+        LEFT JOIN posts
+          ON posts.chat_id = pp.chat_id
+         AND posts.message_id = pp.message_id
+        WHERE pp.publication_id = ?
+        ORDER BY pp.position ASC
       `,
       [publicationId]
     );

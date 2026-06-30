@@ -1,6 +1,7 @@
 import { Telegraf } from 'telegraf';
 import { formatSelectionHeader } from '../core/format.js';
 import { formatJobs } from '../core/jobs.js';
+import { formatPublicationPosts, formatPublications } from '../core/publications.js';
 import { createLogger } from '../core/logger.js';
 import { loadSelections } from '../core/selection.js';
 import { buildStats, formatStats } from '../core/stats.js';
@@ -60,12 +61,14 @@ export class SelectionPublisher {
       await next();
     });
 
-    this.bot.start((ctx) => ctx.reply('Available commands: /stats, /jobs, /sync, /backfill, /publish, /setup'));
+    this.bot.start((ctx) => ctx.reply('Available commands: /stats, /jobs, /publications, /publication, /sync, /backfill, /publish, /setup'));
     this.bot.command('stats', async (ctx) => {
       const stats = await buildStats(this.repository, this.config);
       await ctx.reply(formatStats(stats, this.config.templates));
     });
     this.bot.command('jobs', async (ctx) => this.replyJobs(ctx));
+    this.bot.command('publications', async (ctx) => this.replyPublications(ctx));
+    this.bot.command('publication', async (ctx) => this.replyPublication(ctx));
     this.bot.command('sync', async (ctx) => this.runManualSync(ctx));
     this.bot.command('backfill', async (ctx) => this.runManualBackfill(ctx));
     this.bot.command('publish', async (ctx) => this.runManualPublish(ctx));
@@ -290,6 +293,22 @@ export class SelectionPublisher {
     await ctx.reply(formatJobs(jobs), { parse_mode: 'Markdown' });
   }
 
+  async replyPublications(ctx) {
+    const publications = await this.repository.listRecentPublications({ limit: 10 });
+    await ctx.reply(formatPublications(publications), { parse_mode: 'Markdown' });
+  }
+
+  async replyPublication(ctx) {
+    const publicationId = parseRequiredPositiveInteger(getCommandArgument(ctx), 'publication id');
+    const publication = await this.repository.getPublicationById(publicationId);
+    if (!publication) {
+      await ctx.reply(`Publication not found: ${publicationId}`);
+      return;
+    }
+    const posts = await this.repository.listPublicationPostsDetailed(publicationId);
+    await ctx.reply(formatPublicationPosts(publication, posts), { parse_mode: 'Markdown' });
+  }
+
   async runManualSync(ctx) {
     if (!this.syncWorker) {
       await ctx.reply('Sync worker is not available.');
@@ -468,6 +487,12 @@ function parseOptionalPositiveInteger(value) {
   if (!Number.isInteger(number) || number <= 0) {
     throw new Error(`Expected a positive integer, got: ${value}`);
   }
+  return number;
+}
+
+function parseRequiredPositiveInteger(value, label) {
+  const number = parseOptionalPositiveInteger(value);
+  if (number === undefined) throw new Error(`Usage: /publication <${label}>`);
   return number;
 }
 

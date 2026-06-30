@@ -178,6 +178,60 @@ test('PostRepository listPublicationJobs returns active and latest finished jobs
   await fs.rm(dbPath, { force: true });
 });
 
+test('PostRepository lists recent publications and detailed posts', async () => {
+  const dbPath = path.join('/private/tmp', `tg-memes-${process.pid}-${Date.now()}-publication-list.sqlite`);
+  await fs.rm(dbPath, { force: true });
+  const repository = new PostRepository(dbPath);
+  await repository.init();
+
+  const firstPost = {
+    chatId: -1002,
+    messageId: 100,
+    author: 'Alice',
+    text: 'First',
+    likes: 10,
+    dislikes: 1,
+    data: {},
+    messageDate: '2026-06-29T10:00:00.000Z'
+  };
+  await repository.upsertPost(firstPost);
+
+  const older = await repository.createPublication({
+    selectionKey: 'best.day',
+    title: 'Best day',
+    periodStart: '2026-06-28T00:00:00.000Z',
+    periodEnd: '2026-06-29T00:00:00.000Z',
+    status: 'published',
+    posts: [firstPost],
+    data: { count: 1 }
+  });
+  const newer = await repository.tryCreatePublicationRequest({
+    ...publicationClaim(),
+    key: 'publish:best.week:2026-W27',
+    selectionKey: 'best.week',
+    data: { count: 3 }
+  });
+
+  await repository.run('UPDATE publications SET updated_at = ? WHERE id = ?', ['2026-06-29T10:00:00.000Z', older]);
+  await repository.run('UPDATE publications SET updated_at = ? WHERE id = ?', ['2026-06-29T12:00:00.000Z', newer]);
+
+  const publications = await repository.listRecentPublications({ limit: 10 });
+  assert.deepEqual(publications.map((row) => row.id), [newer, older]);
+  assert.equal(publications[0].expectedCount, 3);
+  assert.equal(publications[1].sentCount, 1);
+
+  const publication = await repository.getPublicationById(older);
+  assert.equal(publication.title, 'Best day');
+
+  const posts = await repository.listPublicationPostsDetailed(older);
+  assert.equal(posts.length, 1);
+  assert.equal(posts[0].messageId, 100);
+  assert.equal(posts[0].author, 'Alice');
+
+  await repository.close();
+  await fs.rm(dbPath, { force: true });
+});
+
 function publicationClaim() {
   return {
     key: 'publish:best.week:2026-W27',

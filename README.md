@@ -647,6 +647,8 @@ Commands work only in a private chat with `TELEGRAM_ADMIN_ID`.
 ```text
 /stats
 /jobs
+/publications
+/publication <id>
 /sync
 /backfill
 /publish
@@ -654,6 +656,8 @@ Commands work only in a private chat with `TELEGRAM_ADMIN_ID`.
 ```
 
 `/jobs` shows all active publication jobs and the last 5 terminal jobs, sorted by `updated_at`, including progress and the latest error.
+
+`/publications` shows the last 10 publication records with IDs, status, selection, progress, update time, and title. `/publication <id>` shows the posts for one publication as an aligned table with source message IDs, reactions, send status, bot message ID, and parsed author.
 
 `/sync` runs one recent refresh pass. `/backfill [days]` fills missing historical posts. Both commands use the in-memory sync worker, so overlapping sync/backfill requests are skipped. `/publish [key...]` creates publication request rows immediately. If at least one request was created, the publication worker is asked to process the queue; the worker still runs one job at a time.
 
