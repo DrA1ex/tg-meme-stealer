@@ -47,7 +47,7 @@ if (command === 'session') {
   process.on('SIGINT', () => shutdown('SIGINT'));
   process.on('SIGTERM', () => shutdown('SIGTERM'));
   try {
-    await app.publisher.launchBot();
+    app.publisher.launchBot();
     if (!shuttingDown) {
       logger.info('Setup bot is running', { adminId: config.telegram.adminId });
       console.log('Setup bot is running. Open admin private chat and run /setup.');
@@ -86,7 +86,7 @@ if (command === 'session') {
   process.on('SIGINT', () => shutdown('SIGINT'));
   process.on('SIGTERM', () => shutdown('SIGTERM'));
   try {
-    await app.publisher.launchBot();
+    app.publisher.launchBot();
     if (!shuttingDown) {
       logger.info('Daemon bot launched, starting scheduler');
       await scheduler.start();

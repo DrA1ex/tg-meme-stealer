@@ -137,13 +137,19 @@ export class SelectionPublisher {
     });
   }
 
-  async launchBot() {
+  launchBot() {
     this.logger.info('Launching bot polling', {
       adminId: this.config.telegram.adminId,
       publishChannelId: this.config.telegram.publishChannelId
     });
-    this.bot.launch();
-    this.logger.info('Bot polling started');
+    void this.bot.launch()
+      .then(() => {
+        this.logger.info('Bot polling finished');
+      })
+      .catch((error) => {
+        this.logger.error('Bot polling failed', { error: error?.message || String(error) });
+      });
+    this.logger.info('Bot polling launch requested');
   }
 
   async stopBot(signal = 'SIGTERM') {

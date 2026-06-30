@@ -20,13 +20,13 @@ export class Scheduler {
       syncIntervalHours: this.config.schedule.syncIntervalHours || this.config.schedule.intervalHours || 24,
       runOnStart: Boolean(this.config.schedule.runOnStart)
     });
-    if (this.config.schedule.runOnStart) {
-      this.logger.info('Running startup sync');
-      await this.run('sync', () => this.handlers.sync());
-    }
     this.scheduleSync();
     this.schedulePublications();
     this.logger.info('Scheduler started', { timers: this.timers.size });
+    if (this.config.schedule.runOnStart) {
+      this.logger.info('Running startup sync');
+      void this.run('sync', () => this.handlers.sync());
+    }
   }
 
   scheduleSync() {

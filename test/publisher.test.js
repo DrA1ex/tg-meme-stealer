@@ -40,6 +40,26 @@ test('SelectionPublisher.waitForIdle times out', async () => {
   assert.equal(publisher.activeHandlers, 1);
 });
 
+test('SelectionPublisher.launchBot does not wait for polling promise', () => {
+  const publisher = new SelectionPublisher({
+    repository: {},
+    mediaDownloader: {},
+    setupAssistant: null,
+    config: config()
+  });
+  let launched = false;
+  publisher.bot = {
+    launch: () => {
+      launched = true;
+      return new Promise(() => {});
+    }
+  };
+
+  publisher.launchBot();
+
+  assert.equal(launched, true);
+});
+
 function config() {
   return {
     telegram: {
