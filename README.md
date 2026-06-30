@@ -167,6 +167,8 @@ Common options:
     "initialScanDays": 60,
     "refreshRecentDays": 7,
     "pageSize": 100,
+    "intervalHours": 24,
+    "runOnStart": true,
     "throttle": {
       "enabled": true,
       "historyMinMs": 800,
@@ -200,13 +202,13 @@ Common options:
     }
   },
   "schedule": {
-    "timezone": "Europe/Moscow",
-    "syncIntervalHours": 24
+    "enabled": true,
+    "timezone": "Europe/Moscow"
   }
 }
 ```
 
-`logging.level` can be `debug`, `info`, `warn`, `error`, or `silent`. Sync logs include the scan window, each Telegram history request, fetched message counts, matched post counts, saved rows, skipped old posts, and deleted-post cleanup.
+`logging.level` can be `debug`, `info`, `warn`, `error`, or `silent`. Sync logs include the scan window, each Telegram history request, fetched message counts, matched post counts, saved rows, skipped old posts, and deleted-post cleanup. `sync.runOnStart` controls whether the daemon runs one sync immediately after startup. `sync.intervalHours` controls the recurring sync interval. Set `sync.runOnStart` to `false` to disable the initial startup sync.
 
 Publication schedules use `schedule.timezone`. Each enabled selection under `publish.selections` has its own local `time`, `limit`, and header `template`. Daily selections run once per day, weekly selections run once per week, and monthly selections run once per month. The `day` period uses `windowHours`; controversial selections also use `threshold`. A threshold of `0.3` means likes and dislikes may differ by at most 30% of the larger reaction count.
 
@@ -594,7 +596,7 @@ Run the daemon for normal operation:
 npm start
 ```
 
-The daemon starts the admin bot, runs sync on startup when `schedule.runOnStart` is enabled, schedules sync by interval, and schedules each publication type by local time. On startup it also checks for recently missed publication times. If a scheduled run was missed while the daemon was stopped and it is still inside `publish.requestTtlHours`, the daemon creates the publication request and runs the publication worker. Older missed runs are skipped.
+The daemon starts the admin bot, runs sync on startup when `sync.runOnStart` is enabled, schedules sync by `sync.intervalHours`, and schedules each publication type by local time. On startup it also checks for recently missed publication times. If a scheduled run was missed while the daemon was stopped and it is still inside `publish.requestTtlHours`, the daemon creates the publication request and runs the publication worker. Older missed runs are skipped.
 
 ## Running With PM2
 

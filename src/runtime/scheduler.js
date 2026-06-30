@@ -16,14 +16,14 @@ export class Scheduler {
     }
     this.logger.info('Scheduler starting', {
       timezone: this.config.schedule.timezone,
-      syncIntervalHours: this.config.schedule.syncIntervalHours || this.config.schedule.intervalHours || 24,
-      runOnStart: Boolean(this.config.schedule.runOnStart)
+      syncIntervalHours: this.config.sync.intervalHours,
+      runOnStart: Boolean(this.config.sync.runOnStart)
     });
     this.scheduleSync();
     this.schedulePublicationWorker();
     this.schedulePublications();
     this.logger.info('Scheduler started', { timers: this.timers.size });
-    if (this.config.schedule.runOnStart) {
+    if (this.config.sync.runOnStart) {
       this.logger.info('Running startup sync');
       void runHandler(this.handlers.sync)
         .then(() => this.planMissedPublications());
@@ -33,7 +33,7 @@ export class Scheduler {
   }
 
   scheduleSync() {
-    const intervalMs = (this.config.schedule.syncIntervalHours || this.config.schedule.intervalHours || 24) * 60 * 60 * 1000;
+    const intervalMs = this.config.sync.intervalHours * 60 * 60 * 1000;
     const nextRunAt = new Date(Date.now() + intervalMs);
     this.logger.info('Scheduled sync', {
       intervalHours: intervalMs / 60 / 60 / 1000,

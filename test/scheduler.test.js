@@ -16,10 +16,9 @@ test('Scheduler.start does not wait for startup sync before returning', async ()
     {
       schedule: {
         enabled: true,
-        runOnStart: true,
-        syncIntervalHours: 24,
         timezone: 'Asia/Yekaterinburg'
       },
+      sync: { runOnStart: true, intervalHours: 24 },
       publish: { selections: {} },
       logging: { level: 'silent' }
     },
@@ -58,10 +57,9 @@ test('Scheduler skips timer sync while startup sync is still running', async () 
     {
       schedule: {
         enabled: true,
-        runOnStart: true,
-        syncIntervalHours: 24,
         timezone: 'Asia/Yekaterinburg'
       },
+      sync: { runOnStart: true, intervalHours: 24 },
       publish: { selections: {} },
       logging: { level: 'silent' }
     },
@@ -116,10 +114,9 @@ test('Scheduler plans missed publications only after startup sync completes', as
     {
       schedule: {
         enabled: true,
-        runOnStart: true,
-        syncIntervalHours: 24,
         timezone: 'Asia/Yekaterinburg'
       },
+      sync: { runOnStart: true, intervalHours: 24 },
       publish: {
         requestTtlHours: 12,
         selections: {

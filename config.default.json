@@ -13,6 +13,8 @@
     "refreshRecentDays": 7,
     "pageSize": 100,
     "mediaDir": "tmp/media",
+    "intervalHours": 24,
+    "runOnStart": true,
     "throttle": {
       "enabled": true,
       "historyMinMs": 800,
@@ -135,8 +137,6 @@
   },
   "schedule": {
     "enabled": true,
-    "timezone": "Europe/Moscow",
-    "syncIntervalHours": 24,
-    "runOnStart": true
+    "timezone": "Europe/Moscow"
   }
 }
