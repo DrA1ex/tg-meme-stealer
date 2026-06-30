@@ -70,13 +70,6 @@ export class PostRepository {
         FOREIGN KEY (publication_id) REFERENCES publications(id) ON DELETE CASCADE
       )
     `);
-    await this.db.exec(`
-      CREATE TABLE IF NOT EXISTS job_locks (
-        lock_key TEXT PRIMARY KEY,
-        locked_at TEXT NOT NULL,
-        owner TEXT NOT NULL
-      )
-    `);
   }
 
   async upsertPost(post) {
@@ -382,28 +375,6 @@ export class PostRepository {
         new Date().toISOString()
       ]
     );
-  }
-
-  async tryAcquireJobLock(lockKey, { staleMs = 6 * 60 * 60 * 1000, owner = process.pid } = {}) {
-    const now = new Date();
-    const nowIso = now.toISOString();
-    const staleBeforeIso = new Date(now.getTime() - staleMs).toISOString();
-    await this.run('DELETE FROM job_locks WHERE lock_key = ? AND locked_at < ?', [lockKey, staleBeforeIso]);
-
-    try {
-      await this.run(
-        'INSERT INTO job_locks (lock_key, locked_at, owner) VALUES (?, ?, ?)',
-        [lockKey, nowIso, String(owner)]
-      );
-      return true;
-    } catch (error) {
-      if (isUniqueConstraintError(error)) return false;
-      throw error;
-    }
-  }
-
-  async releaseJobLock(lockKey) {
-    await this.run('DELETE FROM job_locks WHERE lock_key = ?', [lockKey]);
   }
 
   async run(sql, params = []) {

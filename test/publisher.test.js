@@ -128,27 +128,51 @@ test('SelectionPublisher keeps request resumable when Telegram send fails', asyn
   assert.equal(errorId, 42);
 });
 
-test('SelectionPublisher.unlockSyncLock releases durable sync lock', async () => {
-  let releasedLockKey = '';
+test('SelectionPublisher.runManualSync runs sync worker and replies with result', async () => {
   const replies = [];
   const publisher = new SelectionPublisher({
-    repository: {
-      releaseJobLock: async (lockKey) => {
-        releasedLockKey = lockKey;
-      }
-    },
+    repository: {},
     mediaDownloader: {},
     setupAssistant: null,
+    syncWorker: {
+      sync: async (source) => {
+        assert.equal(source, 'admin');
+        return { isInitial: false, seen: 10, saved: 3, deleted: 1 };
+      }
+    },
     config: config()
   });
 
-  await publisher.unlockSyncLock({
+  await publisher.runManualSync({
     from: { id: 1 },
     reply: async (message) => replies.push(message)
   });
 
-  assert.equal(releasedLockKey, 'telegram:-1002:sync');
-  assert.deepEqual(replies, ['Sync lock released: telegram:-1002:sync']);
+  assert.deepEqual(replies, ['Sync complete: initial=false, seen=10, saved=3, deleted=1']);
+});
+
+test('SelectionPublisher.runManualBackfill runs sync worker with optional days', async () => {
+  const replies = [];
+  const publisher = new SelectionPublisher({
+    repository: {},
+    mediaDownloader: {},
+    setupAssistant: null,
+    syncWorker: {
+      backfill: async (days, source) => {
+        assert.equal(days, 90);
+        assert.equal(source, 'admin');
+        return { days: 90, seen: 20, added: 4, updated: 5, skippedExistingOld: 6, deleted: 1 };
+      }
+    },
+    config: config()
+  });
+
+  await publisher.runManualBackfill({
+    message: { text: '/backfill 90' },
+    reply: async (message) => replies.push(message)
+  });
+
+  assert.deepEqual(replies, ['Backfill complete: days=90, seen=20, added=4, updated=5, skippedExistingOld=6, deleted=1']);
 });
 
 test('SelectionPublisher.replyJobs returns admin jobs table', async () => {

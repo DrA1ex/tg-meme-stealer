@@ -1,6 +1,6 @@
 import { loadConfig } from './src/config/index.js';
 import { createLogger } from './src/core/logger.js';
-import { createApp, runBackfill, runPublish, runSync, runSyncAndPublish } from './src/runtime/app.js';
+import { createApp, runPublish } from './src/runtime/app.js';
 import { Scheduler } from './src/runtime/scheduler.js';
 import { createSession } from './src/telegram/userClient.js';
 
@@ -19,14 +19,8 @@ logger.info('Command starting', {
 if (command === 'session') {
   const sessionPath = await createSession(config);
   console.log(`Session saved: ${sessionPath}`);
-} else if (command === 'sync') {
-  await runSync(config);
-} else if (command === 'backfill') {
-  await runBackfill(config, parseOptionalPositiveInteger(process.argv[3]));
 } else if (command === 'publish') {
   await runPublish(config, parseOptionalList(process.argv.slice(3)));
-} else if (command === 'sync-and-publish') {
-  await runSyncAndPublish(config);
 } else if (command === 'setup') {
   const app = await createApp(config);
   let shuttingDown = false;
@@ -59,7 +53,7 @@ if (command === 'session') {
   const app = await createApp(config);
   const scheduler = new Scheduler(config, {
     sync: async () => {
-      const sync = await app.scanner.sync();
+      const sync = await app.syncWorker.sync('schedule');
       console.log(`Sync complete: initial=${sync.isInitial}, seen=${sync.seen}`);
     },
     publish: async (key, now = new Date()) => {
@@ -99,15 +93,6 @@ if (command === 'session') {
   }
 } else {
   throw new Error(`Unknown command: ${command}`);
-}
-
-function parseOptionalPositiveInteger(value) {
-  if (value === undefined) return undefined;
-  const number = Number(value);
-  if (!Number.isInteger(number) || number <= 0) {
-    throw new Error(`Expected a positive integer, got: ${value}`);
-  }
-  return number;
 }
 
 function parseOptionalList(values) {

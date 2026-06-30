@@ -8,10 +8,11 @@ import { withBotApiRetry } from './retry.js';
 import { sendRichPost } from './richPost.js';
 
 export class SelectionPublisher {
-  constructor({ repository, mediaDownloader, setupAssistant, config }) {
+  constructor({ repository, mediaDownloader, setupAssistant, syncWorker = null, config }) {
     this.repository = repository;
     this.mediaDownloader = mediaDownloader;
     this.setupAssistant = setupAssistant;
+    this.syncWorker = syncWorker;
     this.config = config;
     this.bot = new Telegraf(config.telegram.botToken);
     this.logger = createLogger(config, 'publisher');
@@ -55,13 +56,14 @@ export class SelectionPublisher {
       await next();
     });
 
-    this.bot.start((ctx) => ctx.reply('Available commands: /stats, /jobs, /setup, /unlock_sync'));
+    this.bot.start((ctx) => ctx.reply('Available commands: /stats, /jobs, /sync, /backfill, /setup'));
     this.bot.command('stats', async (ctx) => {
       const stats = await buildStats(this.repository, this.config);
       await ctx.reply(formatStats(stats, this.config.templates));
     });
     this.bot.command('jobs', async (ctx) => this.replyJobs(ctx));
-    this.bot.command('unlock_sync', async (ctx) => this.unlockSyncLock(ctx));
+    this.bot.command('sync', async (ctx) => this.runManualSync(ctx));
+    this.bot.command('backfill', async (ctx) => this.runManualBackfill(ctx));
     this.setupAssistant?.register(this.bot);
   }
 
@@ -217,19 +219,28 @@ export class SelectionPublisher {
     });
   }
 
-  async unlockSyncLock(ctx) {
-    const lockKey = getSyncLockKey(this.config);
-    await this.repository.releaseJobLock(lockKey);
-    this.logger.warn('Sync lock released by admin command', {
-      lockKey,
-      adminId: ctx.from?.id
-    });
-    await ctx.reply(`Sync lock released: ${lockKey}`);
-  }
-
   async replyJobs(ctx) {
     const jobs = await this.repository.listPublicationJobs({ finishedLimit: 5 });
     await ctx.reply(formatJobs(jobs), { parse_mode: 'Markdown' });
+  }
+
+  async runManualSync(ctx) {
+    if (!this.syncWorker) {
+      await ctx.reply('Sync worker is not available.');
+      return;
+    }
+    const result = await this.syncWorker.sync('admin');
+    await ctx.reply(formatSyncResult(result));
+  }
+
+  async runManualBackfill(ctx) {
+    if (!this.syncWorker) {
+      await ctx.reply('Sync worker is not available.');
+      return;
+    }
+    const days = parseOptionalPositiveInteger(getCommandArgument(ctx));
+    const result = await this.syncWorker.backfill(days, 'admin');
+    await ctx.reply(formatBackfillResult(result));
   }
 
   launchBot() {
@@ -291,10 +302,6 @@ function getCommandName(ctx) {
   return match?.[1] || '';
 }
 
-function getSyncLockKey(config) {
-  return `telegram:${config.telegram.sourceChatId}:sync`;
-}
-
 function getPublicationKey(selection, config) {
   return [
     'publish',
@@ -344,4 +351,35 @@ function getPublicationRequestTtlHours(config) {
 function getBotMessageId(result) {
   if (Array.isArray(result)) return result[0]?.message_id || result[0]?.messageId || null;
   return result?.message_id || result?.messageId || null;
+}
+
+function getCommandArgument(ctx) {
+  const text = ctx.message?.text || ctx.update?.message?.text || '';
+  return text.trim().split(/\s+/)[1];
+}
+
+function parseOptionalPositiveInteger(value) {
+  if (value === undefined || value === null || value === '') return undefined;
+  const number = Number(value);
+  if (!Number.isInteger(number) || number <= 0) {
+    throw new Error(`Expected a positive integer, got: ${value}`);
+  }
+  return number;
+}
+
+function formatSyncResult(result) {
+  if (result?.skipped) return `Sync skipped: ${result.reason}`;
+  return `Sync complete: initial=${result.isInitial}, seen=${result.seen}, saved=${result.saved}, deleted=${result.deleted}`;
+}
+
+function formatBackfillResult(result) {
+  if (result?.skipped) return `Backfill skipped: ${result.reason}`;
+  return [
+    `Backfill complete: days=${result.days}`,
+    `seen=${result.seen}`,
+    `added=${result.added}`,
+    `updated=${result.updated}`,
+    `skippedExistingOld=${result.skippedExistingOld}`,
+    `deleted=${result.deleted}`
+  ].join(', ');
 }

@@ -101,15 +101,21 @@ Then open a private chat with your bot from `TELEGRAM_ADMIN_ID` and run:
 
 After `/done`, stop setup mode with `Ctrl+C` or keep it running and open another terminal for the next commands.
 
-6. Build the first database window:
+6. Start the scheduled app:
 
 ```bash
-npm run backfill
+npm start
 ```
 
-`backfill` scans `sync.initialScanDays`, adds missing old posts, and updates existing posts only inside `sync.refreshRecentDays`.
+7. Build the first database window from the admin bot:
 
-7. Check the admin stats:
+```text
+/backfill
+```
+
+`/backfill` scans `sync.initialScanDays`, adds missing old posts, and updates existing posts only inside `sync.refreshRecentDays`.
+
+8. Check the admin stats:
 
 ```text
 /stats
@@ -117,7 +123,7 @@ npm run backfill
 
 `/stats` works while `npm run setup` or `npm start` is running, because both start the admin bot.
 
-8. Publish once manually:
+9. Publish once manually:
 
 ```bash
 npm run publish
@@ -131,13 +137,7 @@ npm run publish -- week
 npm run publish -- day
 ```
 
-9. Start the scheduled app:
-
-```bash
-npm start
-```
-
-For later maintenance, usually run only `npm start`. Use `npm run sync` for one refresh pass, `npm run backfill -- 90` to fill a larger historical window, `npm run publish -- week` to manually publish one selection, and `npm run setup` when parser or template rules need to be changed.
+For later maintenance, usually run only `npm start`. Use admin `/sync` for one refresh pass, `/backfill 90` to fill a larger historical window, `npm run publish -- week` to manually publish one selection, and `npm run setup` when parser or template rules need to be changed.
 
 ## Configuration
 
@@ -160,7 +160,6 @@ Common options:
     "initialScanDays": 60,
     "refreshRecentDays": 7,
     "pageSize": 100,
-    "lockTtlMinutes": 360,
     "throttle": {
       "enabled": true,
       "historyMinMs": 800,
@@ -204,7 +203,7 @@ Common options:
 
 Publication schedules use `schedule.timezone`. Each enabled selection under `publish.selections` has its own local `time`, `limit`, and header `template`. Daily selections run once per day, weekly selections run once per week, and monthly selections run once per month. The `day` period uses `windowHours`; controversial selections also use `threshold`. A threshold of `0.3` means likes and dislikes may differ by at most 30% of the larger reaction count.
 
-Publishing has two phases. The scheduler creates publication requests, then a worker sends queued requests one by one. `publish.workerIntervalMinutes` controls how often the worker checks the queue. `publish.requestTtlHours` controls how long a `created` or `running` request may wait before the worker marks it `failed`; the default is 12 hours. `sync.lockTtlMinutes` protects sync/backfill from running concurrently across restarts or multiple processes.
+Publishing has two phases. The scheduler creates publication requests, then a worker sends queued requests one by one. `publish.workerIntervalMinutes` controls how often the worker checks the queue. `publish.requestTtlHours` controls how long a `created` or `running` request may wait before the worker marks it `failed`; the default is 12 hours. Sync and backfill are serialized in memory by one sync worker; overlapping sync/backfill requests are skipped.
 
 ## Userbot Login
 
@@ -322,10 +321,10 @@ To exclude posts containing any marker, use a negated `contains` filter:
 /done
 ```
 
-9. Build the first database window with the saved config:
+9. Build the first database window with the saved config from the admin bot:
 
-```bash
-npm run backfill
+```text
+/backfill
 ```
 
 ## Parsing Rules
@@ -527,25 +526,25 @@ Start setup mode for parser and template tuning:
 npm run setup
 ```
 
-Run one recent refresh pass. This updates posts inside `sync.refreshRecentDays` and removes recently deleted source posts from the local database:
+Run one recent refresh pass from the admin bot. This updates posts inside `sync.refreshRecentDays` and removes recently deleted source posts from the local database:
 
-```bash
-npm run sync
+```text
+/sync
 ```
 
-Backfill missing posts for `sync.initialScanDays` without rewriting older existing rows:
+Backfill missing posts for `sync.initialScanDays` without rewriting older existing rows from the admin bot:
 
-```bash
-npm run backfill
+```text
+/backfill
 ```
 
 Backfill a custom number of days:
 
-```bash
-npm run backfill -- 90
+```text
+/backfill 90
 ```
 
-Backfill adds missing posts from the requested period. Existing posts are updated only inside `sync.refreshRecentDays`; older existing rows are left unchanged.
+Backfill adds missing posts from the requested period. Existing posts are updated only inside `sync.refreshRecentDays`; older existing rows are left unchanged. If sync or backfill is already running, the new request is skipped.
 
 Run one publish cycle without running sync first. Without arguments this publishes all enabled selections.
 
@@ -573,12 +572,6 @@ Multiple selection types can be passed in one command:
 
 ```bash
 npm run publish -- best.week controversial.week
-```
-
-Run sync and publish once:
-
-```bash
-npm run once
 ```
 
 Run the daemon for normal operation:
@@ -638,13 +631,14 @@ Commands work only in a private chat with `TELEGRAM_ADMIN_ID`.
 ```text
 /stats
 /jobs
+/sync
+/backfill
 /setup
-/unlock_sync
 ```
 
 `/jobs` shows all active publication jobs and the last 5 terminal jobs, sorted by `updated_at`, including progress and the latest error.
 
-`/unlock_sync` manually releases the durable synchronization lock. Use it only after an interrupted process left sync/backfill locked and you do not want to wait for the lock TTL.
+`/sync` runs one recent refresh pass. `/backfill [days]` fills missing historical posts. Both commands use the in-memory sync worker, so overlapping sync/backfill requests are skipped.
 
 Other users and non-private chats are ignored.
 
@@ -661,9 +655,8 @@ Main tables:
 - `posts`
 - `publications`
 - `publication_posts`
-- `job_locks`
 
-Publication rows use a durable `key` per selection period. Scheduled publishing creates `created` requests; the worker sends the header, switches the request to `running`, records each sent post in `publication_posts`, and finally marks the request `published`. If the process restarts while a request is `running`, the worker resumes from the first post that was not recorded as sent. Expired requests are marked `failed`. Sync/backfill uses `job_locks` to avoid concurrent Telegram scans. `/unlock_sync` can manually clear the sync lock when needed.
+Publication rows use a durable `key` per selection period. Scheduled publishing creates `created` requests; the worker sends the header, switches the request to `running`, records each sent post in `publication_posts`, and finally marks the request `published`. If the process restarts while a request is `running`, the worker resumes from the first post that was not recorded as sent. Expired requests are marked `failed`.
 
 Media is not stored permanently. The database stores Telegram media references in `data.media`; media is downloaded to `sync.mediaDir` only for preview or publishing and deleted immediately after the rich post is sent or the send attempt fails.
 

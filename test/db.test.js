@@ -178,26 +178,6 @@ test('PostRepository listPublicationJobs returns active and latest finished jobs
   await fs.rm(dbPath, { force: true });
 });
 
-
-test('PostRepository job locks prevent parallel sync and can be released', async () => {
-  const dbPath = path.join('/private/tmp', `tg-memes-${process.pid}-${Date.now()}-locks.sqlite`);
-  await fs.rm(dbPath, { force: true });
-  const first = new PostRepository(dbPath);
-  const second = new PostRepository(dbPath);
-  await first.init();
-  await second.init();
-
-  assert.equal(await first.tryAcquireJobLock('telegram:-1001:sync'), true);
-  assert.equal(await second.tryAcquireJobLock('telegram:-1001:sync'), false);
-
-  await first.releaseJobLock('telegram:-1001:sync');
-  assert.equal(await second.tryAcquireJobLock('telegram:-1001:sync'), true);
-
-  await first.close();
-  await second.close();
-  await fs.rm(dbPath, { force: true });
-});
-
 function publicationClaim() {
   return {
     key: 'publish:best.week:2026-W27',
