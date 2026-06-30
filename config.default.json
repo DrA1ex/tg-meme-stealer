@@ -19,9 +19,6 @@
       "historyMaxMs": 1800,
       "mediaMinMs": 300,
       "mediaMaxMs": 900
-    },
-    "source": {
-      "mode": "user"
     }
   },
   "parsing": {

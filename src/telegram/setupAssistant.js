@@ -7,7 +7,6 @@ import {
   saveDraftConfig,
   selectWeekPreviewPosts,
   setParsingRules,
-  setSourceMode,
   setTemplateValue,
   summarizeParsedPosts
 } from '../core/setupConfig.js';
@@ -15,7 +14,6 @@ import { sendRichPost } from './richPost.js';
 
 const SETUP_HELP = [
   'Setup mode commands:',
-  '/mode user|all',
   '/setfilter <json rule or array>',
   '/addfilter <json rule or array>',
   '/setauthor <json rule or array>',
@@ -41,7 +39,6 @@ export class SetupAssistant {
 
   register(bot) {
     bot.command('setup', (ctx) => this.start(ctx));
-    bot.command('mode', (ctx) => this.withSession(ctx, () => this.mode(ctx)));
     bot.command('setfilter', (ctx) => this.withSession(ctx, () => this.setRules(ctx, 'filters')));
     bot.command('addfilter', (ctx) => this.withSession(ctx, () => this.addRules(ctx, 'filters')));
     bot.command('setauthor', (ctx) => this.withSession(ctx, () => this.setRules(ctx, 'author')));
@@ -61,12 +58,6 @@ export class SetupAssistant {
     this.sessions.set(ctx.from.id, createSetupDraft(this.config));
     await ctx.reply(`${SETUP_HELP}\n\nCurrent draft:`);
     await replyJsonCode(ctx, JSON.parse(formatDraftConfig(this.getDraft(ctx))));
-  }
-
-  async mode(ctx) {
-    const mode = getArgument(ctx.message.text);
-    setSourceMode(this.getDraft(ctx), mode);
-    await ctx.reply(`Mode set: ${mode}`);
   }
 
   async setRules(ctx, key) {

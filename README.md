@@ -46,13 +46,12 @@ Create `.env` from `.env.example` and fill in:
 TELEGRAM_API_ID=123456
 TELEGRAM_API_HASH=your_api_hash
 TELEGRAM_SOURCE_CHAT_ID=-1001234567890
-TELEGRAM_TARGET_USER_ID=123456789
 TELEGRAM_ADMIN_ID=123456789
 TELEGRAM_PUBLISH_CHANNEL_ID=-1009876543210
 TELEGRAM_BOT_TOKEN=123456:bot_token
 ```
 
-`TELEGRAM_TARGET_USER_ID` is required when `sync.source.mode` is `"user"`. If you want to scan matching posts from every sender, set `sync.source.mode` to `"all"` in `config.json`.
+Message eligibility is controlled only by `parsing.filters`. To scan posts from one sender, add a filter that matches a sender or message field discovered with `/raw` or `/debug`.
 
 ## Launch Flow
 
@@ -167,9 +166,6 @@ Common options:
       "historyMaxMs": 1800,
       "mediaMinMs": 300,
       "mediaMaxMs": 900
-    },
-    "source": {
-      "mode": "user"
     }
   },
   "publish": {
@@ -247,9 +243,9 @@ Then open a private chat with your bot as `TELEGRAM_ADMIN_ID` and run:
 Useful setup commands:
 
 ```text
-/mode user
-/mode all
 /setfilter {"source":"message","transform":"hasContent"}
+/setfilter [{"source":"message","transform":"hasContent"},{"source":"sender","path":"id","transform":"equals","value":123456789}]
+/addfilter {"source":"message","path":"message","transform":"contains","values":["/skip","#ignore"],"negate":true}
 /addfilter {"source":"message","path":"message","regex":"#meme","transform":"bool"}
 /setauthor {"source":"message","path":"message","regex":"(?:^|\\n)By\\s+(.+?)(?:\\n|$)","group":1}
 /setlikes {"source":"message","path":"replyMarkup.rows[].buttons[].text","regex":"👍\\s*([\\d\\s,.]+[km]?)","group":1,"transform":"count","aggregate":"sum"}
@@ -275,31 +271,31 @@ npm run setup
 /setup
 ```
 
-3. Choose who to scan:
-
-```text
-/mode user
-```
-
-or:
-
-```text
-/mode all
-```
-
-4. Start with a broad filter:
+3. Start with a broad filter:
 
 ```text
 /setfilter {"source":"message","transform":"hasContent"}
 ```
 
-5. Test recent messages:
+To keep only one sender, add a second filter that matches a field from `/raw` or `/debug`:
+
+```text
+/setfilter [{"source":"message","transform":"hasContent"},{"source":"sender","path":"id","transform":"equals","value":123456789}]
+```
+
+To exclude posts containing any marker, use a negated `contains` filter:
+
+```text
+/addfilter {"source":"message","path":"message","transform":"contains","values":["/skip","#ignore"],"negate":true}
+```
+
+4. Test recent messages:
 
 ```text
 /test 30
 ```
 
-6. Inspect a specific source message if parser paths are unclear:
+5. Inspect a specific source message if parser paths are unclear:
 
 ```text
 /raw 123456
@@ -307,21 +303,21 @@ or:
 /debug 123456
 ```
 
-7. Add stricter filters or parser rules until the matched posts look correct.
+6. Add stricter filters or parser rules until the matched posts look correct.
 
-8. Preview the post that would win the weekly selection:
+7. Preview the post that would win the weekly selection:
 
 ```text
 /preview 5 100
 ```
 
-9. Save the final config:
+8. Save the final config:
 
 ```text
 /done
 ```
 
-10. Build the first database window with the saved config:
+9. Build the first database window with the saved config:
 
 ```bash
 npm run backfill
@@ -371,7 +367,12 @@ Filters return true or false. Useful transforms:
 - `isVideo`: true for video messages.
 - `exists`: true when the value exists and is not empty.
 - `notEmpty`: true when the string is not empty.
+- `contains`: true when the value contains any configured `value` or `values` item.
+- `equals`: true when the value equals any configured `value` or `values` item.
+- `in`: alias for `equals`.
 - `bool`: true for non-empty strings, non-zero numbers, and `true`.
+
+Any filter can be inverted with `"negate": true` or `"not": true`. `contains`, `equals`, and `in` are case-insensitive by default; add `"caseSensitive": true` for strict matching.
 
 Filter examples:
 
@@ -381,6 +382,8 @@ Filter examples:
 /setfilter {"source":"message","transform":"isPhoto"}
 /setfilter {"source":"message","transform":"isVideo"}
 /setfilter {"source":"message","path":"text","regex":"#meme","transform":"bool"}
+/setfilter {"source":"sender","path":"id","transform":"equals","value":123456789}
+/addfilter {"source":"message","path":"message","transform":"contains","values":["/skip","#ignore"],"negate":true}
 ```
 
 Require both media and a hashtag:

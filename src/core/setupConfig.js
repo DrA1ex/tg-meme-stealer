@@ -7,21 +7,10 @@ const PARSING_KEYS = new Set(['filters', 'author', 'likes', 'dislikes']);
 
 export function createSetupDraft(config) {
   return {
-    sync: {
-      source: structuredClone(config.sync?.source || { mode: 'user' })
-    },
     parsing: structuredClone(config.parsing || {}),
     publish: structuredClone(config.publish || {}),
     templates: structuredClone(config.templates || {})
   };
-}
-
-export function setSourceMode(draft, mode) {
-  if (!['user', 'all'].includes(mode)) {
-    throw new Error('Mode must be "user" or "all"');
-  }
-  draft.sync.source.mode = mode;
-  return draft;
 }
 
 export function setParsingRules(draft, key, rules) {
@@ -44,9 +33,6 @@ export function parseJsonArgument(text) {
 
 export function buildDraftConfig(draft) {
   return {
-    sync: {
-      source: draft.sync.source
-    },
     parsing: draft.parsing,
     publish: draft.publish,
     templates: draft.templates

@@ -28,14 +28,19 @@ test('parseReactions reads likes and dislikes from inline buttons', () => {
   assert.deepEqual(reactions, { likes: 14, dislikes: 3 });
 });
 
-test('parseMessagesToPosts filters target user and groups photo albums', () => {
+test('parseMessagesToPosts filters sender through parsing rules and groups photo albums', () => {
   const messages = [
     message({ id: 10, groupedId: 'album-1', text: 'By Alice\ncaption', buttons: [['👍 8', '👎 1']] }),
     message({ id: 11, groupedId: 'album-1', text: '' }),
     message({ id: 12, userId: 999, text: 'By Bob', buttons: [['👍 100']] })
   ];
 
-  const posts = parseMessagesToPosts(messages, { chatId: -1001, targetUserId: 123 });
+  const posts = parseMessagesToPosts(messages, {
+    chatId: -1001,
+    parsing: {
+      filters: [{ source: 'message', path: 'senderId', transform: 'equals', value: 123 }]
+    }
+  });
 
   assert.equal(posts.length, 1);
   assert.equal(posts[0].messageId, 10);
@@ -46,7 +51,7 @@ test('parseMessagesToPosts filters target user and groups photo albums', () => {
   assert.equal(posts[0].data.images, undefined);
 });
 
-test('parseMessagesToPosts supports all mode, sender author and text-only posts', () => {
+test('parseMessagesToPosts supports sender author and text-only posts', () => {
   const messages = [
     message({ id: 20, userId: 999, photo: false, text: 'plain post', buttons: [['👍 2']] })
   ];
@@ -54,8 +59,6 @@ test('parseMessagesToPosts supports all mode, sender author and text-only posts'
 
   const posts = parseMessagesToPosts(messages, {
     chatId: -1001,
-    targetUserId: 123,
-    sourceMode: 'all',
     senderById,
     parsing: {
       filters: [{ source: 'message', transform: 'hasContent' }],
@@ -81,7 +84,6 @@ test('parseMessagesToPosts supports videos and configurable reaction extractors'
 
   const posts = parseMessagesToPosts(messages, {
     chatId: -1001,
-    targetUserId: 123,
     parsing: {
       filters: [{ source: 'message', transform: 'hasMedia' }],
       author: [{ source: 'message', path: 'message', regex: 'Author:\\s*(.+)$', group: 1 }],
@@ -112,7 +114,6 @@ test('parseMessagesToPosts supports mtcute-shaped messages', () => {
     ],
     {
       chatId: -1001,
-      targetUserId: 123,
       parsing: {
         filters: [{ source: 'message', transform: 'hasContent' }],
         author: [{ source: 'message', path: 'text', regex: '(?:^|\\n)By\\s+(.+?)(?:\\n|$)', group: 1 }]
@@ -144,12 +145,58 @@ test('passesFilters supports regex and bool transforms', () => {
   );
 });
 
+test('passesFilters supports contains, arrays, equals and negation', () => {
+  assert.equal(
+    passesFilters(
+      { message: { message: 'hello /skip' } },
+      [{ source: 'message', path: 'message', transform: 'contains', value: '/skip', negate: true }]
+    ),
+    false
+  );
+  assert.equal(
+    passesFilters(
+      { message: { message: 'hello' } },
+      [{ source: 'message', path: 'message', transform: 'contains', values: ['/skip', '#ignore'], negate: true }]
+    ),
+    true
+  );
+  assert.equal(
+    passesFilters(
+      { sender: { id: 123 } },
+      [{ source: 'sender', path: 'id', transform: 'equals', value: 123 }]
+    ),
+    true
+  );
+});
+
+test('debugParseMessage explains negated contains filters', () => {
+  const debug = debugParseMessage(
+    message({ id: 49, text: 'hello /skip' }),
+    {
+      chatId: -1001,
+      parsing: {
+        filters: [{ source: 'message', path: 'message', transform: 'contains', value: '/skip', negate: true }]
+      }
+    }
+  );
+
+  assert.equal(debug.filterPassed, false);
+  assert.equal(debug.filters.rules[0].matchedBeforeNegate, true);
+  assert.equal(debug.filters.rules[0].negated, true);
+  assert.equal(debug.filters.rules[0].passed, false);
+  assert.deepEqual(debug.filters.rules[0].values[0].transformDetails, {
+    input: 'hello /skip',
+    values: ['/skip'],
+    caseSensitive: false,
+    result: true
+  });
+});
+
 test('debugParseMessage explains filters and extractor transforms', () => {
   const debug = debugParseMessage(
     message({ id: 50, text: 'Author: Eve #meme', buttons: [['like=12', 'dislike=4']] }),
     {
       chatId: -1001,
-      targetUserId: 123,
       parsing: {
         filters: [{ source: 'message', path: 'message', regex: '#meme', transform: 'bool' }],
         author: [{ source: 'message', path: 'message', regex: 'Author:\\s*(\\w+)', group: 1, transform: 'trim' }],
@@ -191,7 +238,6 @@ test('debugParseMessage explains aggregate sum for count extractors', () => {
     message({ id: 51, text: 'By Eve', buttons: [['👍 12', '🔥 3', '👎 4']] }),
     {
       chatId: -1001,
-      targetUserId: 123,
       parsing: {
         likes: [{
           source: 'message',
@@ -218,7 +264,6 @@ test('debugParseMessage explains fallback when extractor path has no values', ()
     message({ id: 52, text: 'By Eve', buttons: [['👍 31']] }),
     {
       chatId: -1001,
-      targetUserId: 123,
       parsing: {
         likes: [{
           source: 'message',
@@ -245,7 +290,6 @@ test('debugParseMessage omits regex trace fields when rule has no regex', () => 
     message({ id: 53, text: 'plain text' }),
     {
       chatId: -1001,
-      targetUserId: 123,
       parsing: {
         filters: [{ source: 'message', transform: 'hasContent' }]
       }

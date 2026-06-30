@@ -30,7 +30,6 @@ test('applyEnv maps secrets and telegram ids from environment', () => {
       TELEGRAM_API_ID: '123',
       TELEGRAM_API_HASH: 'hash',
       TELEGRAM_SOURCE_CHAT_ID: '-1001',
-      TELEGRAM_TARGET_USER_ID: '42',
       TELEGRAM_ADMIN_ID: '99',
       TELEGRAM_PUBLISH_CHANNEL_ID: '-1002',
       TELEGRAM_BOT_TOKEN: 'token'
@@ -42,7 +41,6 @@ test('applyEnv maps secrets and telegram ids from environment', () => {
     apiId: 123,
     apiHash: 'hash',
     sourceChatId: -1001,
-    targetUserId: 42,
     adminId: 99,
     publishChannelId: -1002,
     botToken: 'token'
@@ -57,13 +55,11 @@ test('validateConfig rejects identical source and publish chats', () => {
         apiHash: 'hash',
         sessionFile: 'sessions/user.session',
         sourceChatId: -1001,
-        targetUserId: 42,
         adminId: 99,
         publishChannelId: -1001,
         botToken: 'token'
       },
-      database: { path: 'data/posts.sqlite' },
-      sync: { source: { mode: 'user' } }
+      database: { path: 'data/posts.sqlite' }
     }),
     /sourceChatId and telegram\.publishChannelId must be different/
   );

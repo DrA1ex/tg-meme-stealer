@@ -12,33 +12,30 @@ import {
   selectWeekPreviewPost,
   selectWeekPreviewPosts,
   setParsingRules,
-  setSourceMode,
   setTemplateValue,
   summarizeParsedPosts
 } from '../src/core/setupConfig.js';
 
-test('setup draft keeps editable sync, publish, parsing and template config', () => {
+test('setup draft keeps editable publish, parsing and template config', () => {
   const draft = createSetupDraft({
-    sync: { source: { mode: 'user' }, pageSize: 100 },
+    sync: { pageSize: 100 },
     publish: { dryRun: false, selections: { best: { week: { template: 'Best week' } } } },
     parsing: { filters: [{ transform: 'hasContent' }] },
     telegram: { botToken: 'secret' }
   });
 
-  assert.deepEqual(draft.sync, { source: { mode: 'user' } });
+  assert.equal(draft.sync, undefined);
   assert.deepEqual(draft.publish, { dryRun: false, selections: { best: { week: { template: 'Best week' } } } });
   assert.deepEqual(draft.parsing, { filters: [{ transform: 'hasContent' }] });
   assert.deepEqual(draft.templates, {});
 });
 
-test('setup helpers update mode and parser rules', () => {
-  const draft = createSetupDraft({ sync: { source: { mode: 'user' } }, parsing: {} });
+test('setup helpers update parser rules', () => {
+  const draft = createSetupDraft({ parsing: {} });
 
-  setSourceMode(draft, 'all');
   setParsingRules(draft, 'likes', { path: 'a', transform: 'count' });
   addParsingRule(draft, 'likes', { path: 'b', transform: 'count' });
 
-  assert.equal(draft.sync.source.mode, 'all');
   assert.deepEqual(draft.parsing.likes, [
     { path: 'a', transform: 'count' },
     { path: 'b', transform: 'count' }
@@ -50,11 +47,10 @@ test('parseJsonArgument reads JSON after command', () => {
 });
 
 test('formatDraftConfig returns final config snippet', () => {
-  const draft = createSetupDraft({ sync: { source: { mode: 'all' } }, parsing: { filters: [] }, publish: { dryRun: false } });
+  const draft = createSetupDraft({ parsing: { filters: [] }, publish: { dryRun: false } });
   const parsed = JSON.parse(formatDraftConfig(draft));
 
   assert.deepEqual(parsed, {
-    sync: { source: { mode: 'all' } },
     publish: { dryRun: false },
     parsing: { filters: [] },
     templates: {}
@@ -62,7 +58,7 @@ test('formatDraftConfig returns final config snippet', () => {
 });
 
 test('setup helpers update publish templates', () => {
-  const draft = createSetupDraft({ sync: { source: { mode: 'user' } }, parsing: {}, templates: {} });
+  const draft = createSetupDraft({ parsing: {}, templates: {} });
 
   setTemplateValue(draft, 'postCaption', 'Post {{messageId}} by {{author}}');
   setTemplateValue(draft, 'selection.best.week.template', 'Weekly best {{count}}');
@@ -111,13 +107,13 @@ test('summarizeParsedPosts and preview select best weekly post', () => {
 test('saveDraftConfig creates config when missing', async () => {
   const dir = await fs.mkdtemp('/private/tmp/tg-memes-config-');
   const configPath = path.join(dir, 'config.json');
-  const draft = createSetupDraft({ sync: { source: { mode: 'all' } }, parsing: { filters: [] }, templates: {} });
+  const draft = createSetupDraft({ parsing: { filters: [] }, templates: {} });
 
   const result = await saveDraftConfig(draft, configPath);
   const saved = JSON.parse(await fs.readFile(configPath, 'utf8'));
 
   assert.equal(result.configPath, configPath);
-  assert.deepEqual(saved.sync.source, { mode: 'all' });
+  assert.deepEqual(saved.parsing, { filters: [] });
   await assert.rejects(fs.access(`${configPath}.old`));
 });
 
@@ -125,7 +121,7 @@ test('saveDraftConfig backs up and deep-merges existing config', async () => {
   const dir = await fs.mkdtemp('/private/tmp/tg-memes-config-');
   const configPath = path.join(dir, 'config.json');
   await fs.writeFile(configPath, JSON.stringify({ publish: { dryRun: true }, sync: { pageSize: 50 } }, null, 2));
-  const draft = createSetupDraft({ sync: { source: { mode: 'user' } }, parsing: { filters: [] }, templates: {} });
+  const draft = createSetupDraft({ parsing: { filters: [] }, templates: {} });
 
   await saveDraftConfig(draft, configPath);
   const saved = JSON.parse(await fs.readFile(configPath, 'utf8'));
@@ -133,7 +129,6 @@ test('saveDraftConfig backs up and deep-merges existing config', async () => {
 
   assert.equal(saved.publish.dryRun, true);
   assert.equal(saved.sync.pageSize, 50);
-  assert.deepEqual(saved.sync.source, { mode: 'user' });
   assert.deepEqual(backup, { publish: { dryRun: true }, sync: { pageSize: 50 } });
 });
 

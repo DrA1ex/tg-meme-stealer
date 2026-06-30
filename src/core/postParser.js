@@ -112,9 +112,7 @@ export function buildMediaReference(message) {
 }
 
 export function parsePostMessage(message, options) {
-  if (!shouldReadMessage(message, options)) {
-    return null;
-  }
+  if (!shouldReadMessage(message)) return null;
 
   const sender = message.sender || options.senderById?.get(getSenderUserId(message)) || null;
   const context = { message, sender };
@@ -147,9 +145,7 @@ export function parseMessagesToPosts(messages, options) {
   const groups = new Map();
 
   for (const message of messages) {
-    if (!shouldReadMessage(message, options)) {
-      continue;
-    }
+    if (!shouldReadMessage(message)) continue;
 
     const groupKey = message.groupedId ? String(message.groupedId) : null;
     if (!groupKey) {
@@ -169,9 +165,8 @@ export function parseMessagesToPosts(messages, options) {
 export function debugParseMessage(message, options) {
   const sender = message?.sender || options.senderById?.get(getSenderUserId(message)) || null;
   const context = { message, sender };
-  const sourceMode = options.sourceMode || options.source?.mode || 'user';
   const senderUserId = getSenderUserId(message);
-  const shouldRead = shouldReadMessage(message, options);
+  const shouldRead = shouldReadMessage(message);
   const fallbackReactions = parseReactions(message?.markup || message?.replyMarkup);
 
   const filters = traceFilters(context, options.parsing?.filters || []);
@@ -182,9 +177,7 @@ export function debugParseMessage(message, options) {
 
   return {
     messageId: Number(message?.id || 0),
-    sourceMode,
     senderUserId,
-    targetUserId: options.targetUserId,
     shouldRead,
     filterPassed: filters.passed,
     fallbackReactions,
@@ -201,23 +194,20 @@ export function debugParseMessage(message, options) {
   };
 }
 
-export function shouldReadMessage(message, options) {
-  if (!message) return false;
-  const mode = options.sourceMode || options.source?.mode || 'user';
-  if (mode === 'all') return true;
-  return getSenderUserId(message) === Number(options.targetUserId);
+export function shouldReadMessage(message) {
+  return Boolean(message);
 }
 
 export function passesFilters(context, filters = []) {
   if (!filters?.length) return true;
   return filters.every((filter) => {
     const values = readExtractorValues(context, filter);
-    if (!values.length) return false;
-    return values.some((value) => {
+    const matched = values.some((value) => {
       const extracted = applyRegex(value, filter);
       if (extracted === undefined || extracted === null) return false;
-      return Boolean(transformValue(extracted, filter.transform || 'bool'));
+      return Boolean(transformValue(extracted, filter.transform || 'bool', filter));
     });
+    return isNegated(filter) ? !matched : matched;
   });
 }
 
@@ -225,12 +215,16 @@ function traceFilters(context, filters = []) {
   if (!filters?.length) return { passed: true, rules: [] };
   const rules = filters.map((filter, index) => {
     const trace = traceRule(context, filter, filter.transform || 'bool');
+    const matchedBeforeNegate = trace.values.some((value) => Boolean(value.transformed));
+    const negated = isNegated(filter);
     return {
       index,
       rule: filter,
       pathTrace: trace.pathTrace,
       valuesCount: trace.values.length,
-      passed: trace.values.some((value) => Boolean(value.transformed)),
+      matchedBeforeNegate,
+      negated,
+      passed: negated ? !matchedBeforeNegate : matchedBeforeNegate,
       values: trace.values
     };
   });
@@ -341,7 +335,7 @@ export function extractValue(context, extractors = []) {
     for (const value of values) {
       const extracted = applyRegex(value, extractor);
       if (extracted === undefined || extracted === null || extracted === '') continue;
-      const transformed = transformValue(extracted, extractor.transform);
+      const transformed = transformValue(extracted, extractor.transform, extractor);
       if (transformed !== undefined && transformed !== null && transformed !== '') return transformed;
     }
   }
@@ -358,7 +352,7 @@ export function extractNumber(context, extractors = [], fallback = 0) {
     for (const value of values) {
       const extracted = applyRegex(value, extractor);
       if (extracted === undefined || extracted === null || extracted === '') continue;
-      const transformed = Number(transformValue(extracted, extractor.transform || 'count'));
+      const transformed = Number(transformValue(extracted, extractor.transform || 'count', extractor));
       if (!Number.isNaN(transformed)) {
         found = true;
         total += transformed;
@@ -431,12 +425,12 @@ function traceRule(context, extractor, transform) {
     pathTrace: getPathTrace(root, extractor.path),
     values: rawValues.map((value) => {
       const extracted = applyRegex(value, extractor);
-      const transformed = extracted === undefined || extracted === null ? undefined : transformValue(extracted, transform);
+      const transformed = extracted === undefined || extracted === null ? undefined : transformValue(extracted, transform, extractor);
       const trace = {
         input: serializeDebugValue(value),
         extracted: serializeDebugValue(extracted),
         transform: transform || 'trim',
-        transformDetails: getTransformDetails(extracted, transform),
+        transformDetails: getTransformDetails(extracted, transform, extractor),
         transformed: serializeDebugValue(transformed)
       };
       if (extractor.regex) {
@@ -489,11 +483,14 @@ function applyRegex(value, extractor) {
   return match[extractor.group || 0];
 }
 
-function transformValue(value, transform) {
+function transformValue(value, transform, rule = {}) {
   if (transform === 'count') return parseCount(value);
   if (transform === 'telegramUsername') return String(value).startsWith('@') ? String(value) : `@${value}`;
   if (transform === 'exists') return value !== undefined && value !== null && String(value).trim() !== '';
   if (transform === 'notEmpty') return String(value).trim().length > 0;
+  if (transform === 'contains') return containsConfiguredValue(value, rule);
+  if (transform === 'equals') return equalsConfiguredValue(value, rule);
+  if (transform === 'in') return equalsConfiguredValue(value, rule);
   if (transform === 'isPhoto') return getMediaKind(value) === 'photo';
   if (transform === 'isVideo') return getMediaKind(value) === 'video';
   if (transform === 'hasMedia') return getMediaKind(value) !== 'text';
@@ -506,27 +503,72 @@ function transformValue(value, transform) {
   return String(value).trim();
 }
 
-function getTransformDetails(value, transform) {
+function getTransformDetails(value, transform, rule = {}) {
   if (value === undefined || value === null) return null;
   if (transform === 'count') return parseCountDetails(value);
   if (transform === 'telegramUsername') {
     return {
       input: serializeDebugValue(value),
       alreadyPrefixed: String(value).startsWith('@'),
-      result: transformValue(value, transform)
+      result: transformValue(value, transform, rule)
+    };
+  }
+  if (transform === 'contains') {
+    return {
+      input: serializeDebugValue(value),
+      values: getConfiguredValues(rule),
+      caseSensitive: Boolean(rule.caseSensitive),
+      result: transformValue(value, transform, rule)
+    };
+  }
+  if (transform === 'equals' || transform === 'in') {
+    return {
+      input: serializeDebugValue(value),
+      values: getConfiguredValues(rule),
+      caseSensitive: Boolean(rule.caseSensitive),
+      result: transformValue(value, transform, rule)
     };
   }
   if (['exists', 'notEmpty', 'isPhoto', 'isVideo', 'hasMedia', 'hasContent', 'bool'].includes(transform)) {
     return {
       input: serializeDebugValue(value),
-      result: transformValue(value, transform)
+      result: transformValue(value, transform, rule)
     };
   }
   return {
     input: serializeDebugValue(value),
     trim: true,
-    result: transformValue(value, transform)
+    result: transformValue(value, transform, rule)
   };
+}
+
+function isNegated(rule) {
+  return Boolean(rule?.negate || rule?.not);
+}
+
+function containsConfiguredValue(value, rule) {
+  const needles = getConfiguredValues(rule);
+  if (!needles.length) return false;
+  const input = normalizeComparable(value, rule.caseSensitive);
+  return needles.some((needle) => input.includes(normalizeComparable(needle, rule.caseSensitive)));
+}
+
+function equalsConfiguredValue(value, rule) {
+  const expected = getConfiguredValues(rule);
+  if (!expected.length) return false;
+  const input = normalizeComparable(value, rule.caseSensitive);
+  return expected.some((item) => input === normalizeComparable(item, rule.caseSensitive));
+}
+
+function getConfiguredValues(rule = {}) {
+  const raw = rule.values ?? rule.value ?? rule.contains ?? rule.equals ?? rule.in;
+  if (raw === undefined || raw === null) return [];
+  return Array.isArray(raw) ? raw : [raw];
+}
+
+function normalizeComparable(value, caseSensitive = false) {
+  const text = String(value);
+  return caseSensitive ? text : text.toLowerCase();
 }
 
 function formatSender(sender) {

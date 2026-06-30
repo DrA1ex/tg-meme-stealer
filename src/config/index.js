@@ -26,7 +26,6 @@ export function applyEnv(config, env) {
       apiId: numberFromEnv(env.TELEGRAM_API_ID),
       apiHash: env.TELEGRAM_API_HASH,
       sourceChatId: numberFromEnv(env.TELEGRAM_SOURCE_CHAT_ID),
-      targetUserId: numberFromEnv(env.TELEGRAM_TARGET_USER_ID),
       adminId: numberFromEnv(env.TELEGRAM_ADMIN_ID),
       publishChannelId: numberFromEnv(env.TELEGRAM_PUBLISH_CHANNEL_ID),
       botToken: env.TELEGRAM_BOT_TOKEN
@@ -73,10 +72,6 @@ export function validateConfig(config) {
     if (config?.[section]?.[key] === undefined || config[section][key] === '') {
       throw new Error(`Missing config value: ${section}.${key}`);
     }
-  }
-
-  if ((config.sync?.source?.mode || 'user') === 'user' && (config.telegram.targetUserId === undefined || config.telegram.targetUserId === '')) {
-    throw new Error('Missing config value: telegram.targetUserId');
   }
 
   if (String(config.telegram.sourceChatId) === String(config.telegram.publishChannelId)) {

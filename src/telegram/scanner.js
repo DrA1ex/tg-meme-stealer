@@ -26,7 +26,6 @@ export class TelegramScanner {
 
     this.logger.info('Sync started', {
       chatId: this.config.telegram.sourceChatId,
-      mode: this.config.sync.source?.mode || 'user',
       initial: isInitial,
       existingPosts: existingCount[0].count,
       since: since.toISOString(),
@@ -70,7 +69,6 @@ export class TelegramScanner {
 
     this.logger.info('Backfill started', {
       chatId: this.config.telegram.sourceChatId,
-      mode: this.config.sync.source?.mode || 'user',
       since: since.toISOString(),
       days,
       updateSince: updateSince.toISOString(),
@@ -131,8 +129,6 @@ export class TelegramScanner {
 
       const posts = parseMessagesToPosts(messages, {
         chatId: this.config.telegram.sourceChatId,
-        targetUserId: this.config.telegram.targetUserId,
-        sourceMode: this.config.sync.source?.mode,
         parsing: this.config.parsing
       });
       matched += posts.length;
@@ -193,8 +189,6 @@ export class TelegramScanner {
 
       const posts = parseMessagesToPosts(messages, {
         chatId: this.config.telegram.sourceChatId,
-        targetUserId: this.config.telegram.targetUserId,
-        sourceMode: this.config.sync.source?.mode,
         parsing: this.config.parsing
       });
       matched += posts.length;
@@ -279,8 +273,6 @@ export class TelegramScanner {
 
     const posts = parseMessagesToPosts(messages, {
       chatId: this.config.telegram.sourceChatId,
-      targetUserId: this.config.telegram.targetUserId,
-      sourceMode: draft.sync?.source?.mode || this.config.sync.source?.mode,
       parsing: draft.parsing || this.config.parsing
     });
 
@@ -306,8 +298,6 @@ export class TelegramScanner {
 
     const posts = parseMessagesToPosts([message], {
       chatId: this.config.telegram.sourceChatId,
-      targetUserId: this.config.telegram.targetUserId,
-      sourceMode: draft.sync?.source?.mode || this.config.sync.source?.mode,
       parsing: draft.parsing || this.config.parsing
     });
 
@@ -322,8 +312,6 @@ export class TelegramScanner {
       message,
       debug: debugParseMessage(message, {
         chatId: this.config.telegram.sourceChatId,
-        targetUserId: this.config.telegram.targetUserId,
-        sourceMode: draft.sync?.source?.mode || this.config.sync.source?.mode,
         parsing: draft.parsing || this.config.parsing
       })
     };

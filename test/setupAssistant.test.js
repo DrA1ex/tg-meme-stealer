@@ -22,7 +22,6 @@ test('SetupAssistant.start sends draft config as HTML code block', async () => {
     scanner: {},
     mediaDownloader: {},
     config: {
-      sync: { source: { mode: 'all' } },
       parsing: {},
       publish: { dryRun: false },
       templates: {}
@@ -37,7 +36,8 @@ test('SetupAssistant.start sends draft config as HTML code block', async () => {
   assert.match(replies[0][0], /Current draft:/);
   assert.match(replies[1][0], /^<pre><code class="language-json">/);
   assert.equal(replies[1][1].parse_mode, 'HTML');
-  assert.match(replies[1][0], /"sync"/);
+  assert.doesNotMatch(replies[1][0], /"sync"/);
+  assert.match(replies[1][0], /"parsing"/);
 });
 
 test('SetupAssistant.test sends parsed table as HTML code block', async () => {
@@ -58,7 +58,6 @@ test('SetupAssistant.test sends parsed table as HTML code block', async () => {
     },
     mediaDownloader: {},
     config: {
-      sync: { source: { mode: 'all' } },
       parsing: {},
       publish: { dryRun: false },
       templates: {}
@@ -70,7 +69,7 @@ test('SetupAssistant.test sends parsed table as HTML code block', async () => {
     reply: async (...args) => replies.push(args)
   };
 
-  assistant.sessions.set(1, { sync: { source: { mode: 'all' } }, parsing: {} });
+  assistant.sessions.set(1, { parsing: {} });
   await assistant.test(ctx);
 
   assert.match(replies[0][0], /^<pre><code>/);
