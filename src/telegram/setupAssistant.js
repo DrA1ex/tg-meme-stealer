@@ -10,6 +10,7 @@ import {
   setTemplateValue,
   summarizeParsedPosts
 } from '../core/setupConfig.js';
+import { loadConfig } from '../config/index.js';
 import { sendRichPost } from './richPost.js';
 
 const SETUP_HELP = [
@@ -30,10 +31,11 @@ const SETUP_HELP = [
 ].join('\n');
 
 export class SetupAssistant {
-  constructor({ scanner, mediaDownloader, config }) {
+  constructor({ scanner, mediaDownloader, config, configLoader = loadConfig }) {
     this.scanner = scanner;
     this.mediaDownloader = mediaDownloader;
     this.config = config;
+    this.configLoader = configLoader;
     this.sessions = new Map();
   }
 
@@ -55,6 +57,7 @@ export class SetupAssistant {
   }
 
   async start(ctx) {
+    this.reloadConfig();
     this.sessions.set(ctx.from.id, createSetupDraft(this.config));
     await ctx.reply(`${SETUP_HELP}\n\nCurrent draft:`);
     await replyJsonCode(ctx, JSON.parse(formatDraftConfig(this.getDraft(ctx))));
@@ -147,6 +150,7 @@ export class SetupAssistant {
   async done(ctx) {
     const draft = this.getDraft(ctx);
     const result = await saveDraftConfig(draft);
+    this.reloadConfig();
     await ctx.reply([
       `Config saved: ${result.configPath}`,
       `Backup: ${result.backupPath}`,
@@ -178,6 +182,17 @@ export class SetupAssistant {
   getDraft(ctx) {
     return this.sessions.get(ctx.from.id);
   }
+
+  reloadConfig() {
+    replaceObjectContents(this.config, this.configLoader());
+  }
+}
+
+function replaceObjectContents(target, source) {
+  for (const key of Object.keys(target)) {
+    delete target[key];
+  }
+  Object.assign(target, source);
 }
 
 function getArgument(text) {

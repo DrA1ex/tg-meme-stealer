@@ -18,14 +18,16 @@ test('stringifyForSetup handles BigInt, functions and circular references', () =
 
 test('SetupAssistant.start sends draft config as HTML code block', async () => {
   const replies = [];
+  const config = {
+    parsing: {},
+    publish: { dryRun: false },
+    templates: {}
+  };
   const assistant = new SetupAssistant({
     scanner: {},
     mediaDownloader: {},
-    config: {
-      parsing: {},
-      publish: { dryRun: false },
-      templates: {}
-    }
+    config,
+    configLoader: () => config
   });
 
   await assistant.start({
@@ -38,6 +40,35 @@ test('SetupAssistant.start sends draft config as HTML code block', async () => {
   assert.equal(replies[1][1].parse_mode, 'HTML');
   assert.doesNotMatch(replies[1][0], /"sync"/);
   assert.match(replies[1][0], /"parsing"/);
+});
+
+test('SetupAssistant.start reloads config before creating a new draft', async () => {
+  const replies = [];
+  const config = {
+    parsing: { filters: [{ transform: 'old' }] },
+    publish: { dryRun: false },
+    templates: {}
+  };
+  const assistant = new SetupAssistant({
+    scanner: {},
+    mediaDownloader: {},
+    config,
+    configLoader: () => ({
+      parsing: { filters: [{ transform: 'hasContent' }] },
+      publish: { dryRun: true },
+      templates: { publish: { unknownAuthor: 'anonymous' } }
+    })
+  });
+
+  await assistant.start({
+    from: { id: 1 },
+    reply: async (...args) => replies.push(args)
+  });
+
+  assert.deepEqual(config.parsing, { filters: [{ transform: 'hasContent' }] });
+  assert.equal(config.publish.dryRun, true);
+  assert.match(replies[1][0], /"hasContent"/);
+  assert.doesNotMatch(replies[1][0], /"old"/);
 });
 
 test('SetupAssistant.test sends parsed table as HTML code block', async () => {
@@ -61,7 +92,12 @@ test('SetupAssistant.test sends parsed table as HTML code block', async () => {
       parsing: {},
       publish: { dryRun: false },
       templates: {}
-    }
+    },
+    configLoader: () => ({
+      parsing: {},
+      publish: { dryRun: false },
+      templates: {}
+    })
   });
   const ctx = {
     from: { id: 1 },
