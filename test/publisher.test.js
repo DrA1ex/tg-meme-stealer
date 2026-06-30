@@ -263,6 +263,49 @@ test('SelectionPublisher.runManualPublish plans selections and replies with job 
   assert.match(replies[0], /Worker job status: running/);
 });
 
+test('SelectionPublisher.runManualPublish shows help without selection arguments', async () => {
+  const replies = [];
+  let loadedPosts = false;
+  const publisher = new SelectionPublisher({
+    repository: {
+      getTopPosts: async () => {
+        loadedPosts = true;
+        return [post(1, 'Alice')];
+      }
+    },
+    mediaDownloader: {},
+    setupAssistant: null,
+    config: config()
+  });
+
+  await publisher.runManualPublish({
+    message: { text: '/publish' },
+    reply: async (message) => replies.push(message)
+  });
+
+  assert.equal(loadedPosts, false);
+  assert.equal(replies.length, 1);
+  assert.match(replies[0], /^Usage: \/publish <selection\.\.\.> \[--force\]/);
+});
+
+test('SelectionPublisher.runManualPublish shows help when only force flag is passed', async () => {
+  const replies = [];
+  const publisher = new SelectionPublisher({
+    repository: {},
+    mediaDownloader: {},
+    setupAssistant: null,
+    config: config()
+  });
+
+  await publisher.runManualPublish({
+    message: { text: '/publish -force' },
+    reply: async (message) => replies.push(message)
+  });
+
+  assert.equal(replies.length, 1);
+  assert.match(replies[0], /^Usage: \/publish <selection\.\.\.> \[--force\]/);
+});
+
 test('SelectionPublisher.runManualPublish supports force scheduling', async () => {
   const keys = [];
   const replies = [];
@@ -292,6 +335,43 @@ test('SelectionPublisher.runManualPublish supports force scheduling', async () =
 
   await publisher.runManualPublish({
     message: { text: '/publish best.week --force' },
+    reply: async (message) => replies.push(message)
+  });
+
+  assert.equal(keys.length, 1);
+  assert.match(keys[0], /^publish:force:[a-z0-9]{6}:best\.week:2026-W27$/);
+  assert.match(replies[0], /best.week: scheduled \(1\) forced/);
+});
+
+test('SelectionPublisher.runManualPublish supports single-dash force scheduling', async () => {
+  const keys = [];
+  const replies = [];
+  const publisher = new SelectionPublisher({
+    repository: {
+      getTopPosts: async () => [post(1, 'Alice')],
+      tryCreatePublicationRequest: async ({ key }) => {
+        keys.push(key);
+        return 123;
+      },
+      getNextPublicationRequest: async () => null
+    },
+    mediaDownloader: {},
+    setupAssistant: null,
+    config: {
+      ...config(),
+      publish: {
+        dryRun: false,
+        selections: {
+          best: {
+            week: { enabled: true, limit: 1, template: 'Best week' }
+          }
+        }
+      }
+    }
+  });
+
+  await publisher.runManualPublish({
+    message: { text: '/publish best.week -force' },
     reply: async (message) => replies.push(message)
   });
 

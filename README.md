@@ -126,7 +126,7 @@ npm start
 9. Publish once manually from the admin bot:
 
 ```text
-/publish
+/publish week
 ```
 
 To publish only one selection:
@@ -137,10 +137,11 @@ To publish only one selection:
 /publish day
 ```
 
-If the same period was already scheduled or published, `/publish` reports that existing request instead of creating a duplicate. To intentionally publish the same selection again, use `--force`:
+If the same period was already scheduled or published, `/publish` reports that existing request instead of creating a duplicate. To intentionally publish the same selection again, use `--force` or `-force`:
 
 ```text
 /publish week --force
+/publish week -force
 ```
 
 For later maintenance, usually run only `npm start`. Use admin `/sync` for one refresh pass, `/backfill 90` to fill a larger historical window, `/publish week` to manually publish one selection, and `npm run setup` when parser or template rules need to be changed.
@@ -552,10 +553,10 @@ Backfill a custom number of days:
 
 Backfill adds missing posts from the requested period. Existing posts are updated only inside `sync.refreshRecentDays`; older existing rows are left unchanged. If sync or backfill is already running, the new request is skipped.
 
-Run one publish cycle from the admin bot without running sync first. Without arguments this publishes all enabled selections.
+Run one publish cycle from the admin bot without running sync first. A selection argument is required; `/publish` without arguments prints command help and does not schedule anything.
 
 ```text
-/publish
+/publish week
 ```
 
 Publish only one best selection:
@@ -580,10 +581,11 @@ Multiple selection types can be passed in one command:
 /publish best.week controversial.week
 ```
 
-If a selection for the same period already exists, the command replies with the existing status and does not fail. To schedule another copy anyway, add `--force`; the app will create a unique forced publication key:
+If a selection for the same period already exists, the command replies with the existing status and does not fail. To schedule another copy anyway, add `--force` or `-force`; the app will create a unique forced publication key:
 
 ```text
 /publish best.week --force
+/publish best.week -force
 ```
 
 Run the daemon for normal operation:

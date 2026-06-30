@@ -311,9 +311,13 @@ export class SelectionPublisher {
 
   async runManualPublish(ctx) {
     const args = getCommandArguments(ctx);
-    const force = args.includes('--force');
-    const keys = args.filter((arg) => arg !== '--force');
-    const result = await this.publishAll(new Date(), keys.length > 0 ? keys : null, { force });
+    const force = args.some(isForceFlag);
+    const keys = args.filter((arg) => !isForceFlag(arg));
+    if (keys.length === 0) {
+      await ctx.reply(formatPublishHelp());
+      return;
+    }
+    const result = await this.publishAll(new Date(), keys, { force });
     const job = result.selections.some((selection) => selection.requested)
       ? this.runPublicationWorker('admin')
       : null;
@@ -454,6 +458,10 @@ function getCommandArguments(ctx) {
   return text.trim().split(/\s+/).slice(1).filter(Boolean);
 }
 
+function isForceFlag(value) {
+  return value === '--force' || value === '-force';
+}
+
 function parseOptionalPositiveInteger(value) {
   if (value === undefined || value === null || value === '') return undefined;
   const number = Number(value);
@@ -487,6 +495,19 @@ function formatPublishResult(result, job = null) {
     lines.push(`Worker job status: ${job.status}${job.reason ? ` (${job.reason})` : ''}`);
   }
   return lines.join('\n') || 'No selections matched.';
+}
+
+function formatPublishHelp() {
+  return [
+    'Usage: /publish <selection...> [--force]',
+    '',
+    'Examples:',
+    '/publish week',
+    '/publish best.week controversial.week',
+    '/publish best.week --force',
+    '',
+    'Selections: month, week, day, best.month, best.week, best.day, controversial.month, controversial.week, controversial.day.'
+  ].join('\n');
 }
 
 function formatBotError(error) {
