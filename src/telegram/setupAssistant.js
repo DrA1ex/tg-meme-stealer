@@ -25,6 +25,7 @@ const SETUP_HELP = [
   '/test [message_count]',
   '/raw <message_id>',
   '/test_message <message_id>',
+  '/debug <message_id>',
   '/preview [post_count] [message_count]',
   '/done',
   '/cancel'
@@ -50,6 +51,7 @@ export class SetupAssistant {
     bot.command('test', (ctx) => this.withSession(ctx, () => this.test(ctx)));
     bot.command('raw', (ctx) => this.withSession(ctx, () => this.raw(ctx)));
     bot.command('test_message', (ctx) => this.withSession(ctx, () => this.testMessage(ctx)));
+    bot.command('debug', (ctx) => this.withSession(ctx, () => this.debug(ctx)));
     bot.command('preview', (ctx) => this.withSession(ctx, () => this.preview(ctx)));
     bot.command('done', (ctx) => this.withSession(ctx, () => this.done(ctx)));
     bot.command('cancel', (ctx) => this.cancel(ctx));
@@ -115,6 +117,16 @@ export class SetupAssistant {
       return;
     }
     await replyJsonCode(ctx, result.posts.length === 1 ? result.posts[0] : result.posts);
+  }
+
+  async debug(ctx) {
+    const messageId = parseMessageId(ctx.message.text);
+    const result = await this.scanner.debugMessage(messageId, this.getDraft(ctx));
+    if (!result.message) {
+      await ctx.reply(`Message not found: ${messageId}`);
+      return;
+    }
+    await replyJsonFile(ctx, result.debug, `telegram-message-${messageId}-debug.json`);
   }
 
   async preview(ctx) {

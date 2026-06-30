@@ -1,11 +1,20 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { getValuesByPath, parseCount, parseMessagesToPosts, parseReactions, passesFilters } from '../src/core/postParser.js';
+import { debugParseMessage, getPathTrace, getValuesByPath, parseCount, parseCountDetails, parseMessagesToPosts, parseReactions, passesFilters } from '../src/core/postParser.js';
 
 test('parseCount supports plain and compact counters', () => {
   assert.equal(parseCount('👍 42'), 42);
   assert.equal(parseCount('1.5k'), 1500);
   assert.equal(parseCount('2,1\u043a'), 2100);
+  assert.deepEqual(parseCountDetails('1.5k'), {
+    input: '1.5k',
+    normalized: '1.5k',
+    matched: true,
+    number: 1.5,
+    suffix: 'k',
+    multiplier: 1000,
+    result: 1500
+  });
 });
 
 test('parseReactions reads likes and dislikes from inline buttons', () => {
@@ -135,6 +144,122 @@ test('passesFilters supports regex and bool transforms', () => {
   );
 });
 
+test('debugParseMessage explains filters and extractor transforms', () => {
+  const debug = debugParseMessage(
+    message({ id: 50, text: 'Author: Eve #meme', buttons: [['like=12', 'dislike=4']] }),
+    {
+      chatId: -1001,
+      targetUserId: 123,
+      parsing: {
+        filters: [{ source: 'message', path: 'message', regex: '#meme', transform: 'bool' }],
+        author: [{ source: 'message', path: 'message', regex: 'Author:\\s*(\\w+)', group: 1, transform: 'trim' }],
+        likes: [{ source: 'message', path: 'replyMarkup.rows[].buttons[].text', regex: '^like=(\\d+)', group: 1, transform: 'count' }],
+        dislikes: [{ source: 'message', path: 'replyMarkup.rows[].buttons[].text', regex: '^dislike=(\\d+)', group: 1, transform: 'count' }]
+      }
+    }
+  );
+
+  assert.equal(debug.shouldRead, true);
+  assert.equal(debug.filterPassed, true);
+  assert.equal(debug.filters.rules[0].values[0].extracted, '#meme');
+  assert.equal(debug.filters.rules[0].values[0].transformed, true);
+  assert.equal(debug.extractors.author.selected, 'Eve');
+  assert.equal(debug.extractors.likes.selected, 12);
+  assert.deepEqual(debug.extractors.likes.rules[0].acceptedValues, [{
+    valueIndex: 0,
+    input: 'like=12',
+    extracted: '12',
+    transformed: 12
+  }]);
+  assert.equal(debug.extractors.likes.rules[0].subtotal, 12);
+  assert.equal(debug.extractors.likes.rules[0].runningTotal, 12);
+  assert.deepEqual(debug.extractors.likes.rules[0].values[0].transformDetails, {
+    input: '12',
+    normalized: '12',
+    matched: true,
+    number: 12,
+    suffix: '',
+    multiplier: 1,
+    result: 12
+  });
+  assert.equal(debug.extractors.dislikes.selected, 4);
+  assert.equal(debug.result.matched, true);
+});
+
+test('debugParseMessage explains aggregate sum for count extractors', () => {
+  const debug = debugParseMessage(
+    message({ id: 51, text: 'By Eve', buttons: [['👍 12', '🔥 3', '👎 4']] }),
+    {
+      chatId: -1001,
+      targetUserId: 123,
+      parsing: {
+        likes: [{
+          source: 'message',
+          path: 'replyMarkup.rows[].buttons[].text',
+          regex: '(?:👍|🔥)\\s*(\\d+)',
+          group: 1,
+          transform: 'count',
+          aggregate: 'sum'
+        }]
+      }
+    }
+  );
+
+  assert.equal(debug.extractors.likes.selected, 15);
+  assert.deepEqual(debug.extractors.likes.rules[0].acceptedValues.map((value) => value.transformed), [12, 3]);
+  assert.equal(debug.extractors.likes.rules[0].subtotal, 15);
+  assert.equal(debug.extractors.likes.rules[0].runningTotal, 15);
+  assert.equal(debug.extractors.likes.rules[0].aggregate, 'sum');
+  assert.match(debug.extractors.likes.rules[0].aggregateBehavior, /continue/);
+});
+
+test('debugParseMessage explains fallback when extractor path has no values', () => {
+  const debug = debugParseMessage(
+    message({ id: 52, text: 'By Eve', buttons: [['👍 31']] }),
+    {
+      chatId: -1001,
+      targetUserId: 123,
+      parsing: {
+        likes: [{
+          source: 'message',
+          path: 'missing.rows[].buttons[].text',
+          regex: '👍\\s*(\\d+)',
+          group: 1,
+          transform: 'count',
+          aggregate: 'sum'
+        }]
+      }
+    }
+  );
+
+  assert.equal(debug.extractors.likes.selected, 31);
+  assert.equal(debug.extractors.likes.fallbackUsed, true);
+  assert.equal(debug.extractors.likes.fallbackReason, 'extractor rules produced no numeric values');
+  assert.equal(debug.extractors.likes.fallbackSource, 'parseReactions(message.markup || message.replyMarkup)');
+  assert.equal(debug.extractors.likes.rules[0].pathMatched, false);
+  assert.equal(debug.extractors.likes.rules[0].valuesCount, 0);
+});
+
+test('debugParseMessage omits regex trace fields when rule has no regex', () => {
+  const debug = debugParseMessage(
+    message({ id: 53, text: 'plain text' }),
+    {
+      chatId: -1001,
+      targetUserId: 123,
+      parsing: {
+        filters: [{ source: 'message', transform: 'hasContent' }]
+      }
+    }
+  );
+
+  const value = debug.filters.rules[0].values[0];
+  assert.equal(Object.hasOwn(value, 'regex'), false);
+  assert.equal(Object.hasOwn(value, 'regexGroup'), false);
+  assert.equal(Object.hasOwn(value, 'regexMatched'), false);
+  assert.equal(value.transform, 'hasContent');
+  assert.equal(value.transformed, true);
+});
+
 test('getValuesByPath expands array markers', () => {
   const values = getValuesByPath(
     { rows: [{ buttons: [{ text: 'a' }, { text: 'b' }] }] },
@@ -142,6 +267,24 @@ test('getValuesByPath expands array markers', () => {
   );
 
   assert.deepEqual(values, ['a', 'b']);
+});
+
+test('getValuesByPath reads nested button arrays with a simple path', () => {
+  const root = { markup: { buttons: [[{ text: '👍 1' }, { text: '🔥 2' }]] } };
+
+  assert.deepEqual(getValuesByPath(root, 'markup.buttons[].text'), ['👍 1', '🔥 2']);
+  assert.deepEqual(getValuesByPath(root, 'markup.buttons[][].text'), ['👍 1', '🔥 2']);
+});
+
+test('getPathTrace explains each path segment', () => {
+  const trace = getPathTrace({ markup: { buttons: [[{ text: '👍 1' }]] } }, 'markup.buttons[].text');
+
+  assert.deepEqual(trace.map((item) => [item.part, item.inputCount, item.outputCount]), [
+    ['markup', 1, 1],
+    ['buttons[]', 1, 1],
+    ['text', 1, 1]
+  ]);
+  assert.deepEqual(trace[2].outputTypes, ['string']);
 });
 
 function message({ id, userId = 123, groupedId = null, text = '', buttons = [], photo = true, video = false }) {

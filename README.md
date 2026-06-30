@@ -95,6 +95,7 @@ Then open a private chat with your bot from `TELEGRAM_ADMIN_ID` and run:
 /test 30
 /raw 123456
 /test_message 123456
+/debug 123456
 /preview 5 100
 /done
 ```
@@ -258,7 +259,7 @@ Useful setup commands:
 /settemplate unknownAuthor anonymous
 ```
 
-`/test N` reads the latest `N` source messages, applies the draft parser, and does not write anything to the database. `/raw MESSAGE_ID` fetches the current source message directly from Telegram and sends the raw object as a JSON file, which helps choose parser paths. `/test_message MESSAGE_ID` also fetches the current source message directly from Telegram, applies the current draft parser to that message, and shows the extracted fields. Neither command reads from SQLite. `/preview P M` scans the latest `M` messages, selects up to `P` weekly top posts, and sends them as rich posts with media and captions. `/done` saves the draft into `config.json`. If `config.json` already exists, it is copied to `config.json.old` first.
+`/test N` reads the latest `N` source messages, applies the draft parser, and does not write anything to the database. `/raw MESSAGE_ID` fetches the current source message directly from Telegram and sends the raw object as a JSON file, which helps choose parser paths. `/test_message MESSAGE_ID` also fetches the current source message directly from Telegram, applies the current draft parser to that message, and shows the extracted fields. `/debug MESSAGE_ID` fetches the current source message directly from Telegram and sends a JSON file with a step-by-step parser trace for filters, paths, regexes, transforms, fallback reactions, and final parsed output. These commands do not read from SQLite. `/preview P M` scans the latest `M` messages, selects up to `P` weekly top posts, and sends them as rich posts with media and captions. `/done` saves the draft into `config.json`. If `config.json` already exists, it is copied to `config.json.old` first.
 
 ### Recommended Setup Workflow
 
@@ -303,6 +304,7 @@ or:
 ```text
 /raw 123456
 /test_message 123456
+/debug 123456
 ```
 
 7. Add stricter filters or parser rules until the matched posts look correct.

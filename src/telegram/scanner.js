@@ -1,4 +1,4 @@
-import { parseMessagesToPosts } from '../core/postParser.js';
+import { debugParseMessage, parseMessagesToPosts } from '../core/postParser.js';
 import { subtractDays } from '../core/date.js';
 import { createLogger } from '../core/logger.js';
 import { normalizeTelegramPeerId } from './peer.js';
@@ -312,6 +312,21 @@ export class TelegramScanner {
     });
 
     return { message, posts };
+  }
+
+  async debugMessage(messageId, draft = {}) {
+    const message = await this.getMessageById(messageId);
+    if (!message) return { message: null, debug: null };
+
+    return {
+      message,
+      debug: debugParseMessage(message, {
+        chatId: this.config.telegram.sourceChatId,
+        targetUserId: this.config.telegram.targetUserId,
+        sourceMode: draft.sync?.source?.mode || this.config.sync.source?.mode,
+        parsing: draft.parsing || this.config.parsing
+      })
+    };
   }
 
   async removeDeletedRecentPosts(sinceDate, seenIds) {
