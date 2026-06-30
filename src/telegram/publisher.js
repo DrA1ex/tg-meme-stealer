@@ -142,7 +142,7 @@ export class SelectionPublisher {
       adminId: this.config.telegram.adminId,
       publishChannelId: this.config.telegram.publishChannelId
     });
-    await this.bot.launch();
+    this.bot.launch();
     this.logger.info('Bot polling started');
   }
 
