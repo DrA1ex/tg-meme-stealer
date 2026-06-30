@@ -4,15 +4,17 @@ import { formatJobs } from '../core/jobs.js';
 import { createLogger } from '../core/logger.js';
 import { loadSelections } from '../core/selection.js';
 import { buildStats, formatStats } from '../core/stats.js';
+import { JobGate } from '../runtime/jobGate.js';
 import { withBotApiRetry } from './retry.js';
 import { sendRichPost } from './richPost.js';
 
 export class SelectionPublisher {
-  constructor({ repository, mediaDownloader, setupAssistant, syncWorker = null, config }) {
+  constructor({ repository, mediaDownloader, setupAssistant, syncWorker = null, jobGate = new JobGate(), config }) {
     this.repository = repository;
     this.mediaDownloader = mediaDownloader;
     this.setupAssistant = setupAssistant;
     this.syncWorker = syncWorker;
+    this.jobGate = jobGate;
     this.config = config;
     this.bot = new Telegraf(config.telegram.botToken);
     this.logger = createLogger(config, 'publisher');
@@ -56,7 +58,7 @@ export class SelectionPublisher {
       await next();
     });
 
-    this.bot.start((ctx) => ctx.reply('Available commands: /stats, /jobs, /sync, /backfill, /setup'));
+    this.bot.start((ctx) => ctx.reply('Available commands: /stats, /jobs, /sync, /backfill, /publish, /setup'));
     this.bot.command('stats', async (ctx) => {
       const stats = await buildStats(this.repository, this.config);
       await ctx.reply(formatStats(stats, this.config.templates));
@@ -64,52 +66,70 @@ export class SelectionPublisher {
     this.bot.command('jobs', async (ctx) => this.replyJobs(ctx));
     this.bot.command('sync', async (ctx) => this.runManualSync(ctx));
     this.bot.command('backfill', async (ctx) => this.runManualBackfill(ctx));
+    this.bot.command('publish', async (ctx) => this.runManualPublish(ctx));
     this.setupAssistant?.register(this.bot);
   }
 
-  async publishAll(now = new Date(), keys = null) {
+  async publishAll(now = new Date(), keys = null, options = {}) {
     const selections = await loadSelections(this.repository, this.config, now, keys);
     this.logger.info('Publish cycle started', {
       targetChatId: this.config.telegram.publishChannelId,
       keys: keys || 'all',
-      selections: selections.length
+      selections: selections.length,
+      force: Boolean(options.force)
     });
     const results = [];
     for (const selection of selections) {
-      results.push(await this.createPublicationRequest(selection));
+      results.push(await this.createPublicationRequest(selection, options));
     }
-    await this.processPublicationQueue();
-    return selections.map((selection, index) => ({
-      key: selection.key,
-      count: selection.posts.length,
-      requested: Boolean(results[index])
-    }));
+    return {
+      selections: selections.map((selection, index) => ({
+        key: selection.key,
+        count: selection.posts.length,
+        ...results[index]
+      }))
+    };
   }
 
-  async createPublicationRequest(selection) {
+  async createPublicationRequest(selection, options = {}) {
     if (selection.posts.length === 0) {
       this.logger.info('Selection skipped: no posts', { selection: selection.key });
-      return null;
+      return { status: 'empty', requested: false };
     }
 
-    const key = getPublicationKey(selection, this.config);
+    const canonicalKey = getPublicationKey(selection, this.config);
+    const key = options.force ? getForcedPublicationKey(selection, this.config) : canonicalKey;
     const publicationId = await this.repository.tryCreatePublicationRequest({
       key,
       selectionKey: selection.key,
       title: selection.title,
       periodStart: selection.sinceIso,
       periodEnd: selection.untilIso,
-      data: { count: selection.posts.length, key, selection }
+      data: { count: selection.posts.length, key, canonicalKey, forced: Boolean(options.force), selection }
     });
     if (!publicationId) {
+      const existing = await this.repository.getPublicationByKey(canonicalKey);
       this.logger.info('Selection skipped: request already exists', {
         selection: selection.key,
-        key
+        key: canonicalKey,
+        status: existing?.status
       });
-      return null;
+      return {
+        status: existing?.status ? 'exists' : 'duplicate',
+        requested: false,
+        publicationId: existing?.id || null,
+        publicationStatus: existing?.status || '',
+        publicationKey: canonicalKey
+      };
     }
     this.logger.info('Publication request created', { publicationId, selection: selection.key, key, posts: selection.posts.length });
-    return publicationId;
+    return {
+      status: 'scheduled',
+      requested: true,
+      publicationId,
+      publicationKey: key,
+      forced: Boolean(options.force)
+    };
   }
 
   async processPublicationQueue() {
@@ -128,6 +148,29 @@ export class SelectionPublisher {
       }
     } finally {
       this.processingPublications = false;
+    }
+  }
+
+  runPublicationWorker(source = 'manual') {
+    return this.jobGate.run('publish', () => this.executePublicationWorker(source));
+  }
+
+  async executePublicationWorker(source) {
+    this.logger.info('Publication worker job started', { source });
+    try {
+      await this.processPublicationQueue();
+      this.logger.info('Publication worker job finished', { source });
+      return { source };
+    } catch (error) {
+      this.logger.error('Publication worker job failed', {
+        source,
+        error: error?.message || String(error)
+      });
+      return {
+        failed: true,
+        source,
+        error: error?.message || String(error)
+      };
     }
   }
 
@@ -229,8 +272,8 @@ export class SelectionPublisher {
       await ctx.reply('Sync worker is not available.');
       return;
     }
-    const result = await this.syncWorker.sync('admin');
-    await ctx.reply(formatSyncResult(result));
+    const job = await this.syncWorker.sync('admin');
+    await ctx.reply(formatJobStatus('Sync', job));
   }
 
   async runManualBackfill(ctx) {
@@ -239,8 +282,19 @@ export class SelectionPublisher {
       return;
     }
     const days = parseOptionalPositiveInteger(getCommandArgument(ctx));
-    const result = await this.syncWorker.backfill(days, 'admin');
-    await ctx.reply(formatBackfillResult(result));
+    const job = await this.syncWorker.backfill(days, 'admin');
+    await ctx.reply(formatJobStatus('Backfill', job));
+  }
+
+  async runManualPublish(ctx) {
+    const args = getCommandArguments(ctx);
+    const force = args.includes('--force');
+    const keys = args.filter((arg) => arg !== '--force');
+    const result = await this.publishAll(new Date(), keys.length > 0 ? keys : null, { force });
+    const job = result.selections.some((selection) => selection.requested)
+      ? this.runPublicationWorker('admin')
+      : null;
+    await ctx.reply(formatPublishResult(result, job));
   }
 
   launchBot() {
@@ -310,6 +364,16 @@ function getPublicationKey(selection, config) {
   ].join(':');
 }
 
+function getForcedPublicationKey(selection, config) {
+  return [
+    'publish',
+    'force',
+    randomCode(),
+    selection.key,
+    getPublicationBucket(selection.period, new Date(selection.untilIso), config.schedule?.timezone || 'UTC')
+  ].join(':');
+}
+
 function getPublicationBucket(period, date, timezone) {
   const parts = getLocalDateParts(date, timezone);
   if (period === 'month') return `${parts.year}-${pad2(parts.month)}`;
@@ -344,6 +408,10 @@ function pad2(value) {
   return String(value).padStart(2, '0');
 }
 
+function randomCode() {
+  return Math.random().toString(36).slice(2, 8);
+}
+
 function getPublicationRequestTtlHours(config) {
   return Math.max(1, Number(config.publish?.requestTtlHours ?? 12));
 }
@@ -358,6 +426,11 @@ function getCommandArgument(ctx) {
   return text.trim().split(/\s+/)[1];
 }
 
+function getCommandArguments(ctx) {
+  const text = ctx.message?.text || ctx.update?.message?.text || '';
+  return text.trim().split(/\s+/).slice(1).filter(Boolean);
+}
+
 function parseOptionalPositiveInteger(value) {
   if (value === undefined || value === null || value === '') return undefined;
   const number = Number(value);
@@ -367,19 +440,28 @@ function parseOptionalPositiveInteger(value) {
   return number;
 }
 
-function formatSyncResult(result) {
-  if (result?.skipped) return `Sync skipped: ${result.reason}`;
-  return `Sync complete: initial=${result.isInitial}, seen=${result.seen}, saved=${result.saved}, deleted=${result.deleted}`;
+function formatJobStatus(label, job) {
+  if (job.status === 'skipped' || job.status === 'busy') {
+    return `${label} job status: ${job.status} (${job.reason})`;
+  }
+  return `${label} job status: ${job.status}`;
 }
 
-function formatBackfillResult(result) {
-  if (result?.skipped) return `Backfill skipped: ${result.reason}`;
-  return [
-    `Backfill complete: days=${result.days}`,
-    `seen=${result.seen}`,
-    `added=${result.added}`,
-    `updated=${result.updated}`,
-    `skippedExistingOld=${result.skippedExistingOld}`,
-    `deleted=${result.deleted}`
-  ].join(', ');
+function formatPublishResult(result, job = null) {
+  const lines = result.selections.map((selection) => {
+    if (selection.status === 'scheduled') {
+      return `${selection.key}: scheduled (${selection.count})${selection.forced ? ' forced' : ''}`;
+    }
+    if (selection.status === 'exists') {
+      return `${selection.key}: already ${selection.publicationStatus || 'scheduled'}`;
+    }
+    if (selection.status === 'empty') {
+      return `${selection.key}: no posts`;
+    }
+    return `${selection.key}: ${selection.status}`;
+  });
+  if (job) {
+    lines.push(`Worker job status: ${job.status}${job.reason ? ` (${job.reason})` : ''}`);
+  }
+  return lines.join('\n') || 'No selections matched.';
 }

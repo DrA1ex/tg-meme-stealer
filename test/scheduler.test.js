@@ -50,6 +50,10 @@ test('Scheduler.start does not wait for startup sync before returning', async ()
 test('Scheduler skips timer sync while startup sync is still running', async () => {
   let syncRuns = 0;
   const scheduledCallbacks = [];
+  let resolveStartupSync;
+  const startupSyncDone = new Promise((resolve) => {
+    resolveStartupSync = resolve;
+  });
   const scheduler = new Scheduler(
     {
       schedule: {
@@ -64,7 +68,17 @@ test('Scheduler skips timer sync while startup sync is still running', async () 
     {
       sync: () => {
         syncRuns += 1;
-        return new Promise(() => {});
+        if (syncRuns === 1) {
+          return {
+            status: 'running',
+            promise: startupSyncDone
+          };
+        }
+        return {
+          status: 'skipped',
+          reason: 'duplicate_job',
+          promise: Promise.resolve({ skipped: true })
+        };
       },
       publish: async () => {},
       publishWorker: async () => {}
@@ -82,8 +96,9 @@ test('Scheduler skips timer sync while startup sync is still running', async () 
 
   await scheduledCallbacks[0]();
 
-  assert.equal(syncRuns, 1);
+  assert.equal(syncRuns, 2);
   assert.equal(scheduledCallbacks.length, 2);
+  resolveStartupSync();
 });
 
 test('Scheduler plans missed publications only after startup sync completes', async () => {
@@ -116,11 +131,16 @@ test('Scheduler plans missed publications only after startup sync completes', as
       logging: { level: 'silent' }
     },
     {
-      sync: async () => {
-        events.push('sync:start');
-        await syncDone;
-        syncCompleted = true;
-        events.push('sync:end');
+      sync: () => {
+        return {
+          status: 'running',
+          promise: (async () => {
+            events.push('sync:start');
+            await syncDone;
+            syncCompleted = true;
+            events.push('sync:end');
+          })()
+        };
       },
       publish: async () => {
         events.push(`publish:syncCompleted=${syncCompleted}`);
@@ -148,55 +168,6 @@ test('Scheduler plans missed publications only after startup sync completes', as
   await catchupDone;
 
   assert.deepEqual(events, ['sync:start', 'sync:end', 'publish:syncCompleted=true', 'worker']);
-});
-
-test('Scheduler serializes publication jobs across different selection keys', async () => {
-  let releaseFirst;
-  let activePublishJobs = 0;
-  let maxActivePublishJobs = 0;
-  const firstCanFinish = new Promise((resolve) => {
-    releaseFirst = resolve;
-  });
-  const events = [];
-  const scheduler = new Scheduler(
-    {
-      schedule: {
-        enabled: true,
-        timezone: 'Asia/Yekaterinburg'
-      },
-      logging: { level: 'silent' }
-    },
-    {}
-  );
-
-  const first = scheduler.run('publish:best.week', async () => {
-    activePublishJobs += 1;
-    maxActivePublishJobs = Math.max(maxActivePublishJobs, activePublishJobs);
-    events.push('first:start');
-    await firstCanFinish;
-    events.push('first:end');
-    activePublishJobs -= 1;
-  });
-  await Promise.resolve();
-
-  const second = scheduler.run('publish:controversial.week', async () => {
-    activePublishJobs += 1;
-    maxActivePublishJobs = Math.max(maxActivePublishJobs, activePublishJobs);
-    events.push('second:start');
-    events.push('second:end');
-    activePublishJobs -= 1;
-  });
-  await Promise.resolve();
-  await Promise.resolve();
-
-  assert.deepEqual(events, ['first:start']);
-  assert.equal(maxActivePublishJobs, 1);
-
-  releaseFirst();
-  await Promise.all([first, second]);
-
-  assert.deepEqual(events, ['first:start', 'first:end', 'second:start', 'second:end']);
-  assert.equal(maxActivePublishJobs, 1);
 });
 
 test('Scheduler plans missed publications on startup when they are inside request TTL', async () => {

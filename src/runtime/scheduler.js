@@ -7,8 +7,6 @@ export class Scheduler {
     this.handlers = typeof handlers === 'function' ? { sync: handlers, publish: handlers } : handlers;
     this.logger = logger;
     this.timers = new Set();
-    this.running = new Set();
-    this.queues = new Map();
   }
 
   async start() {
@@ -27,7 +25,7 @@ export class Scheduler {
     this.logger.info('Scheduler started', { timers: this.timers.size });
     if (this.config.schedule.runOnStart) {
       this.logger.info('Running startup sync');
-      void this.run('sync', () => this.handlers.sync())
+      void runHandler(this.handlers.sync)
         .then(() => this.planMissedPublications());
     } else {
       void this.planMissedPublications();
@@ -43,7 +41,7 @@ export class Scheduler {
       nextRunAt
     });
     this.scheduleTimeout(async () => {
-      await this.run('sync', () => this.handlers.sync());
+      await runHandler(this.handlers.sync);
       this.scheduleSync();
     }, intervalMs);
   }
@@ -72,8 +70,8 @@ export class Scheduler {
       nextRunAt
     });
     this.scheduleTimeout(async () => {
-      await this.run(`publish-plan:${key}`, () => this.handlers.publish(key, new Date()));
-      await this.run('publish-worker', () => this.handlers.publishWorker());
+      await this.handlers.publish(key, new Date());
+      await this.handlers.publishWorker();
       this.schedulePublication(key, time);
     }, delayMs);
   }
@@ -100,76 +98,29 @@ export class Scheduler {
         continue;
       }
 
-      planned += 1;
       this.logger.info('Planning missed publication', {
         key: entry.key,
         scheduledAt,
         ageMs,
         requestTtlMs
       });
-      await this.run(`publish-plan:${entry.key}`, () => this.handlers.publish(entry.key, scheduledAt));
+      await this.handlers.publish(entry.key, scheduledAt);
+      planned += 1;
     }
 
     if (planned > 0) {
-      await this.run('publish-worker', () => this.handlers.publishWorker());
+      await this.handlers.publishWorker();
     }
   }
 
   schedulePublicationWorker() {
     const intervalMs = Math.max(1, Number(this.config.publish?.workerIntervalMinutes ?? 1)) * 60 * 1000;
     this.logger.info('Scheduled publication worker', { intervalMs, nextRunAt: new Date(Date.now() + intervalMs) });
-    void this.run('publish-worker', () => this.handlers.publishWorker());
+    void this.handlers.publishWorker();
     this.scheduleTimeout(async () => {
-      await this.run('publish-worker', () => this.handlers.publishWorker());
+      await this.handlers.publishWorker();
       this.schedulePublicationWorker();
     }, intervalMs);
-  }
-
-  async run(key, fn) {
-    const lockKey = getJobLockKey(key);
-    if (lockKey === 'publish') {
-      return this.runQueued(key, fn, lockKey);
-    }
-    return this.runExclusive(key, fn, lockKey);
-  }
-
-  async runQueued(key, fn, lockKey) {
-    const previous = this.queues.get(lockKey) || Promise.resolve();
-    if (this.running.has(lockKey)) {
-      this.logger.info('Scheduled job queued: lock already running', { key, lockKey });
-    }
-
-    const current = previous.catch(() => {}).then(() => this.runExclusive(key, fn, lockKey));
-    const stored = current.finally(() => {
-      if (this.queues.get(lockKey) === stored) {
-        this.queues.delete(lockKey);
-      }
-    });
-    this.queues.set(lockKey, stored);
-    return current;
-  }
-
-  async runExclusive(key, fn, lockKey = key) {
-    if (this.running.has(lockKey)) {
-      this.logger.warn('Scheduled job skipped: already running', { key, lockKey });
-      return;
-    }
-    this.running.add(lockKey);
-    const startedAt = Date.now();
-    this.logger.info('Scheduled job started', { key, lockKey });
-    try {
-      await fn();
-      this.logger.info('Scheduled job finished', { key, lockKey, durationMs: Date.now() - startedAt });
-    } catch (error) {
-      this.logger.error('Scheduled job failed', {
-        key,
-        lockKey,
-        durationMs: Date.now() - startedAt,
-        error: error?.message || String(error)
-      });
-    } finally {
-      this.running.delete(lockKey);
-    }
   }
 
   scheduleTimeout(fn, delayMs) {
@@ -189,8 +140,10 @@ export class Scheduler {
   }
 }
 
-function getJobLockKey(key) {
-  return String(key).startsWith('publish') ? 'publish' : key;
+async function runHandler(handler) {
+  const job = await handler();
+  if (job?.promise) await job.promise;
+  return job;
 }
 
 export function getDelayUntilLocalTime({ now = new Date(), time, timezone }) {

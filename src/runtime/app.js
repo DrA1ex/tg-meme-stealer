@@ -5,6 +5,7 @@ import { SelectionPublisher } from '../telegram/publisher.js';
 import { TelegramScanner } from '../telegram/scanner.js';
 import { SetupAssistant } from '../telegram/setupAssistant.js';
 import { startUserClient } from '../telegram/userClient.js';
+import { JobGate } from './jobGate.js';
 import { SyncWorker } from './syncWorker.js';
 
 export async function createApp(config) {
@@ -29,16 +30,18 @@ export async function createApp(config) {
     sessionFile: config.telegram.sessionFile
   });
   const scanner = new TelegramScanner({ client: userClient, repository, config });
-  const syncWorker = new SyncWorker({ scanner, config });
+  const jobGate = new JobGate();
+  const syncWorker = new SyncWorker({ scanner, jobGate, config });
   const mediaDownloader = new MediaDownloader({ client: userClient, config });
   const setupAssistant = new SetupAssistant({ scanner, mediaDownloader, config });
-  const publisher = new SelectionPublisher({ repository, mediaDownloader, setupAssistant, syncWorker, config });
+  const publisher = new SelectionPublisher({ repository, mediaDownloader, setupAssistant, syncWorker, jobGate, config });
   let closed = false;
 
   return {
     repository,
     userClient,
     scanner,
+    jobGate,
     syncWorker,
     publisher,
     async close() {
@@ -62,15 +65,4 @@ async function safeDestroyUserClient(userClient) {
 
 function isAlreadyClosedStorageError(error) {
   return String(error?.message || error).includes('database connection is not open');
-}
-
-export async function runPublish(config, keys = null) {
-  const app = await createApp(config);
-  try {
-    const result = await app.publisher.publishAll(new Date(), keys);
-    console.log(`Publish complete: ${result.map((item) => `${item.key}=${item.count}`).join(', ')}`);
-    return result;
-  } finally {
-    await app.close();
-  }
 }

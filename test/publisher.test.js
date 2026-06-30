@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import path from 'node:path';
 import test from 'node:test';
+import { PostRepository } from '../src/database/postRepository.js';
 import { SelectionPublisher } from '../src/telegram/publisher.js';
 
 test('SelectionPublisher.waitForIdle waits for active handlers', async () => {
@@ -75,6 +78,7 @@ test('SelectionPublisher skips Telegram calls when publication request already e
     repository: {
       getTopPosts: async () => [post(1, 'Alice')],
       tryCreatePublicationRequest: async () => null,
+      getPublicationByKey: async () => ({ id: 10, status: 'published' }),
       getNextPublicationRequest: async () => null
     },
     mediaDownloader: {},
@@ -97,9 +101,60 @@ test('SelectionPublisher skips Telegram calls when publication request already e
     }
   };
 
-  await publisher.publishAll(new Date('2026-06-29T00:00:00.000Z'), ['best.week']);
+  const result = await publisher.publishAll(new Date('2026-06-29T00:00:00.000Z'), ['best.week']);
 
   assert.equal(telegramCalls, 0);
+  assert.deepEqual(result.selections, [{
+    key: 'best.week',
+    count: 1,
+    status: 'exists',
+    requested: false,
+    publicationId: 10,
+    publicationStatus: 'published',
+    publicationKey: 'publish:best.week:2026-W27'
+  }]);
+});
+
+test('SelectionPublisher handles concurrent publication scheduling collision without throwing', async () => {
+  const dbPath = path.join('/private/tmp', `tg-memes-${process.pid}-${Date.now()}-publisher-collision.sqlite`);
+  await fs.rm(dbPath, { force: true });
+  const repository = new PostRepository(dbPath);
+  await repository.init();
+  await repository.upsertPost({
+    ...post(1, 'Alice'),
+    chatId: -1002,
+    messageDate: '2026-06-28T12:00:00.000Z'
+  });
+
+  const publisher = new SelectionPublisher({
+    repository,
+    mediaDownloader: {},
+    setupAssistant: null,
+    config: {
+      ...config(),
+      publish: {
+        dryRun: false,
+        selections: {
+          best: {
+            week: { enabled: true, limit: 1, template: 'Best week' }
+          }
+        }
+      }
+    }
+  });
+
+  const results = await Promise.all([
+    publisher.publishAll(new Date('2026-06-29T00:00:00.000Z'), ['best.week']),
+    publisher.publishAll(new Date('2026-06-29T00:00:00.000Z'), ['best.week'])
+  ]);
+  const statuses = results.map((result) => result.selections[0].status).sort();
+  const rows = await repository.all('SELECT key, status FROM publications ORDER BY id');
+
+  assert.deepEqual(statuses, ['exists', 'scheduled']);
+  assert.deepEqual(rows, [{ key: 'publish:best.week:2026-W27', status: 'created' }]);
+
+  await repository.close();
+  await fs.rm(dbPath, { force: true });
 });
 
 test('SelectionPublisher keeps request resumable when Telegram send fails', async () => {
@@ -137,7 +192,7 @@ test('SelectionPublisher.runManualSync runs sync worker and replies with result'
     syncWorker: {
       sync: async (source) => {
         assert.equal(source, 'admin');
-        return { isInitial: false, seen: 10, saved: 3, deleted: 1 };
+        return { status: 'running', key: 'sync', promise: Promise.resolve({ isInitial: false, seen: 10 }) };
       }
     },
     config: config()
@@ -148,7 +203,7 @@ test('SelectionPublisher.runManualSync runs sync worker and replies with result'
     reply: async (message) => replies.push(message)
   });
 
-  assert.deepEqual(replies, ['Sync complete: initial=false, seen=10, saved=3, deleted=1']);
+  assert.deepEqual(replies, ['Sync job status: running']);
 });
 
 test('SelectionPublisher.runManualBackfill runs sync worker with optional days', async () => {
@@ -161,7 +216,7 @@ test('SelectionPublisher.runManualBackfill runs sync worker with optional days',
       backfill: async (days, source) => {
         assert.equal(days, 90);
         assert.equal(source, 'admin');
-        return { days: 90, seen: 20, added: 4, updated: 5, skippedExistingOld: 6, deleted: 1 };
+        return { status: 'busy', key: 'backfill:90', reason: 'busy', promise: Promise.resolve({ skipped: true }) };
       }
     },
     config: config()
@@ -172,7 +227,77 @@ test('SelectionPublisher.runManualBackfill runs sync worker with optional days',
     reply: async (message) => replies.push(message)
   });
 
-  assert.deepEqual(replies, ['Backfill complete: days=90, seen=20, added=4, updated=5, skippedExistingOld=6, deleted=1']);
+  assert.deepEqual(replies, ['Backfill job status: busy (busy)']);
+});
+
+test('SelectionPublisher.runManualPublish plans selections and replies with job status', async () => {
+  const replies = [];
+  const publisher = new SelectionPublisher({
+    repository: {
+      getTopPosts: async () => [post(1, 'Alice')],
+      tryCreatePublicationRequest: async () => 123,
+      getNextPublicationRequest: async () => null
+    },
+    mediaDownloader: {},
+    setupAssistant: null,
+    config: {
+      ...config(),
+      publish: {
+        dryRun: false,
+        selections: {
+          best: {
+            week: { enabled: true, limit: 1, template: 'Best week' }
+          }
+        }
+      }
+    }
+  });
+
+  await publisher.runManualPublish({
+    message: { text: '/publish best.week' },
+    reply: async (message) => replies.push(message)
+  });
+
+  assert.equal(replies.length, 1);
+  assert.match(replies[0], /best.week: scheduled \(1\)/);
+  assert.match(replies[0], /Worker job status: running/);
+});
+
+test('SelectionPublisher.runManualPublish supports force scheduling', async () => {
+  const keys = [];
+  const replies = [];
+  const publisher = new SelectionPublisher({
+    repository: {
+      getTopPosts: async () => [post(1, 'Alice')],
+      tryCreatePublicationRequest: async ({ key }) => {
+        keys.push(key);
+        return 123;
+      },
+      getNextPublicationRequest: async () => null
+    },
+    mediaDownloader: {},
+    setupAssistant: null,
+    config: {
+      ...config(),
+      publish: {
+        dryRun: false,
+        selections: {
+          best: {
+            week: { enabled: true, limit: 1, template: 'Best week' }
+          }
+        }
+      }
+    }
+  });
+
+  await publisher.runManualPublish({
+    message: { text: '/publish best.week --force' },
+    reply: async (message) => replies.push(message)
+  });
+
+  assert.equal(keys.length, 1);
+  assert.match(keys[0], /^publish:force:[a-z0-9]{6}:best\.week:2026-W27$/);
+  assert.match(replies[0], /best.week: scheduled \(1\) forced/);
 });
 
 test('SelectionPublisher.replyJobs returns admin jobs table', async () => {

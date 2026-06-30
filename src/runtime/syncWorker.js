@@ -1,33 +1,27 @@
 import { createLogger } from '../core/logger.js';
+import { JobGate } from './jobGate.js';
 
 export class SyncWorker {
-  constructor({ scanner, config }) {
+  constructor({ scanner, jobGate = new JobGate(), config }) {
     this.scanner = scanner;
+    this.jobGate = jobGate;
     this.logger = createLogger(config, 'sync-worker');
-    this.running = false;
     this.lastFinishedAt = null;
   }
 
   async sync(source = 'manual') {
-    return this.run('sync', source, () => this.scanner.sync());
+    return source === 'admin'
+      ? this.jobGate.runIfIdle('sync', () => this.execute('sync', source, () => this.scanner.sync()))
+      : this.jobGate.run('sync', () => this.execute('sync', source, () => this.scanner.sync()));
   }
 
   async backfill(days, source = 'manual') {
-    return this.run('backfill', source, () => this.scanner.backfill(days));
+    return source === 'admin'
+      ? this.jobGate.runIfIdle(getBackfillKey(days), () => this.execute('backfill', source, () => this.scanner.backfill(days)))
+      : this.jobGate.run(getBackfillKey(days), () => this.execute('backfill', source, () => this.scanner.backfill(days)));
   }
 
-  async run(operation, source, fn) {
-    if (this.running) {
-      this.logger.warn('Sync job skipped: worker already running', { operation, source });
-      return {
-        skipped: true,
-        reason: 'sync_worker_busy',
-        operation,
-        source
-      };
-    }
-
-    this.running = true;
+  async execute(operation, source, fn) {
     const startedAt = Date.now();
     this.logger.info('Sync job started', { operation, source });
     try {
@@ -47,9 +41,16 @@ export class SyncWorker {
         durationMs: Date.now() - startedAt,
         error: error?.message || String(error)
       });
-      throw error;
-    } finally {
-      this.running = false;
+      return {
+        failed: true,
+        operation,
+        source,
+        error: error?.message || String(error)
+      };
     }
   }
+}
+
+function getBackfillKey(days) {
+  return `backfill:${days || 'default'}`;
 }

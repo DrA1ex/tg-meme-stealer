@@ -1,6 +1,6 @@
 import { loadConfig } from './src/config/index.js';
 import { createLogger } from './src/core/logger.js';
-import { createApp, runPublish } from './src/runtime/app.js';
+import { createApp } from './src/runtime/app.js';
 import { Scheduler } from './src/runtime/scheduler.js';
 import { createSession } from './src/telegram/userClient.js';
 
@@ -19,8 +19,6 @@ logger.info('Command starting', {
 if (command === 'session') {
   const sessionPath = await createSession(config);
   console.log(`Session saved: ${sessionPath}`);
-} else if (command === 'publish') {
-  await runPublish(config, parseOptionalList(process.argv.slice(3)));
 } else if (command === 'setup') {
   const app = await createApp(config);
   let shuttingDown = false;
@@ -53,15 +51,24 @@ if (command === 'session') {
   const app = await createApp(config);
   const scheduler = new Scheduler(config, {
     sync: async () => {
-      const sync = await app.syncWorker.sync('schedule');
-      console.log(`Sync complete: initial=${sync.isInitial}, seen=${sync.seen}`);
+      const job = await app.syncWorker.sync('schedule');
+      console.log(`Sync job status: ${job.status}`);
+      job.promise.then((sync) => {
+        if (!sync?.skipped && !sync?.failed) {
+          console.log(`Sync complete: initial=${sync.isInitial}, seen=${sync.seen}`);
+        }
+      });
+      return job;
     },
     publish: async (key, now = new Date()) => {
       const publish = await app.publisher.publishAll(now, key);
-      console.log(`Publish complete: ${publish.map((item) => `${item.key}:${item.count}`).join(',')}`);
+      console.log(`Publish planned: ${publish.selections.map((item) => `${item.key}:${item.status}`).join(',')}`);
+      return publish;
     },
     publishWorker: async () => {
-      await app.publisher.processPublicationQueue();
+      const job = app.publisher.runPublicationWorker('schedule');
+      console.log(`Publish worker job status: ${job.status}`);
+      return job;
     }
   });
   let shuttingDown = false;
@@ -93,10 +100,6 @@ if (command === 'session') {
   }
 } else {
   throw new Error(`Unknown command: ${command}`);
-}
-
-function parseOptionalList(values) {
-  return values.length > 0 ? values : null;
 }
 
 function isInterruptedLaunchError(error) {

@@ -18,23 +18,20 @@ test('SyncWorker skips overlapping sync jobs', async () => {
     config: { logging: { level: 'silent' } }
   });
 
-  const first = worker.sync('schedule');
+  const first = await worker.sync('schedule');
   await Promise.resolve();
   const second = await worker.sync('schedule');
 
-  assert.deepEqual(second, {
-    skipped: true,
-    reason: 'sync_worker_busy',
-    operation: 'sync',
-    source: 'schedule'
-  });
+  assert.equal(first.status, 'running');
+  assert.equal(second.status, 'skipped');
+  assert.equal(second.reason, 'duplicate_job');
   assert.equal(runs, 1);
 
   resolveSync();
-  assert.deepEqual(await first, { seen: 10 });
+  assert.deepEqual(await first.promise, { seen: 10 });
 });
 
-test('SyncWorker skips backfill while sync is running', async () => {
+test('SyncWorker returns busy for admin backfill while sync is running', async () => {
   let resolveSync;
   const worker = new SyncWorker({
     scanner: {
@@ -51,13 +48,48 @@ test('SyncWorker skips backfill while sync is running', async () => {
     config: { logging: { level: 'silent' } }
   });
 
-  const first = worker.sync('schedule');
+  const first = await worker.sync('schedule');
   await Promise.resolve();
   const second = await worker.backfill(90, 'admin');
 
-  assert.equal(second.skipped, true);
-  assert.equal(second.operation, 'backfill');
+  assert.equal(second.status, 'busy');
+  assert.equal(second.reason, 'busy');
 
   resolveSync();
-  await first;
+  await first.promise;
+});
+
+test('SyncWorker queues scheduled backfill after running sync', async () => {
+  let resolveSync;
+  const events = [];
+  const worker = new SyncWorker({
+    scanner: {
+      sync: async () => {
+        events.push('sync:start');
+        await new Promise((resolve) => {
+          resolveSync = resolve;
+        });
+        events.push('sync:end');
+        return { seen: 10 };
+      },
+      backfill: async () => {
+        events.push('backfill');
+        return { seen: 20 };
+      }
+    },
+    config: { logging: { level: 'silent' } }
+  });
+
+  const first = await worker.sync('schedule');
+  await Promise.resolve();
+  const second = await worker.backfill(90, 'schedule');
+
+  assert.equal(first.status, 'running');
+  assert.equal(second.status, 'scheduled');
+  assert.deepEqual(events, ['sync:start']);
+
+  resolveSync();
+  assert.deepEqual(await first.promise, { seen: 10 });
+  assert.deepEqual(await second.promise, { seen: 20 });
+  assert.deepEqual(events, ['sync:start', 'sync:end', 'backfill']);
 });

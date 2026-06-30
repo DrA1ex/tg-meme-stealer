@@ -123,21 +123,27 @@ npm start
 
 `/stats` works while `npm run setup` or `npm start` is running, because both start the admin bot.
 
-9. Publish once manually:
+9. Publish once manually from the admin bot:
 
-```bash
-npm run publish
+```text
+/publish
 ```
 
 To publish only one selection:
 
-```bash
-npm run publish -- month
-npm run publish -- week
-npm run publish -- day
+```text
+/publish month
+/publish week
+/publish day
 ```
 
-For later maintenance, usually run only `npm start`. Use admin `/sync` for one refresh pass, `/backfill 90` to fill a larger historical window, `npm run publish -- week` to manually publish one selection, and `npm run setup` when parser or template rules need to be changed.
+If the same period was already scheduled or published, `/publish` reports that existing request instead of creating a duplicate. To intentionally publish the same selection again, use `--force`:
+
+```text
+/publish week --force
+```
+
+For later maintenance, usually run only `npm start`. Use admin `/sync` for one refresh pass, `/backfill 90` to fill a larger historical window, `/publish week` to manually publish one selection, and `npm run setup` when parser or template rules need to be changed.
 
 ## Configuration
 
@@ -546,32 +552,38 @@ Backfill a custom number of days:
 
 Backfill adds missing posts from the requested period. Existing posts are updated only inside `sync.refreshRecentDays`; older existing rows are left unchanged. If sync or backfill is already running, the new request is skipped.
 
-Run one publish cycle without running sync first. Without arguments this publishes all enabled selections.
+Run one publish cycle from the admin bot without running sync first. Without arguments this publishes all enabled selections.
 
-```bash
-npm run publish
+```text
+/publish
 ```
 
 Publish only one best selection:
 
-```bash
-npm run publish -- month
-npm run publish -- week
-npm run publish -- day
+```text
+/publish month
+/publish week
+/publish day
 ```
 
 These short aliases map to `best.month`, `best.week`, and `best.day`. Publish controversial selections with explicit keys:
 
-```bash
-npm run publish -- controversial.month
-npm run publish -- controversial.week
-npm run publish -- controversial.day
+```text
+/publish controversial.month
+/publish controversial.week
+/publish controversial.day
 ```
 
 Multiple selection types can be passed in one command:
 
-```bash
-npm run publish -- best.week controversial.week
+```text
+/publish best.week controversial.week
+```
+
+If a selection for the same period already exists, the command replies with the existing status and does not fail. To schedule another copy anyway, add `--force`; the app will create a unique forced publication key:
+
+```text
+/publish best.week --force
 ```
 
 Run the daemon for normal operation:
@@ -633,12 +645,13 @@ Commands work only in a private chat with `TELEGRAM_ADMIN_ID`.
 /jobs
 /sync
 /backfill
+/publish
 /setup
 ```
 
 `/jobs` shows all active publication jobs and the last 5 terminal jobs, sorted by `updated_at`, including progress and the latest error.
 
-`/sync` runs one recent refresh pass. `/backfill [days]` fills missing historical posts. Both commands use the in-memory sync worker, so overlapping sync/backfill requests are skipped.
+`/sync` runs one recent refresh pass. `/backfill [days]` fills missing historical posts. Both commands use the in-memory sync worker, so overlapping sync/backfill requests are skipped. `/publish [key...]` creates publication request rows immediately. If at least one request was created, the publication worker is asked to process the queue; the worker still runs one job at a time.
 
 Other users and non-private chats are ignored.
 
