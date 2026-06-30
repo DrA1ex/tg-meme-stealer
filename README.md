@@ -584,6 +584,48 @@ npm start
 
 The daemon starts the admin bot, runs sync on startup when `schedule.runOnStart` is enabled, schedules sync by interval, and schedules each publication type by local time.
 
+## Running With PM2
+
+The repository includes `ecosystem.example.json` for running the daemon with PM2.
+
+Install PM2 if needed:
+
+```bash
+npm install -g pm2
+```
+
+Start the daemon from the project root:
+
+```bash
+pm2 start ecosystem.example.json
+```
+
+Check logs:
+
+```bash
+pm2 logs tg-memes
+```
+
+Restart after changing `.env` or `config.json`:
+
+```bash
+pm2 restart tg-memes
+```
+
+Enable startup on server reboot:
+
+```bash
+pm2 startup
+pm2 save
+```
+
+If you want to customize the PM2 process name, memory limit, or other options, copy the example first:
+
+```bash
+cp ecosystem.example.json ecosystem.config.json
+pm2 start ecosystem.config.json
+```
+
 ## Admin Bot Commands
 
 Commands work only in a private chat with `TELEGRAM_ADMIN_ID`.

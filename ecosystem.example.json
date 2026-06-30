@@ -1,0 +1,20 @@
+{
+  "apps": [
+    {
+      "name": "tg-memes",
+      "script": "index.js",
+      "args": "daemon",
+      "cwd": ".",
+      "instances": 1,
+      "exec_mode": "fork",
+      "autorestart": true,
+      "watch": false,
+      "time": true,
+      "kill_timeout": 15000,
+      "max_memory_restart": "512M",
+      "env": {
+        "NODE_ENV": "production"
+      }
+    }
+  ]
+}
