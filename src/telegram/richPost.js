@@ -7,16 +7,16 @@ export async function sendRichPost({ telegram, chatId, mediaDownloader, post, in
     const caption = formatPostCaption(post, index, templates);
 
     if (files.length === 0) {
-      await withBotApiRetry(() => telegram.sendMessage(chatId, caption), { label: 'sendMessage' });
-      return;
+      return withBotApiRetry(() => telegram.sendMessage(chatId, caption), { label: 'sendMessage' });
     }
 
     const [firstFile, ...extraFiles] = files;
-    await sendSingleMedia({ telegram, chatId, file: firstFile, caption });
+    const firstResult = await sendSingleMedia({ telegram, chatId, file: firstFile, caption });
 
     for (const file of extraFiles) {
       await sendSingleMedia({ telegram, chatId, file });
     }
+    return firstResult;
   } finally {
     await mediaDownloader.cleanupFiles?.(files);
   }
@@ -24,12 +24,12 @@ export async function sendRichPost({ telegram, chatId, mediaDownloader, post, in
 
 async function sendSingleMedia({ telegram, chatId, file, caption }) {
   if (file.kind === 'video') {
-    await withBotApiRetry(
+    return withBotApiRetry(
       () => telegram.sendVideo(chatId, { source: file.path }, caption ? { caption } : undefined),
       { label: 'sendVideo' }
     );
   } else {
-    await withBotApiRetry(
+    return withBotApiRetry(
       () => telegram.sendPhoto(chatId, { source: file.path }, caption ? { caption } : undefined),
       { label: 'sendPhoto' }
     );

@@ -38,14 +38,29 @@ export class PostRepository {
     await this.db.exec(`
       CREATE TABLE IF NOT EXISTS publications (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
+        key TEXT,
         selection_key TEXT NOT NULL,
         title TEXT NOT NULL,
         period_start TEXT NOT NULL,
         period_end TEXT NOT NULL,
         status TEXT NOT NULL,
         published_at TEXT NOT NULL,
+        created_at TEXT,
+        updated_at TEXT,
+        finished_at TEXT,
+        last_error TEXT,
         data TEXT NOT NULL DEFAULT '{}'
       )
+    `);
+    await this.ensureColumn('publications', 'key', 'TEXT');
+    await this.ensureColumn('publications', 'created_at', 'TEXT');
+    await this.ensureColumn('publications', 'updated_at', 'TEXT');
+    await this.ensureColumn('publications', 'finished_at', 'TEXT');
+    await this.ensureColumn('publications', 'last_error', 'TEXT');
+    await this.db.exec(`
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_publications_key_active
+      ON publications(key)
+      WHERE key IS NOT NULL AND status IN ('created', 'running', 'published')
     `);
     await this.db.exec(`
       CREATE TABLE IF NOT EXISTS publication_posts (
@@ -55,8 +70,19 @@ export class PostRepository {
         position INTEGER NOT NULL,
         likes INTEGER NOT NULL,
         dislikes INTEGER NOT NULL,
+        bot_message_id INTEGER,
+        sent_at TEXT,
         PRIMARY KEY (publication_id, chat_id, message_id),
         FOREIGN KEY (publication_id) REFERENCES publications(id) ON DELETE CASCADE
+      )
+    `);
+    await this.ensureColumn('publication_posts', 'bot_message_id', 'INTEGER');
+    await this.ensureColumn('publication_posts', 'sent_at', 'TEXT');
+    await this.db.exec(`
+      CREATE TABLE IF NOT EXISTS job_locks (
+        lock_key TEXT PRIMARY KEY,
+        locked_at TEXT NOT NULL,
+        owner TEXT NOT NULL
       )
     `);
   }
@@ -161,16 +187,16 @@ export class PostRepository {
   }
 
   async createPublication({ selectionKey, title, periodStart, periodEnd, status, posts, data = {} }) {
-    const publishedAt = new Date().toISOString();
+    const now = new Date().toISOString();
 
     await this.run('BEGIN');
     try {
       const result = await this.run(
         `
-          INSERT INTO publications (selection_key, title, period_start, period_end, status, published_at, data)
-          VALUES (?, ?, ?, ?, ?, ?, ?)
+          INSERT INTO publications (selection_key, title, period_start, period_end, status, published_at, created_at, updated_at, finished_at, data)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `,
-        [selectionKey, title, periodStart, periodEnd, status, publishedAt, JSON.stringify(data)]
+        [selectionKey, title, periodStart, periodEnd, status, now, now, now, now, JSON.stringify(data)]
       );
       const publicationId = result.lastID;
 
@@ -193,6 +219,207 @@ export class PostRepository {
     }
   }
 
+  async tryCreatePublicationRequest({ key, selectionKey, title, periodStart, periodEnd, data = {} }) {
+    const now = new Date().toISOString();
+    try {
+      const result = await this.run(
+        `
+          INSERT INTO publications (
+            key, selection_key, title, period_start, period_end, status, published_at, created_at, updated_at, data
+          )
+          VALUES (?, ?, ?, ?, ?, 'created', ?, ?, ?, ?)
+        `,
+        [key, selectionKey, title, periodStart, periodEnd, now, now, now, JSON.stringify(data)]
+      );
+      return result.lastID;
+    } catch (error) {
+      if (isUniqueConstraintError(error)) return null;
+      throw error;
+    }
+  }
+
+  async getNextPublicationRequest({ requestTtlHours = 12 } = {}) {
+    await this.failExpiredPublicationRequests({ requestTtlHours });
+    const rows = await this.all(
+      `
+        SELECT id, key, selection_key AS selectionKey, title, period_start AS periodStart, period_end AS periodEnd,
+               status, published_at AS publishedAt, created_at AS createdAt, updated_at AS updatedAt,
+               finished_at AS finishedAt, last_error AS lastError, data
+        FROM publications
+        WHERE status IN ('running', 'created')
+        ORDER BY CASE status WHEN 'running' THEN 0 ELSE 1 END, created_at ASC, id ASC
+        LIMIT 1
+      `
+    );
+    return rows[0] ? deserializePublication(rows[0]) : null;
+  }
+
+  async listPublicationJobs({ finishedLimit = 5 } = {}) {
+    const activeRows = await this.all(
+      `
+        SELECT p.id, p.key, p.selection_key AS selectionKey, p.title,
+               p.status, p.created_at AS createdAt, p.updated_at AS updatedAt,
+               p.finished_at AS finishedAt, p.last_error AS lastError, p.data,
+               COUNT(pp.message_id) AS sentCount
+        FROM publications p
+        LEFT JOIN publication_posts pp ON pp.publication_id = p.id
+        WHERE p.status NOT IN ('published', 'dry_run', 'failed', 'cancelled')
+        GROUP BY p.id
+        ORDER BY COALESCE(p.updated_at, p.created_at) DESC, p.id DESC
+      `
+    );
+    const finishedRows = await this.all(
+      `
+        SELECT p.id, p.key, p.selection_key AS selectionKey, p.title,
+               p.status, p.created_at AS createdAt, p.updated_at AS updatedAt,
+               p.finished_at AS finishedAt, p.last_error AS lastError, p.data,
+               COUNT(pp.message_id) AS sentCount
+        FROM publications p
+        LEFT JOIN publication_posts pp ON pp.publication_id = p.id
+        WHERE p.status IN ('published', 'dry_run', 'failed', 'cancelled')
+        GROUP BY p.id
+        ORDER BY COALESCE(p.updated_at, p.finished_at, p.published_at, p.created_at) DESC, p.id DESC
+        LIMIT ?
+      `,
+      [finishedLimit]
+    );
+
+    return {
+      active: activeRows.map(deserializePublicationJob),
+      finished: finishedRows.map(deserializePublicationJob)
+    };
+  }
+
+  async failExpiredPublicationRequests({ requestTtlHours = 12 } = {}) {
+    const expiredBefore = new Date(Date.now() - Math.max(1, Number(requestTtlHours)) * 60 * 60 * 1000).toISOString();
+    await this.run(
+      `
+        UPDATE publications
+        SET status = 'failed',
+            updated_at = ?,
+            finished_at = ?,
+            last_error = ?
+        WHERE status IN ('created', 'running')
+          AND created_at < ?
+      `,
+      [new Date().toISOString(), new Date().toISOString(), 'Publication request expired before processing', expiredBefore]
+    );
+  }
+
+  async markPublicationRunning(publicationId) {
+    const now = new Date().toISOString();
+    await this.run(
+      'UPDATE publications SET status = ?, updated_at = ?, last_error = NULL WHERE id = ?',
+      ['running', now, publicationId]
+    );
+  }
+
+  async finishPublication(publicationId, { status, posts, data = {} }) {
+    const now = new Date().toISOString();
+
+    await this.run('BEGIN');
+    try {
+      await this.run(
+        'UPDATE publications SET status = ?, published_at = ?, updated_at = ?, finished_at = ?, last_error = NULL, data = ? WHERE id = ?',
+        [status, now, now, status === 'published' || status === 'dry_run' || status === 'failed' ? now : null, JSON.stringify(data), publicationId]
+      );
+
+      for (let index = 0; index < posts.length; index += 1) {
+        const post = posts[index];
+        await this.run(
+          `
+            INSERT OR IGNORE INTO publication_posts (
+              publication_id, chat_id, message_id, position, likes, dislikes, bot_message_id, sent_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          `,
+          [publicationId, String(post.chatId), post.messageId, index + 1, post.likes || 0, post.dislikes || 0, null, null]
+        );
+      }
+
+      await this.run('COMMIT');
+    } catch (error) {
+      await this.run('ROLLBACK');
+      throw error;
+    }
+  }
+
+  async failPublication(publicationId, error) {
+    await this.run(
+      'UPDATE publications SET status = ?, updated_at = ?, finished_at = ?, last_error = ? WHERE id = ?',
+      ['failed', new Date().toISOString(), new Date().toISOString(), error?.message || String(error), publicationId]
+    );
+  }
+
+  async updatePublicationError(publicationId, error) {
+    await this.run(
+      'UPDATE publications SET updated_at = ?, last_error = ? WHERE id = ?',
+      [new Date().toISOString(), error?.message || String(error), publicationId]
+    );
+  }
+
+  async listPublicationPosts(publicationId) {
+    return this.all(
+      `
+        SELECT publication_id AS publicationId, chat_id AS chatId, message_id AS messageId, position,
+               likes, dislikes, bot_message_id AS botMessageId, sent_at AS sentAt
+        FROM publication_posts
+        WHERE publication_id = ?
+        ORDER BY position ASC
+      `,
+      [publicationId]
+    );
+  }
+
+  async recordPublicationPost({ publicationId, post, position, botMessageId = null }) {
+    await this.run(
+      `
+        INSERT OR REPLACE INTO publication_posts (
+          publication_id, chat_id, message_id, position, likes, dislikes, bot_message_id, sent_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+      [
+        publicationId,
+        String(post.chatId),
+        post.messageId,
+        position,
+        post.likes || 0,
+        post.dislikes || 0,
+        botMessageId,
+        new Date().toISOString()
+      ]
+    );
+  }
+
+  async tryAcquireJobLock(lockKey, { staleMs = 6 * 60 * 60 * 1000, owner = process.pid } = {}) {
+    const now = new Date();
+    const nowIso = now.toISOString();
+    const staleBeforeIso = new Date(now.getTime() - staleMs).toISOString();
+    await this.run('DELETE FROM job_locks WHERE lock_key = ? AND locked_at < ?', [lockKey, staleBeforeIso]);
+
+    try {
+      await this.run(
+        'INSERT INTO job_locks (lock_key, locked_at, owner) VALUES (?, ?, ?)',
+        [lockKey, nowIso, String(owner)]
+      );
+      return true;
+    } catch (error) {
+      if (isUniqueConstraintError(error)) return false;
+      throw error;
+    }
+  }
+
+  async releaseJobLock(lockKey) {
+    await this.run('DELETE FROM job_locks WHERE lock_key = ?', [lockKey]);
+  }
+
+  async ensureColumn(tableName, columnName, definition) {
+    const columns = await this.all(`PRAGMA table_info(${tableName})`);
+    if (columns.some((column) => column.name === columnName)) return;
+    await this.run(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${definition}`);
+  }
+
   async run(sql, params = []) {
     return this.db.run(sql, params);
   }
@@ -204,4 +431,25 @@ export class PostRepository {
   async close() {
     if (this.db) await this.db.close();
   }
+}
+
+function isUniqueConstraintError(error) {
+  return error?.code === 'SQLITE_CONSTRAINT' || /SQLITE_CONSTRAINT|UNIQUE constraint/i.test(String(error?.message || error));
+}
+
+function deserializePublication(row) {
+  return {
+    ...row,
+    data: JSON.parse(row.data || '{}')
+  };
+}
+
+function deserializePublicationJob(row) {
+  const data = JSON.parse(row.data || '{}');
+  return {
+    ...row,
+    sentCount: Number(row.sentCount || 0),
+    expectedCount: Number(data.count || data.selection?.posts?.length || 0),
+    data
+  };
 }

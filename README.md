@@ -160,6 +160,7 @@ Common options:
     "initialScanDays": 60,
     "refreshRecentDays": 7,
     "pageSize": 100,
+    "lockTtlMinutes": 360,
     "throttle": {
       "enabled": true,
       "historyMinMs": 800,
@@ -170,6 +171,8 @@ Common options:
   },
   "publish": {
     "dryRun": false,
+    "requestTtlHours": 12,
+    "workerIntervalMinutes": 1,
     "selections": {
       "best": {
         "week": {
@@ -199,7 +202,9 @@ Common options:
 
 `logging.level` can be `debug`, `info`, `warn`, `error`, or `silent`. Sync logs include the scan window, each Telegram history request, fetched message counts, matched post counts, saved rows, skipped old posts, and deleted-post cleanup.
 
-Publication schedules use `schedule.timezone`. Each enabled selection under `publish.selections` has its own local `time`, `limit`, and header `template`. The `day` period uses `windowHours`; controversial selections also use `threshold`. A threshold of `0.3` means likes and dislikes may differ by at most 30% of the larger reaction count.
+Publication schedules use `schedule.timezone`. Each enabled selection under `publish.selections` has its own local `time`, `limit`, and header `template`. Daily selections run once per day, weekly selections run once per week, and monthly selections run once per month. The `day` period uses `windowHours`; controversial selections also use `threshold`. A threshold of `0.3` means likes and dislikes may differ by at most 30% of the larger reaction count.
+
+Publishing has two phases. The scheduler creates publication requests, then a worker sends queued requests one by one. `publish.workerIntervalMinutes` controls how often the worker checks the queue. `publish.requestTtlHours` controls how long a `created` or `running` request may wait before the worker marks it `failed`; the default is 12 hours. `sync.lockTtlMinutes` protects sync/backfill from running concurrently across restarts or multiple processes.
 
 ## Userbot Login
 
@@ -632,8 +637,14 @@ Commands work only in a private chat with `TELEGRAM_ADMIN_ID`.
 
 ```text
 /stats
+/jobs
 /setup
+/unlock_sync
 ```
+
+`/jobs` shows all active publication jobs and the last 5 terminal jobs, sorted by `updated_at`, including progress and the latest error.
+
+`/unlock_sync` manually releases the durable synchronization lock. Use it only after an interrupted process left sync/backfill locked and you do not want to wait for the lock TTL.
 
 Other users and non-private chats are ignored.
 
@@ -650,6 +661,9 @@ Main tables:
 - `posts`
 - `publications`
 - `publication_posts`
+- `job_locks`
+
+Publication rows use a durable `key` per selection period. Scheduled publishing creates `created` requests; the worker sends the header, switches the request to `running`, records each sent post in `publication_posts`, and finally marks the request `published`. If the process restarts while a request is `running`, the worker resumes from the first post that was not recorded as sent. Expired requests are marked `failed`. Sync/backfill uses `job_locks` to avoid concurrent Telegram scans. `/unlock_sync` can manually clear the sync lock when needed.
 
 Media is not stored permanently. The database stores Telegram media references in `data.media`; media is downloaded to `sync.mediaDir` only for preview or publishing and deleted immediately after the rich post is sent or the send attempt fails.
 
@@ -660,7 +674,7 @@ Telegram can return `FLOOD_WAIT` for read-only API calls too, including history 
 - Telegram does not provide stable public CDN URLs for private media available to a userbot.
 - Parser paths can differ between Telegram message layouts, so setup mode should be used before the first sync.
 - Deleted old posts are detected only inside the configured refresh window.
-- This project does not include deployment files yet; run it with your preferred process manager, such as `systemd`, Docker, or PM2.
+- The included PM2 file is only an example; adjust paths and environment handling for your server.
 
 ## Development
 

@@ -40,10 +40,10 @@ test('normalizeSelectionKeys expands type aliases and rejects unknown keys', () 
 
 test('getScheduledPublishEntries reads enabled selection times', () => {
   assert.deepEqual(getScheduledPublishEntries(config()), [
-    { key: 'best.month', time: '10:20' },
-    { key: 'best.week', time: '10:10' },
-    { key: 'best.day', time: '10:00' },
-    { key: 'controversial.week', time: '11:10' }
+    { key: 'best.month', type: 'best', period: 'month', time: '10:20' },
+    { key: 'best.week', type: 'best', period: 'week', time: '10:10' },
+    { key: 'best.day', type: 'best', period: 'day', time: '10:00' },
+    { key: 'controversial.week', type: 'controversial', period: 'week', time: '11:10' }
   ]);
 });
 

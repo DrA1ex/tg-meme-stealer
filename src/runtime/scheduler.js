@@ -8,6 +8,7 @@ export class Scheduler {
     this.logger = logger;
     this.timers = new Set();
     this.running = new Set();
+    this.queues = new Map();
   }
 
   async start() {
@@ -21,6 +22,7 @@ export class Scheduler {
       runOnStart: Boolean(this.config.schedule.runOnStart)
     });
     this.scheduleSync();
+    this.schedulePublicationWorker();
     this.schedulePublications();
     this.logger.info('Scheduler started', { timers: this.timers.size });
     if (this.config.schedule.runOnStart) {
@@ -50,44 +52,83 @@ export class Scheduler {
   }
 
   schedulePublication(key, time, now = new Date()) {
-    const nextRunAt = getNextLocalTimeAsDate({
+    const period = getPeriodFromSelectionKey(key);
+    const nextRunAt = getNextScheduledRunAsDate({
       now,
       time,
-      timezone: this.config.schedule.timezone
+      timezone: this.config.schedule.timezone,
+      period
     });
     const delayMs = nextRunAt.getTime() - now.getTime();
     this.logger.info('Scheduled publication', {
       key,
+      period,
       time,
       timezone: this.config.schedule.timezone,
       delayMs,
       nextRunAt
     });
     this.scheduleTimeout(async () => {
-      await this.run(`publish:${key}`, () => this.handlers.publish(key));
+      await this.run(`publish-plan:${key}`, () => this.handlers.publish(key));
+      await this.run('publish-worker', () => this.handlers.publishWorker());
       this.schedulePublication(key, time);
     }, delayMs);
   }
 
+  schedulePublicationWorker() {
+    const intervalMs = Math.max(1, Number(this.config.publish?.workerIntervalMinutes ?? 1)) * 60 * 1000;
+    this.logger.info('Scheduled publication worker', { intervalMs, nextRunAt: new Date(Date.now() + intervalMs) });
+    void this.run('publish-worker', () => this.handlers.publishWorker());
+    this.scheduleTimeout(async () => {
+      await this.run('publish-worker', () => this.handlers.publishWorker());
+      this.schedulePublicationWorker();
+    }, intervalMs);
+  }
+
   async run(key, fn) {
-    if (this.running.has(key)) {
-      this.logger.warn('Scheduled job skipped: already running', { key });
+    const lockKey = getJobLockKey(key);
+    if (lockKey === 'publish') {
+      return this.runQueued(key, fn, lockKey);
+    }
+    return this.runExclusive(key, fn, lockKey);
+  }
+
+  async runQueued(key, fn, lockKey) {
+    const previous = this.queues.get(lockKey) || Promise.resolve();
+    if (this.running.has(lockKey)) {
+      this.logger.info('Scheduled job queued: lock already running', { key, lockKey });
+    }
+
+    const current = previous.catch(() => {}).then(() => this.runExclusive(key, fn, lockKey));
+    const stored = current.finally(() => {
+      if (this.queues.get(lockKey) === stored) {
+        this.queues.delete(lockKey);
+      }
+    });
+    this.queues.set(lockKey, stored);
+    return current;
+  }
+
+  async runExclusive(key, fn, lockKey = key) {
+    if (this.running.has(lockKey)) {
+      this.logger.warn('Scheduled job skipped: already running', { key, lockKey });
       return;
     }
-    this.running.add(key);
+    this.running.add(lockKey);
     const startedAt = Date.now();
-    this.logger.info('Scheduled job started', { key });
+    this.logger.info('Scheduled job started', { key, lockKey });
     try {
       await fn();
-      this.logger.info('Scheduled job finished', { key, durationMs: Date.now() - startedAt });
+      this.logger.info('Scheduled job finished', { key, lockKey, durationMs: Date.now() - startedAt });
     } catch (error) {
       this.logger.error('Scheduled job failed', {
         key,
+        lockKey,
         durationMs: Date.now() - startedAt,
         error: error?.message || String(error)
       });
     } finally {
-      this.running.delete(key);
+      this.running.delete(lockKey);
     }
   }
 
@@ -108,9 +149,19 @@ export class Scheduler {
   }
 }
 
+function getJobLockKey(key) {
+  return String(key).startsWith('publish') ? 'publish' : key;
+}
+
 export function getDelayUntilLocalTime({ now = new Date(), time, timezone }) {
   const target = getNextLocalTimeAsDate({ now, time, timezone });
   return target.getTime() - now.getTime();
+}
+
+export function getNextScheduledRunAsDate({ now = new Date(), time, timezone, period = 'day' }) {
+  if (period === 'month') return getNextMonthlyRunAsDate({ now, time, timezone });
+  if (period === 'week') return getNextWeeklyRunAsDate({ now, time, timezone });
+  return getNextLocalTimeAsDate({ now, time, timezone });
 }
 
 export function getNextLocalTimeAsDate({ now = new Date(), time, timezone }) {
@@ -161,4 +212,67 @@ function getTimezoneOffsetMs(date, timezone) {
   const local = getLocalParts(date, timezone);
   const asUtc = Date.UTC(local.year, local.month - 1, local.day, local.hour, local.minute, 0);
   return asUtc - date.getTime();
+}
+
+function getNextWeeklyRunAsDate({ now, time, timezone }) {
+  const local = getLocalParts(now, timezone);
+  const currentWeekday = getCalendarWeekday(local);
+  const targetWeekday = 1;
+  let daysToAdd = (targetWeekday - currentWeekday + 7) % 7;
+  let target = getLocalDateTimeAsDate({
+    year: local.year,
+    month: local.month,
+    day: local.day + daysToAdd,
+    time,
+    timezone
+  });
+  if (target <= now) {
+    daysToAdd += 7;
+    target = getLocalDateTimeAsDate({
+      year: local.year,
+      month: local.month,
+      day: local.day + daysToAdd,
+      time,
+      timezone
+    });
+  }
+  return target;
+}
+
+function getNextMonthlyRunAsDate({ now, time, timezone }) {
+  const local = getLocalParts(now, timezone);
+  let target = getLocalDateTimeAsDate({
+    year: local.year,
+    month: local.month,
+    day: 1,
+    time,
+    timezone
+  });
+  if (target <= now) {
+    target = getLocalDateTimeAsDate({
+      year: local.year,
+      month: local.month + 1,
+      day: 1,
+      time,
+      timezone
+    });
+  }
+  return target;
+}
+
+function getLocalDateTimeAsDate({ year, month, day, time, timezone }) {
+  const [hour, minute] = parseTime(time);
+  const localMiddayUtc = Date.UTC(year, month - 1, day, 12, 0, 0);
+  const targetParts = getLocalParts(new Date(localMiddayUtc), timezone);
+  const utcGuess = Date.UTC(targetParts.year, targetParts.month - 1, targetParts.day, hour, minute, 0);
+  const offsetMs = getTimezoneOffsetMs(new Date(utcGuess), timezone);
+  return new Date(utcGuess - offsetMs);
+}
+
+function getCalendarWeekday(local) {
+  return new Date(Date.UTC(local.year, local.month - 1, local.day)).getUTCDay();
+}
+
+function getPeriodFromSelectionKey(key) {
+  return String(key).split('.')[1] || 'day';
 }

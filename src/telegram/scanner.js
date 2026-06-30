@@ -15,6 +15,10 @@ export class TelegramScanner {
   }
 
   async sync() {
+    return this.withSyncLock('sync', () => this.runSync());
+  }
+
+  async runSync() {
     const now = new Date();
     const existingCount = await this.repository.all('SELECT COUNT(*) AS count FROM posts WHERE chat_id = ?', [
       String(this.config.telegram.sourceChatId)
@@ -61,6 +65,10 @@ export class TelegramScanner {
   }
 
   async backfill(days = getInitialScanDays(this.config)) {
+    return this.withSyncLock('backfill', () => this.runBackfill(days));
+  }
+
+  async runBackfill(days = getInitialScanDays(this.config)) {
     const now = new Date();
     const since = subtractDays(now, days);
     const updateSince = subtractDays(now, this.config.sync.refreshRecentDays);
@@ -105,6 +113,27 @@ export class TelegramScanner {
       skippedOld: scan.skippedOld,
       deleted
     };
+  }
+
+  async withSyncLock(operation, fn) {
+    const lockKey = `telegram:${this.config.telegram.sourceChatId}:sync`;
+    const acquired = await this.repository.tryAcquireJobLock(lockKey, {
+      staleMs: getSyncLockTtlMs(this.config)
+    });
+    if (!acquired) {
+      this.logger.warn('Sync skipped: lock already held', { operation, lockKey });
+      return {
+        skipped: true,
+        reason: 'lock_held',
+        operation
+      };
+    }
+
+    try {
+      return await fn();
+    } finally {
+      await this.repository.releaseJobLock(lockKey);
+    }
   }
 
   async scanSince(sinceDate) {
@@ -357,6 +386,11 @@ export function getInitialScanDays(config) {
     return Number(config.sync.initialScanDays);
   }
   return 60;
+}
+
+export function getSyncLockTtlMs(config) {
+  const minutes = Number(config.sync?.lockTtlMinutes ?? 360);
+  return Math.max(1, minutes) * 60 * 1000;
 }
 
 export function getBackfillPostAction({ post, sinceDate, updateSinceDate, existingIds }) {

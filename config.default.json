@@ -13,6 +13,7 @@
     "refreshRecentDays": 7,
     "pageSize": 100,
     "mediaDir": "tmp/media",
+    "lockTtlMinutes": 360,
     "throttle": {
       "enabled": true,
       "historyMinMs": 800,
@@ -72,6 +73,8 @@
   },
   "publish": {
     "dryRun": false,
+    "requestTtlHours": 12,
+    "workerIntervalMinutes": 1,
     "selections": {
       "best": {
         "month": {

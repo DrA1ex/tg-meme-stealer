@@ -1,5 +1,6 @@
 import { Telegraf } from 'telegraf';
 import { formatSelectionHeader } from '../core/format.js';
+import { formatJobs } from '../core/jobs.js';
 import { createLogger } from '../core/logger.js';
 import { loadSelections } from '../core/selection.js';
 import { buildStats, formatStats } from '../core/stats.js';
@@ -16,6 +17,7 @@ export class SelectionPublisher {
     this.logger = createLogger(config, 'publisher');
     this.activeHandlers = 0;
     this.idleResolvers = [];
+    this.processingPublications = false;
     this.configureCommands();
   }
 
@@ -53,11 +55,13 @@ export class SelectionPublisher {
       await next();
     });
 
-    this.bot.start((ctx) => ctx.reply('Available commands: /stats, /setup'));
+    this.bot.start((ctx) => ctx.reply('Available commands: /stats, /jobs, /setup, /unlock_sync'));
     this.bot.command('stats', async (ctx) => {
       const stats = await buildStats(this.repository, this.config);
       await ctx.reply(formatStats(stats, this.config.templates));
     });
+    this.bot.command('jobs', async (ctx) => this.replyJobs(ctx));
+    this.bot.command('unlock_sync', async (ctx) => this.unlockSyncLock(ctx));
     this.setupAssistant?.register(this.bot);
   }
 
@@ -68,15 +72,67 @@ export class SelectionPublisher {
       keys: keys || 'all',
       selections: selections.length
     });
+    const results = [];
     for (const selection of selections) {
-      await this.publishSelection(selection);
+      results.push(await this.createPublicationRequest(selection));
     }
-    return selections.map((selection) => ({ key: selection.key, count: selection.posts.length }));
+    await this.processPublicationQueue();
+    return selections.map((selection, index) => ({
+      key: selection.key,
+      count: selection.posts.length,
+      requested: Boolean(results[index])
+    }));
   }
 
-  async publishSelection(selection) {
+  async createPublicationRequest(selection) {
     if (selection.posts.length === 0) {
       this.logger.info('Selection skipped: no posts', { selection: selection.key });
+      return null;
+    }
+
+    const key = getPublicationKey(selection, this.config);
+    const publicationId = await this.repository.tryCreatePublicationRequest({
+      key,
+      selectionKey: selection.key,
+      title: selection.title,
+      periodStart: selection.sinceIso,
+      periodEnd: selection.untilIso,
+      data: { count: selection.posts.length, key, selection }
+    });
+    if (!publicationId) {
+      this.logger.info('Selection skipped: request already exists', {
+        selection: selection.key,
+        key
+      });
+      return null;
+    }
+    this.logger.info('Publication request created', { publicationId, selection: selection.key, key, posts: selection.posts.length });
+    return publicationId;
+  }
+
+  async processPublicationQueue() {
+    if (this.processingPublications) {
+      this.logger.info('Publication worker skipped: already running');
+      return;
+    }
+    this.processingPublications = true;
+    try {
+      while (true) {
+        const request = await this.repository.getNextPublicationRequest({
+          requestTtlHours: getPublicationRequestTtlHours(this.config)
+        });
+        if (!request) break;
+        await this.processPublicationRequest(request);
+      }
+    } finally {
+      this.processingPublications = false;
+    }
+  }
+
+  async processPublicationRequest(request) {
+    const selection = request.data?.selection;
+    if (!selection?.posts?.length) {
+      await this.repository.failPublication(request.id, new Error('Publication request has no selection snapshot'));
       return;
     }
 
@@ -87,25 +143,53 @@ export class SelectionPublisher {
         posts: selection.posts.length,
         targetChatId: this.config.telegram.publishChannelId
       });
-      await this.recordPublication(selection, 'dry_run');
+      await this.recordPublication(request.id, selection, 'dry_run', { key: request.key });
       return;
     }
 
-    this.logger.info('Publishing selection header', {
-      selection: selection.key,
-      title: selection.title,
-      posts: selection.posts.length,
-      targetChatId: this.config.telegram.publishChannelId
-    });
-    await withBotApiRetry(
-      () => this.bot.telegram.sendMessage(this.config.telegram.publishChannelId, formatSelectionHeader(selection.title)),
-      { label: 'sendSelectionHeader' }
-    );
+    try {
+      if (request.status === 'created') {
+        this.logger.info('Publishing selection header', {
+          publicationId: request.id,
+          selection: selection.key,
+          title: selection.title,
+          posts: selection.posts.length,
+          targetChatId: this.config.telegram.publishChannelId,
+          key: request.key
+        });
+        await withBotApiRetry(
+          () => this.bot.telegram.sendMessage(this.config.telegram.publishChannelId, formatSelectionHeader(selection.title)),
+          { label: 'sendSelectionHeader' }
+        );
+        await this.repository.markPublicationRunning(request.id);
+      }
 
-    for (let index = 0; index < selection.posts.length; index += 1) {
-      await this.publishPost(selection.posts[index], index);
+      const sentRows = await this.repository.listPublicationPosts(request.id);
+      const sentPositions = new Set(sentRows.map((row) => row.position));
+
+      for (let index = 0; index < selection.posts.length; index += 1) {
+        const position = index + 1;
+        if (sentPositions.has(position)) {
+          this.logger.info('Publication post skipped: already sent', {
+            publicationId: request.id,
+            selection: selection.key,
+            position
+          });
+          continue;
+        }
+        const result = await this.publishPost(selection.posts[index], index);
+        await this.repository.recordPublicationPost({
+          publicationId: request.id,
+          post: selection.posts[index],
+          position,
+          botMessageId: getBotMessageId(result)
+        });
+      }
+      await this.recordPublication(request.id, selection, 'published', { key: request.key });
+    } catch (error) {
+      await this.repository.updatePublicationError(request.id, error);
+      throw error;
     }
-    await this.recordPublication(selection, 'published');
   }
 
   async publishPost(post, index) {
@@ -115,7 +199,7 @@ export class SelectionPublisher {
       messageId: post.messageId,
       position: index + 1
     });
-    await sendRichPost({
+    return sendRichPost({
       telegram: this.bot.telegram,
       chatId: this.config.telegram.publishChannelId,
       mediaDownloader: this.mediaDownloader,
@@ -125,16 +209,27 @@ export class SelectionPublisher {
     });
   }
 
-  async recordPublication(selection, status) {
-    await this.repository.createPublication({
-      selectionKey: selection.key,
-      title: selection.title,
-      periodStart: selection.sinceIso,
-      periodEnd: selection.untilIso,
+  async recordPublication(publicationId, selection, status, data = {}) {
+    await this.repository.finishPublication(publicationId, {
       status,
       posts: selection.posts,
-      data: { count: selection.posts.length }
+      data: { count: selection.posts.length, ...data }
     });
+  }
+
+  async unlockSyncLock(ctx) {
+    const lockKey = getSyncLockKey(this.config);
+    await this.repository.releaseJobLock(lockKey);
+    this.logger.warn('Sync lock released by admin command', {
+      lockKey,
+      adminId: ctx.from?.id
+    });
+    await ctx.reply(`Sync lock released: ${lockKey}`);
+  }
+
+  async replyJobs(ctx) {
+    const jobs = await this.repository.listPublicationJobs({ finishedLimit: 5 });
+    await ctx.reply(formatJobs(jobs), { parse_mode: 'Markdown' });
   }
 
   launchBot() {
@@ -194,4 +289,59 @@ function getCommandName(ctx) {
   const text = ctx.message?.text || ctx.update?.message?.text || '';
   const match = text.match(/^\/([^\s@]+)(?:@\w+)?/);
   return match?.[1] || '';
+}
+
+function getSyncLockKey(config) {
+  return `telegram:${config.telegram.sourceChatId}:sync`;
+}
+
+function getPublicationKey(selection, config) {
+  return [
+    'publish',
+    selection.key,
+    getPublicationBucket(selection.period, new Date(selection.untilIso), config.schedule?.timezone || 'UTC')
+  ].join(':');
+}
+
+function getPublicationBucket(period, date, timezone) {
+  const parts = getLocalDateParts(date, timezone);
+  if (period === 'month') return `${parts.year}-${pad2(parts.month)}`;
+  if (period === 'week') return `${parts.year}-W${pad2(getIsoWeek(parts))}`;
+  return `${parts.year}-${pad2(parts.month)}-${pad2(parts.day)}`;
+}
+
+function getLocalDateParts(date, timezone) {
+  const formatter = new Intl.DateTimeFormat('en-CA', {
+    timeZone: timezone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  });
+  const parts = Object.fromEntries(formatter.formatToParts(date).map((part) => [part.type, part.value]));
+  return {
+    year: Number(parts.year),
+    month: Number(parts.month),
+    day: Number(parts.day)
+  };
+}
+
+function getIsoWeek(parts) {
+  const date = new Date(Date.UTC(parts.year, parts.month - 1, parts.day));
+  const day = date.getUTCDay() || 7;
+  date.setUTCDate(date.getUTCDate() + 4 - day);
+  const yearStart = new Date(Date.UTC(date.getUTCFullYear(), 0, 1));
+  return Math.ceil(((date - yearStart) / 86400000 + 1) / 7);
+}
+
+function pad2(value) {
+  return String(value).padStart(2, '0');
+}
+
+function getPublicationRequestTtlHours(config) {
+  return Math.max(1, Number(config.publish?.requestTtlHours ?? 12));
+}
+
+function getBotMessageId(result) {
+  if (Array.isArray(result)) return result[0]?.message_id || result[0]?.messageId || null;
+  return result?.message_id || result?.messageId || null;
 }

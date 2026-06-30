@@ -65,6 +65,9 @@ if (command === 'session') {
     publish: async (key) => {
       const publish = await app.publisher.publishAll(new Date(), key);
       console.log(`Publish complete: ${publish.map((item) => `${item.key}:${item.count}`).join(',')}`);
+    },
+    publishWorker: async () => {
+      await app.publisher.processPublicationQueue();
     }
   });
   let shuttingDown = false;

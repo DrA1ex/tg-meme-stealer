@@ -40,7 +40,7 @@ export function getScheduledPublishEntries(config) {
     for (const period of PERIODS) {
       const entry = config.publish?.selections?.[type]?.[period];
       if (entry?.enabled && entry.time) {
-        entries.push({ key: `${type}.${period}`, time: entry.time });
+        entries.push({ key: `${type}.${period}`, type, period, time: entry.time });
       }
     }
   }
