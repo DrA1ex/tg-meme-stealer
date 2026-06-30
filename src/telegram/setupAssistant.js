@@ -89,7 +89,7 @@ export class SetupAssistant {
   async test(ctx) {
     const limit = parseLimit(ctx.message.text, 30);
     const result = await this.scanner.previewRecent(limit, this.getDraft(ctx));
-    await replyLong(ctx, summarizeParsedPosts(result));
+    await replyCode(ctx, summarizeParsedPosts(result));
   }
 
   async raw(ctx) {
@@ -109,7 +109,7 @@ export class SetupAssistant {
       await ctx.reply(`Message not found: ${messageId}`);
       return;
     }
-    await replyLong(ctx, summarizeParsedPosts({ scanned: 1, posts: result.posts }));
+    await replyCode(ctx, summarizeParsedPosts({ scanned: 1, posts: result.posts }));
     if (!result.posts.length) {
       await ctx.reply('Message did not match the current parser rules.');
       return;
@@ -236,6 +236,14 @@ async function replyLong(ctx, text) {
   }
 
   if (chunk) await ctx.reply(chunk);
+}
+
+async function replyCode(ctx, text) {
+  const limit = 3400;
+  for (let index = 0; index < text.length; index += limit) {
+    const chunk = text.slice(index, index + limit);
+    await ctx.reply(`<pre><code>${escapeHtml(chunk)}</code></pre>`, { parse_mode: 'HTML' });
+  }
 }
 
 async function replyJsonCode(ctx, value) {

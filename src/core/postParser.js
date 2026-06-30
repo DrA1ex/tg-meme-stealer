@@ -118,8 +118,7 @@ export function parsePostMessage(message, options) {
     messageDate: date.toISOString(),
     data: {
       sender: sender ? compactSender(sender) : null,
-      media: buildMediaReferences([message]),
-      images: buildMediaReferences([message]).filter((media) => media.mediaKind === 'photo')
+      media: buildMediaReferences([message])
     }
   };
 }
@@ -233,7 +232,6 @@ function parseGroupedPost(group, options) {
   if (!post) return null;
 
   post.data.media = buildMediaReferences(ordered);
-  post.data.images = post.data.media.filter((media) => media.mediaKind === 'photo');
   return post;
 }
 

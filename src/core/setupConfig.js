@@ -75,19 +75,12 @@ export async function saveDraftConfig(draft, configPath = 'config.json') {
 
 export function summarizeParsedPosts({ posts, scanned }, options = {}) {
   const maxRows = options.maxRows || posts.length;
-  const lines = [
-    `Scanned messages: ${scanned}`,
-    `Matched posts: ${posts.length}`,
-    `Shown rows: ${Math.min(posts.length, maxRows)}`,
-    '',
-    ['#', 'id', 'author', 'likes', 'dislikes', 'media', 'text'].join(' | '),
-    ['-', '--', '------', '-----', '--------', '-----', '----'].join(' | ')
-  ];
+  const rows = [['#', 'id', 'author', 'likes', 'dislikes', 'media', 'text']];
 
   for (let index = 0; index < Math.min(posts.length, maxRows); index += 1) {
     const post = posts[index];
     const media = post.data?.media?.map((item) => item.mediaKind).join(', ') || 'text';
-    lines.push([
+    rows.push([
       index + 1,
       post.messageId,
       formatCell(post.author || 'missing', 18),
@@ -95,10 +88,27 @@ export function summarizeParsedPosts({ posts, scanned }, options = {}) {
       post.dislikes ?? 0,
       formatCell(media, 12),
       formatCell(post.text || '', 32)
-    ].join(' | '));
+    ]);
   }
 
-  return lines.join('\n');
+  return [
+    `Scanned messages: ${scanned}`,
+    `Matched posts: ${posts.length}`,
+    `Shown rows: ${Math.min(posts.length, maxRows)}`,
+    '',
+    formatPaddedTable(rows)
+  ].join('\n');
+}
+
+export function formatPaddedTable(rows) {
+  const stringRows = rows.map((row) => row.map((cell) => String(cell)));
+  const widths = stringRows[0].map((_, columnIndex) => (
+    Math.max(...stringRows.map((row) => visibleLength(row[columnIndex] || '')))
+  ));
+
+  return stringRows
+    .map((row) => row.map((cell, columnIndex) => ` ${padRight(cell, widths[columnIndex])} `).join('|'))
+    .join('\n');
 }
 
 export function selectWeekPreviewPost(posts, now = new Date()) {
@@ -168,6 +178,15 @@ function formatCell(value, maxLength) {
   if (!normalized) return 'missing';
   if (normalized.length <= maxLength) return normalized;
   return `${normalized.slice(0, maxLength - 1)}…`;
+}
+
+function padRight(value, width) {
+  const padding = Math.max(0, width - visibleLength(value));
+  return `${value}${' '.repeat(padding)}`;
+}
+
+function visibleLength(value) {
+  return String(value).length;
 }
 
 function formatPreviewMediaSummary(post) {

@@ -95,8 +95,8 @@ test('summarizeParsedPosts and preview select best weekly post', () => {
   assert.match(summary, /Scanned messages: 30/);
   assert.match(summary, /Matched posts: 6/);
   assert.match(summary, /Shown rows: 6/);
-  assert.match(summary, /# \| id \| author \| likes \| dislikes \| media \| text/);
-  assert.match(summary, /6 \| 6 \| Alice/);
+  assert.match(summary, / # \| id \| author \| likes \| dislikes \| media \| text/);
+  assert.match(summary, / 6 \| 6  \| Alice/);
   assert.equal(preview.messageId, 1);
   assert.deepEqual(previews.map((post) => post.messageId), [1, 2, 6]);
   const rendered = formatPreviewPost(preview, {

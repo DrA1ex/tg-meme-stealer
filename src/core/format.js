@@ -49,5 +49,5 @@ export function formatPostMediaSummary(post) {
 }
 
 function getPostMedia(post) {
-  return post.data?.media || post.data?.images || [];
+  return post.data?.media || [];
 }

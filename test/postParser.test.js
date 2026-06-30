@@ -33,7 +33,8 @@ test('parseMessagesToPosts filters target user and groups photo albums', () => {
   assert.equal(posts[0].likes, 8);
   assert.equal(posts[0].dislikes, 1);
   assert.equal(posts[0].author, 'Alice');
-  assert.equal(posts[0].data.images.length, 2);
+  assert.equal(posts[0].data.media.length, 2);
+  assert.equal(posts[0].data.images, undefined);
 });
 
 test('parseMessagesToPosts supports all mode, sender author and text-only posts', () => {

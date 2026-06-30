@@ -64,6 +64,6 @@ function post(overrides) {
     likes: overrides.likes,
     dislikes: overrides.dislikes,
     messageDate: '2026-06-15T00:00:00.000Z',
-    data: { images: [] }
+    data: { media: [] }
   };
 }

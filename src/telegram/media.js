@@ -17,7 +17,7 @@ export class MediaDownloader {
     const mediaDir = path.resolve(this.config.sync.mediaDir);
     await fs.mkdir(mediaDir, { recursive: true });
     const files = [];
-    const mediaItems = post.data?.media || post.data?.images || [];
+    const mediaItems = post.data?.media || [];
 
     this.logger.info('Downloading post media', {
       chatId: post.chatId,
