@@ -25,6 +25,8 @@ export class SelectionPublisher {
   }
 
   configureCommands() {
+    this.bot.catch((error, ctx) => this.handleBotError(error, ctx));
+
     this.bot.use(async (ctx, next) => {
       this.activeHandlers += 1;
       try {
@@ -68,6 +70,27 @@ export class SelectionPublisher {
     this.bot.command('backfill', async (ctx) => this.runManualBackfill(ctx));
     this.bot.command('publish', async (ctx) => this.runManualPublish(ctx));
     this.setupAssistant?.register(this.bot);
+  }
+
+  async handleBotError(error, ctx) {
+    const command = getCommandName(ctx);
+    this.logger.error('Bot command failed', {
+      command: command || '',
+      fromId: ctx?.from?.id,
+      chatId: ctx?.chat?.id,
+      error: error?.message || String(error)
+    });
+
+    if (ctx?.from?.id !== Number(this.config.telegram.adminId) || ctx?.chat?.type !== 'private') return;
+
+    try {
+      await ctx.reply(formatBotError(error));
+    } catch (replyError) {
+      this.logger.error('Failed to send bot command error reply', {
+        command: command || '',
+        error: replyError?.message || String(replyError)
+      });
+    }
   }
 
   async publishAll(now = new Date(), keys = null, options = {}) {
@@ -464,4 +487,8 @@ function formatPublishResult(result, job = null) {
     lines.push(`Worker job status: ${job.status}${job.reason ? ` (${job.reason})` : ''}`);
   }
   return lines.join('\n') || 'No selections matched.';
+}
+
+function formatBotError(error) {
+  return `Command failed: ${error?.message || String(error)}`;
 }

@@ -300,6 +300,53 @@ test('SelectionPublisher.runManualPublish supports force scheduling', async () =
   assert.match(replies[0], /best.week: scheduled \(1\) forced/);
 });
 
+test('SelectionPublisher.handleBotError replies to admin and does not throw', async () => {
+  const replies = [];
+  const logs = [];
+  const publisher = new SelectionPublisher({
+    repository: {},
+    mediaDownloader: {},
+    setupAssistant: null,
+    config: config()
+  });
+  publisher.logger = {
+    error: (message, fields) => logs.push({ message, fields })
+  };
+
+  await publisher.handleBotError(new Error('Unknown publish selection: blah'), {
+    from: { id: 1 },
+    chat: { id: 1, type: 'private' },
+    message: { text: '/publish blah' },
+    reply: async (message) => replies.push(message)
+  });
+
+  assert.deepEqual(replies, ['Command failed: Unknown publish selection: blah']);
+  assert.equal(logs[0].message, 'Bot command failed');
+  assert.equal(logs[0].fields.command, 'publish');
+});
+
+test('SelectionPublisher.handleBotError ignores non-admin replies', async () => {
+  let replied = false;
+  const publisher = new SelectionPublisher({
+    repository: {},
+    mediaDownloader: {},
+    setupAssistant: null,
+    config: config()
+  });
+  publisher.logger = { error: () => {} };
+
+  await publisher.handleBotError(new Error('nope'), {
+    from: { id: 2 },
+    chat: { id: 2, type: 'private' },
+    message: { text: '/publish blah' },
+    reply: async () => {
+      replied = true;
+    }
+  });
+
+  assert.equal(replied, false);
+});
+
 test('SelectionPublisher.replyJobs returns admin jobs table', async () => {
   const replies = [];
   const publisher = new SelectionPublisher({
