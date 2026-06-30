@@ -51,7 +51,7 @@ export class SelectionPublisher {
         return;
       }
       if (command) {
-        this.logger.info('Bot command received', {
+        this.logger.debug('Bot command received', {
           command,
           fromId: ctx.from?.id,
           chatId: ctx.chat?.id
@@ -95,7 +95,7 @@ export class SelectionPublisher {
 
   async publishAll(now = new Date(), keys = null, options = {}) {
     const selections = await loadSelections(this.repository, this.config, now, keys);
-    this.logger.info('Publish cycle started', {
+    this.logger.debug('Publish cycle started', {
       targetChatId: this.config.telegram.publishChannelId,
       keys: keys || 'all',
       selections: selections.length,
@@ -116,7 +116,7 @@ export class SelectionPublisher {
 
   async createPublicationRequest(selection, options = {}) {
     if (selection.posts.length === 0) {
-      this.logger.info('Selection skipped: no posts', { selection: selection.key });
+      this.logger.debug('Selection skipped: no posts', { selection: selection.key });
       return { status: 'empty', requested: false };
     }
 
@@ -132,7 +132,7 @@ export class SelectionPublisher {
     });
     if (!publicationId) {
       const existing = await this.repository.getPublicationByKey(canonicalKey);
-      this.logger.info('Selection skipped: request already exists', {
+      this.logger.debug('Selection skipped: request already exists', {
         selection: selection.key,
         key: canonicalKey,
         status: existing?.status
@@ -157,7 +157,7 @@ export class SelectionPublisher {
 
   async processPublicationQueue() {
     if (this.processingPublications) {
-      this.logger.info('Publication worker skipped: already running');
+      this.logger.debug('Publication worker skipped: already running');
       return;
     }
     this.processingPublications = true;
@@ -179,10 +179,10 @@ export class SelectionPublisher {
   }
 
   async executePublicationWorker(source) {
-    this.logger.info('Publication worker job started', { source });
+    this.logger.debug('Publication worker job started', { source });
     try {
       await this.processPublicationQueue();
-      this.logger.info('Publication worker job finished', { source });
+      this.logger.debug('Publication worker job finished', { source });
       return { source };
     } catch (error) {
       this.logger.error('Publication worker job failed', {
@@ -238,7 +238,7 @@ export class SelectionPublisher {
       for (let index = 0; index < selection.posts.length; index += 1) {
         const position = index + 1;
         if (sentPositions.has(position)) {
-          this.logger.info('Publication post skipped: already sent', {
+          this.logger.debug('Publication post skipped: already sent', {
             publicationId: request.id,
             selection: selection.key,
             position
@@ -325,29 +325,29 @@ export class SelectionPublisher {
   }
 
   launchBot() {
-    this.logger.info('Launching bot polling', {
+    this.logger.debug('Launching bot polling', {
       adminId: this.config.telegram.adminId,
       publishChannelId: this.config.telegram.publishChannelId
     });
     void this.bot.launch()
       .then(() => {
-        this.logger.info('Bot polling finished');
+        this.logger.debug('Bot polling finished');
       })
       .catch((error) => {
         this.logger.error('Bot polling failed', { error: error?.message || String(error) });
       });
-    this.logger.info('Bot polling launch requested');
+    this.logger.debug('Bot polling launch requested');
   }
 
   async stopBot(signal = 'SIGTERM') {
-    this.logger.info('Stopping bot polling', { signal });
+    this.logger.debug('Stopping bot polling', { signal });
     try {
       this.bot.stop(signal);
     } catch (error) {
       if (!isBotAlreadyStoppedError(error)) throw error;
     }
     await this.waitForIdle();
-    this.logger.info('Bot polling stopped');
+    this.logger.debug('Bot polling stopped');
   }
 
   async waitForIdle(timeoutMs = 30000) {

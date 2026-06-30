@@ -10,7 +10,7 @@ import { SyncWorker } from './syncWorker.js';
 
 export async function createApp(config) {
   const logger = createLogger(config, 'app');
-  logger.info('Initializing app', {
+  logger.debug('Initializing app', {
     sourceChatId: config.telegram.sourceChatId,
     publishChannelId: config.telegram.publishChannelId,
     adminId: config.telegram.adminId,
@@ -47,10 +47,10 @@ export async function createApp(config) {
     async close() {
       if (closed) return;
       closed = true;
-      logger.info('Closing app');
+      logger.debug('Closing app');
       await safeDestroyUserClient(userClient);
       await repository.close();
-      logger.info('App closed');
+      logger.debug('App closed');
     }
   };
 }

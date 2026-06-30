@@ -7,7 +7,7 @@ const LEVELS = {
 };
 
 export function createLogger(config = {}, scope = 'app', sink = console) {
-  const configuredLevel = config.logging?.level || 'info';
+  const configuredLevel = String(config.logging?.logLevel || 'INFO').toLowerCase();
   const minLevel = LEVELS[configuredLevel] ?? LEVELS.info;
 
   return {

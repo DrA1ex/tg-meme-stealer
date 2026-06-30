@@ -161,7 +161,7 @@ Common options:
 ```json
 {
   "logging": {
-    "level": "info"
+    "logLevel": "INFO"
   },
   "sync": {
     "initialScanDays": 60,
@@ -208,7 +208,7 @@ Common options:
 }
 ```
 
-`logging.level` can be `debug`, `info`, `warn`, `error`, or `silent`. Sync logs include the scan window, each Telegram history request, fetched message counts, matched post counts, saved rows, skipped old posts, and deleted-post cleanup. `sync.runOnStart` controls whether the daemon runs one sync immediately after startup. `sync.intervalHours` controls the recurring sync interval. Set `sync.runOnStart` to `false` to disable the initial startup sync.
+`logging.logLevel` can be `DEBUG`, `INFO`, `WARN`, `ERROR`, or `SILENT` and is case-insensitive. Sync logs include the scan window, each Telegram history request, fetched message counts, matched post counts, saved rows, skipped old posts, and deleted-post cleanup. `sync.runOnStart` controls whether the daemon runs one sync immediately after startup. `sync.intervalHours` controls the recurring sync interval. Set `sync.runOnStart` to `false` to disable the initial startup sync.
 
 Publication schedules use `schedule.timezone`. Each enabled selection under `publish.selections` has its own local `time`, `limit`, and header `template`. Daily selections run once per day, weekly selections run once per week, and monthly selections run once per month. The `day` period uses `windowHours`; controversial selections also use `threshold`. A threshold of `0.3` means likes and dislikes may differ by at most 30% of the larger reaction count.
 

@@ -20,7 +20,7 @@ test('Scheduler.start does not wait for startup sync before returning', async ()
       },
       sync: { runOnStart: true, intervalHours: 24 },
       publish: { selections: {} },
-      logging: { level: 'silent' }
+      logging: { logLevel: 'silent' }
     },
     {
       sync: () => {
@@ -61,7 +61,7 @@ test('Scheduler skips timer sync while startup sync is still running', async () 
       },
       sync: { runOnStart: true, intervalHours: 24 },
       publish: { selections: {} },
-      logging: { level: 'silent' }
+      logging: { logLevel: 'silent' }
     },
     {
       sync: () => {
@@ -125,7 +125,7 @@ test('Scheduler plans missed publications only after startup sync completes', as
           }
         }
       },
-      logging: { level: 'silent' }
+      logging: { logLevel: 'silent' }
     },
     {
       sync: () => {
@@ -185,7 +185,7 @@ test('Scheduler plans missed publications on startup when they are inside reques
           }
         }
       },
-      logging: { level: 'silent' }
+      logging: { logLevel: 'silent' }
     },
     {
       publish: async (key, scheduledAt) => planned.push({ key, scheduledAt: scheduledAt.toISOString() }),
@@ -222,7 +222,7 @@ test('Scheduler skips missed publications older than request TTL', async () => {
           }
         }
       },
-      logging: { level: 'silent' }
+      logging: { logLevel: 'silent' }
     },
     {
       publish: async (key, scheduledAt) => planned.push({ key, scheduledAt }),

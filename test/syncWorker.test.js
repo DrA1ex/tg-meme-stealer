@@ -15,7 +15,7 @@ test('SyncWorker skips overlapping sync jobs', async () => {
         return { seen: 10 };
       }
     },
-    config: { logging: { level: 'silent' } }
+    config: { logging: { logLevel: 'silent' } }
   });
 
   const first = await worker.sync('schedule');
@@ -45,7 +45,7 @@ test('SyncWorker returns busy for admin backfill while sync is running', async (
         throw new Error('backfill should be skipped');
       }
     },
-    config: { logging: { level: 'silent' } }
+    config: { logging: { logLevel: 'silent' } }
   });
 
   const first = await worker.sync('schedule');
@@ -77,7 +77,7 @@ test('SyncWorker queues scheduled backfill after running sync', async () => {
         return { seen: 20 };
       }
     },
-    config: { logging: { level: 'silent' } }
+    config: { logging: { logLevel: 'silent' } }
   });
 
   const first = await worker.sync('schedule');

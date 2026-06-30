@@ -11,10 +11,10 @@ export class Scheduler {
 
   async start() {
     if (!this.config.schedule.enabled) {
-      this.logger.info('Scheduler disabled');
+      this.logger.debug('Scheduler disabled');
       return;
     }
-    this.logger.info('Scheduler starting', {
+    this.logger.debug('Scheduler starting', {
       timezone: this.config.schedule.timezone,
       syncIntervalHours: this.config.sync.intervalHours,
       runOnStart: Boolean(this.config.sync.runOnStart)
@@ -22,7 +22,7 @@ export class Scheduler {
     this.scheduleSync();
     this.schedulePublicationWorker();
     this.schedulePublications();
-    this.logger.info('Scheduler started', { timers: this.timers.size });
+    this.logger.debug('Scheduler started', { timers: this.timers.size });
     if (this.config.sync.runOnStart) {
       this.logger.info('Running startup sync');
       void runHandler(this.handlers.sync)
@@ -35,7 +35,7 @@ export class Scheduler {
   scheduleSync() {
     const intervalMs = this.config.sync.intervalHours * 60 * 60 * 1000;
     const nextRunAt = new Date(Date.now() + intervalMs);
-    this.logger.info('Scheduled sync', {
+    this.logger.debug('Scheduled sync', {
       intervalHours: intervalMs / 60 / 60 / 1000,
       delayMs: intervalMs,
       nextRunAt
@@ -61,7 +61,7 @@ export class Scheduler {
       period
     });
     const delayMs = nextRunAt.getTime() - now.getTime();
-    this.logger.info('Scheduled publication', {
+    this.logger.debug('Scheduled publication', {
       key,
       period,
       time,
@@ -89,7 +89,7 @@ export class Scheduler {
       });
       const ageMs = now.getTime() - scheduledAt.getTime();
       if (ageMs < 0 || ageMs > requestTtlMs) {
-        this.logger.info('Missed publication skipped', {
+        this.logger.debug('Missed publication skipped', {
           key: entry.key,
           scheduledAt,
           ageMs,
@@ -115,7 +115,7 @@ export class Scheduler {
 
   schedulePublicationWorker() {
     const intervalMs = Math.max(1, Number(this.config.publish?.workerIntervalMinutes ?? 1)) * 60 * 1000;
-    this.logger.info('Scheduled publication worker', { intervalMs, nextRunAt: new Date(Date.now() + intervalMs) });
+    this.logger.debug('Scheduled publication worker', { intervalMs, nextRunAt: new Date(Date.now() + intervalMs) });
     void this.handlers.publishWorker();
     this.scheduleTimeout(async () => {
       await this.handlers.publishWorker();
@@ -133,10 +133,10 @@ export class Scheduler {
   }
 
   stop() {
-    this.logger.info('Scheduler stopping', { timers: this.timers.size });
+    this.logger.debug('Scheduler stopping', { timers: this.timers.size });
     for (const timer of this.timers) clearTimeout(timer);
     this.timers.clear();
-    this.logger.info('Scheduler stopped');
+    this.logger.debug('Scheduler stopped');
   }
 }
 

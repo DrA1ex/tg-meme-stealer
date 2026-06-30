@@ -51,7 +51,7 @@ const CONFIG_SCHEMA = {
     path: STRING
   },
   logging: {
-    level: STRING
+    logLevel: STRING
   },
   sync: {
     initialScanDays: NUMBER,

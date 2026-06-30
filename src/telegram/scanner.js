@@ -131,7 +131,7 @@ export class TelegramScanner {
       const messages = [...history];
       fetched += messages.length;
       if (messages.length === 0) {
-        this.logger.info('History page returned no messages', { page: pages });
+        this.logger.debug('History page returned no messages', { page: pages });
         break;
       }
 
@@ -191,7 +191,7 @@ export class TelegramScanner {
       const messages = [...history];
       fetched += messages.length;
       if (messages.length === 0) {
-        this.logger.info('Backfill history page returned no messages', { page: pages });
+        this.logger.debug('Backfill history page returned no messages', { page: pages });
         break;
       }
 

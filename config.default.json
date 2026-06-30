@@ -6,7 +6,7 @@
     "path": "data/posts.sqlite"
   },
   "logging": {
-    "level": "info"
+    "logLevel": "INFO"
   },
   "sync": {
     "initialScanDays": 60,

@@ -75,6 +75,11 @@ test('validateConfig rejects all schema issues at once', () => {
         ...validConfig().sync,
         initialSync: false
       },
+      logging: {
+        ...validConfig().logging,
+        level: 'info',
+        logLevel: 10
+      },
       schedule: {
         ...validConfig().schedule,
         runOnStart: false,
@@ -108,6 +113,8 @@ test('validateConfig rejects all schema issues at once', () => {
   assert.match(error.message, /Invalid config:/);
   assert.match(error.message, /- unknown: unsupported option/);
   assert.match(error.message, /- sync\.initialSync: unsupported option/);
+  assert.match(error.message, /- logging\.logLevel: expected string, got number/);
+  assert.match(error.message, /- logging\.level: unsupported option/);
   assert.match(error.message, /- schedule\.runOnStart: unsupported option/);
   assert.match(error.message, /- schedule\.syncIntervalHours: unsupported option/);
   assert.match(error.message, /- schedule\.enabled: expected boolean, got string/);
@@ -129,7 +136,7 @@ function validConfig() {
       botToken: 'token'
     },
     database: { path: 'data/posts.sqlite' },
-    logging: { level: 'silent' },
+    logging: { logLevel: 'silent' },
     sync: {
       initialScanDays: 60,
       refreshRecentDays: 7,

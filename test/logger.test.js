@@ -16,7 +16,7 @@ test('formatLogLine renders timestamp, level, scope and fields', () => {
 
 test('createLogger respects configured level', () => {
   const lines = [];
-  const logger = createLogger({ logging: { level: 'warn' } }, 'test', {
+  const logger = createLogger({ logging: { logLevel: 'WARN' } }, 'test', {
     log: (line) => lines.push(['log', line]),
     warn: (line) => lines.push(['warn', line]),
     error: (line) => lines.push(['error', line])

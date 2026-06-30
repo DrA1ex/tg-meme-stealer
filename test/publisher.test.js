@@ -543,7 +543,7 @@ function config() {
       publishChannelId: -1001,
       sourceChatId: -1002
     },
-    logging: { level: 'silent' },
+    logging: { logLevel: 'silent' },
     publish: { dryRun: true },
     schedule: { timezone: 'UTC' },
     templates: {}

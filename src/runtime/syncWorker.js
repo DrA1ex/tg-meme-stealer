@@ -23,11 +23,11 @@ export class SyncWorker {
 
   async execute(operation, source, fn) {
     const startedAt = Date.now();
-    this.logger.info('Sync job started', { operation, source });
+    this.logger.debug('Sync job started', { operation, source });
     try {
       const result = await fn();
       this.lastFinishedAt = new Date();
-      this.logger.info('Sync job finished', {
+      this.logger.debug('Sync job finished', {
         operation,
         source,
         durationMs: Date.now() - startedAt,

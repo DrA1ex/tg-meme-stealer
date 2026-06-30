@@ -12,7 +12,7 @@ test('MediaDownloader.cleanupFiles deletes temporary media files', async () => {
   const downloader = new MediaDownloader({
     client: {},
     config: {
-      logging: { level: 'silent' },
+      logging: { logLevel: 'silent' },
       sync: { mediaDir: dir, throttle: { enabled: false } }
     }
   });
@@ -31,7 +31,7 @@ test('MediaDownloader.loadMessage passes numeric peer ids to mtcute', async () =
       }
     },
     config: {
-      logging: { level: 'silent' },
+      logging: { logLevel: 'silent' },
       sync: { mediaDir: '/private/tmp', throttle: { enabled: false } }
     }
   });
