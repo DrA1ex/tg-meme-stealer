@@ -1,6 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { Scheduler, getDelayUntilLocalTime, getNextLocalTimeAsDate, getNextScheduledRunAsDate } from '../src/runtime/scheduler.js';
+import {
+  Scheduler,
+  getDelayUntilLocalTime,
+  getNextLocalTimeAsDate,
+  getNextScheduledRunAsDate,
+  getPreviousScheduledRunAsDate
+} from '../src/runtime/scheduler.js';
 
 test('Scheduler.start does not wait for startup sync before returning', async () => {
   let syncStarted = false;
@@ -80,6 +86,70 @@ test('Scheduler skips timer sync while startup sync is still running', async () 
   assert.equal(scheduledCallbacks.length, 2);
 });
 
+test('Scheduler plans missed publications only after startup sync completes', async () => {
+  let resolveSync;
+  let resolveCatchup;
+  let syncCompleted = false;
+  const events = [];
+  const syncDone = new Promise((resolve) => {
+    resolveSync = resolve;
+  });
+  const catchupDone = new Promise((resolve) => {
+    resolveCatchup = resolve;
+  });
+  const scheduler = new Scheduler(
+    {
+      schedule: {
+        enabled: true,
+        runOnStart: true,
+        syncIntervalHours: 24,
+        timezone: 'Asia/Yekaterinburg'
+      },
+      publish: {
+        requestTtlHours: 12,
+        selections: {
+          best: {
+            day: { enabled: true, time: '10:00' }
+          }
+        }
+      },
+      logging: { level: 'silent' }
+    },
+    {
+      sync: async () => {
+        events.push('sync:start');
+        await syncDone;
+        syncCompleted = true;
+        events.push('sync:end');
+      },
+      publish: async () => {
+        events.push(`publish:syncCompleted=${syncCompleted}`);
+      },
+      publishWorker: async () => {
+        events.push('worker');
+        resolveCatchup();
+      }
+    }
+  );
+  scheduler.scheduleSync = () => {};
+  scheduler.schedulePublicationWorker = () => {};
+  scheduler.schedulePublications = () => {};
+  scheduler.planMissedPublications = async function planMissedPublications() {
+    await Scheduler.prototype.planMissedPublications.call(this, new Date('2026-06-29T08:00:00.000Z'));
+  };
+
+  await scheduler.start();
+  await Promise.resolve();
+  await Promise.resolve();
+
+  assert.deepEqual(events, ['sync:start']);
+
+  resolveSync();
+  await catchupDone;
+
+  assert.deepEqual(events, ['sync:start', 'sync:end', 'publish:syncCompleted=true', 'worker']);
+});
+
 test('Scheduler serializes publication jobs across different selection keys', async () => {
   let releaseFirst;
   let activePublishJobs = 0;
@@ -127,6 +197,77 @@ test('Scheduler serializes publication jobs across different selection keys', as
 
   assert.deepEqual(events, ['first:start', 'first:end', 'second:start', 'second:end']);
   assert.equal(maxActivePublishJobs, 1);
+});
+
+test('Scheduler plans missed publications on startup when they are inside request TTL', async () => {
+  const planned = [];
+  let workerRuns = 0;
+  const scheduler = new Scheduler(
+    {
+      schedule: {
+        enabled: true,
+        timezone: 'Asia/Yekaterinburg'
+      },
+      publish: {
+        requestTtlHours: 12,
+        selections: {
+          best: {
+            day: { enabled: true, time: '10:00' },
+            week: { enabled: true, time: '10:10' }
+          }
+        }
+      },
+      logging: { level: 'silent' }
+    },
+    {
+      publish: async (key, scheduledAt) => planned.push({ key, scheduledAt: scheduledAt.toISOString() }),
+      publishWorker: async () => {
+        workerRuns += 1;
+      }
+    }
+  );
+
+  await scheduler.planMissedPublications(new Date('2026-06-29T08:00:00.000Z'));
+
+  assert.deepEqual(planned, [
+    { key: 'best.week', scheduledAt: '2026-06-29T05:10:00.000Z' },
+    { key: 'best.day', scheduledAt: '2026-06-29T05:00:00.000Z' }
+  ]);
+  assert.equal(workerRuns, 1);
+});
+
+test('Scheduler skips missed publications older than request TTL', async () => {
+  const planned = [];
+  let workerRuns = 0;
+  const scheduler = new Scheduler(
+    {
+      schedule: {
+        enabled: true,
+        timezone: 'Asia/Yekaterinburg'
+      },
+      publish: {
+        requestTtlHours: 12,
+        selections: {
+          best: {
+            day: { enabled: true, time: '10:00' },
+            week: { enabled: true, time: '10:10' }
+          }
+        }
+      },
+      logging: { level: 'silent' }
+    },
+    {
+      publish: async (key, scheduledAt) => planned.push({ key, scheduledAt }),
+      publishWorker: async () => {
+        workerRuns += 1;
+      }
+    }
+  );
+
+  await scheduler.planMissedPublications(new Date('2026-06-30T04:00:00.000Z'));
+
+  assert.deepEqual(planned, []);
+  assert.equal(workerRuns, 0);
 });
 
 test('getNextLocalTimeAsDate returns same-day target in timezone', () => {
@@ -180,4 +321,27 @@ test('getNextScheduledRunAsDate schedules day, week and month at their natural c
     timezone: 'Asia/Yekaterinburg',
     period: 'month'
   }).toISOString(), '2026-07-01T05:00:00.000Z');
+});
+
+test('getPreviousScheduledRunAsDate returns last scheduled day, week and month', () => {
+  const now = new Date('2026-06-29T08:00:00.000Z');
+
+  assert.equal(getPreviousScheduledRunAsDate({
+    now,
+    time: '10:00',
+    timezone: 'Asia/Yekaterinburg',
+    period: 'day'
+  }).toISOString(), '2026-06-29T05:00:00.000Z');
+  assert.equal(getPreviousScheduledRunAsDate({
+    now,
+    time: '10:10',
+    timezone: 'Asia/Yekaterinburg',
+    period: 'week'
+  }).toISOString(), '2026-06-29T05:10:00.000Z');
+  assert.equal(getPreviousScheduledRunAsDate({
+    now: new Date('2026-06-30T08:00:00.000Z'),
+    time: '10:20',
+    timezone: 'Asia/Yekaterinburg',
+    period: 'month'
+  }).toISOString(), '2026-06-01T05:20:00.000Z');
 });

@@ -587,7 +587,7 @@ Run the daemon for normal operation:
 npm start
 ```
 
-The daemon starts the admin bot, runs sync on startup when `schedule.runOnStart` is enabled, schedules sync by interval, and schedules each publication type by local time.
+The daemon starts the admin bot, runs sync on startup when `schedule.runOnStart` is enabled, schedules sync by interval, and schedules each publication type by local time. On startup it also checks for recently missed publication times. If a scheduled run was missed while the daemon was stopped and it is still inside `publish.requestTtlHours`, the daemon creates the publication request and runs the publication worker. Older missed runs are skipped.
 
 ## Running With PM2
 

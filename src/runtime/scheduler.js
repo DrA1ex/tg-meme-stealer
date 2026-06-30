@@ -27,7 +27,10 @@ export class Scheduler {
     this.logger.info('Scheduler started', { timers: this.timers.size });
     if (this.config.schedule.runOnStart) {
       this.logger.info('Running startup sync');
-      void this.run('sync', () => this.handlers.sync());
+      void this.run('sync', () => this.handlers.sync())
+        .then(() => this.planMissedPublications());
+    } else {
+      void this.planMissedPublications();
     }
   }
 
@@ -69,10 +72,47 @@ export class Scheduler {
       nextRunAt
     });
     this.scheduleTimeout(async () => {
-      await this.run(`publish-plan:${key}`, () => this.handlers.publish(key));
+      await this.run(`publish-plan:${key}`, () => this.handlers.publish(key, new Date()));
       await this.run('publish-worker', () => this.handlers.publishWorker());
       this.schedulePublication(key, time);
     }, delayMs);
+  }
+
+  async planMissedPublications(now = new Date()) {
+    const requestTtlMs = Math.max(1, Number(this.config.publish?.requestTtlHours ?? 12)) * 60 * 60 * 1000;
+    let planned = 0;
+
+    for (const entry of getScheduledPublishEntries(this.config)) {
+      const scheduledAt = getPreviousScheduledRunAsDate({
+        now,
+        time: entry.time,
+        timezone: this.config.schedule.timezone,
+        period: entry.period
+      });
+      const ageMs = now.getTime() - scheduledAt.getTime();
+      if (ageMs < 0 || ageMs > requestTtlMs) {
+        this.logger.info('Missed publication skipped', {
+          key: entry.key,
+          scheduledAt,
+          ageMs,
+          requestTtlMs
+        });
+        continue;
+      }
+
+      planned += 1;
+      this.logger.info('Planning missed publication', {
+        key: entry.key,
+        scheduledAt,
+        ageMs,
+        requestTtlMs
+      });
+      await this.run(`publish-plan:${entry.key}`, () => this.handlers.publish(entry.key, scheduledAt));
+    }
+
+    if (planned > 0) {
+      await this.run('publish-worker', () => this.handlers.publishWorker());
+    }
   }
 
   schedulePublicationWorker() {
@@ -164,6 +204,12 @@ export function getNextScheduledRunAsDate({ now = new Date(), time, timezone, pe
   return getNextLocalTimeAsDate({ now, time, timezone });
 }
 
+export function getPreviousScheduledRunAsDate({ now = new Date(), time, timezone, period = 'day' }) {
+  if (period === 'month') return getPreviousMonthlyRunAsDate({ now, time, timezone });
+  if (period === 'week') return getPreviousWeeklyRunAsDate({ now, time, timezone });
+  return getPreviousLocalTimeAsDate({ now, time, timezone });
+}
+
 export function getNextLocalTimeAsDate({ now = new Date(), time, timezone }) {
   const [hour, minute] = parseTime(time);
   const local = getLocalParts(now, timezone);
@@ -177,6 +223,23 @@ export function getNextLocalTimeAsDate({ now = new Date(), time, timezone }) {
   const utcGuess = Date.UTC(targetParts.year, targetParts.month - 1, targetParts.day, hour, minute, 0);
   const offsetMs = getTimezoneOffsetMs(new Date(utcGuess), timezone);
   return new Date(utcGuess - offsetMs);
+}
+
+export function getPreviousLocalTimeAsDate({ now = new Date(), time, timezone }) {
+  const [hour, minute] = parseTime(time);
+  const local = getLocalParts(now, timezone);
+  let daysToAdd = 0;
+  if (local.hour < hour || local.hour === hour && local.minute < minute) {
+    daysToAdd = -1;
+  }
+
+  return getLocalDateTimeAsDate({
+    year: local.year,
+    month: local.month,
+    day: local.day + daysToAdd,
+    time,
+    timezone
+  });
 }
 
 function parseTime(time) {
@@ -252,6 +315,52 @@ function getNextMonthlyRunAsDate({ now, time, timezone }) {
     target = getLocalDateTimeAsDate({
       year: local.year,
       month: local.month + 1,
+      day: 1,
+      time,
+      timezone
+    });
+  }
+  return target;
+}
+
+function getPreviousWeeklyRunAsDate({ now, time, timezone }) {
+  const local = getLocalParts(now, timezone);
+  const currentWeekday = getCalendarWeekday(local);
+  const targetWeekday = 1;
+  let daysToAdd = -((currentWeekday - targetWeekday + 7) % 7);
+  let target = getLocalDateTimeAsDate({
+    year: local.year,
+    month: local.month,
+    day: local.day + daysToAdd,
+    time,
+    timezone
+  });
+  if (target > now) {
+    daysToAdd -= 7;
+    target = getLocalDateTimeAsDate({
+      year: local.year,
+      month: local.month,
+      day: local.day + daysToAdd,
+      time,
+      timezone
+    });
+  }
+  return target;
+}
+
+function getPreviousMonthlyRunAsDate({ now, time, timezone }) {
+  const local = getLocalParts(now, timezone);
+  let target = getLocalDateTimeAsDate({
+    year: local.year,
+    month: local.month,
+    day: 1,
+    time,
+    timezone
+  });
+  if (target > now) {
+    target = getLocalDateTimeAsDate({
+      year: local.year,
+      month: local.month - 1,
       day: 1,
       time,
       timezone

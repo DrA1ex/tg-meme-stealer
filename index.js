@@ -62,8 +62,8 @@ if (command === 'session') {
       const sync = await app.scanner.sync();
       console.log(`Sync complete: initial=${sync.isInitial}, seen=${sync.seen}`);
     },
-    publish: async (key) => {
-      const publish = await app.publisher.publishAll(new Date(), key);
+    publish: async (key, now = new Date()) => {
+      const publish = await app.publisher.publishAll(now, key);
       console.log(`Publish complete: ${publish.map((item) => `${item.key}:${item.count}`).join(',')}`);
     },
     publishWorker: async () => {
