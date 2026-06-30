@@ -1,11 +1,11 @@
-import { createLogger } from '../core/logger.js';
+import { getLogger } from '../core/logger.js';
 import { JobGate } from './jobGate.js';
 
 export class SyncWorker {
   constructor({ scanner, jobGate = new JobGate(), config }) {
     this.scanner = scanner;
     this.jobGate = jobGate;
-    this.logger = createLogger(config, 'sync-worker');
+    this.logger = getLogger('sync-worker');
     this.lastFinishedAt = null;
   }
 

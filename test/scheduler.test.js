@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { configureLogger } from '../src/core/logger.js';
 import {
   Scheduler,
   getDelayUntilLocalTime,
@@ -7,6 +8,8 @@ import {
   getNextScheduledRunAsDate,
   getPreviousScheduledRunAsDate
 } from '../src/runtime/scheduler.js';
+
+configureLogger({ logging: { logLevel: 'SILENT' } });
 
 test('Scheduler.start does not wait for startup sync before returning', async () => {
   let syncStarted = false;

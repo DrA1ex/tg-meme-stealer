@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { configureLogger } from '../src/core/logger.js';
 import {
   getBotApiRetryAfterSeconds,
   getFloodWaitSeconds,
@@ -30,6 +31,12 @@ test('getBotApiRetryAfterSeconds reads retry_after from description', () => {
 
 test('withBotApiRetry waits and retries 429 responses', async () => {
   const waits = [];
+  const warnings = [];
+  configureLogger({ logging: { logLevel: 'WARN' } }, {
+    log: () => {},
+    warn: (line) => warnings.push(line),
+    error: () => {}
+  });
   let attempts = 0;
 
   const result = await withBotApiRetry(
@@ -54,4 +61,8 @@ test('withBotApiRetry waits and retries 429 responses', async () => {
   assert.equal(result, 'ok');
   assert.equal(attempts, 2);
   assert.deepEqual(waits, [3000]);
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /\[WARN\] \[retry\] sendPhoto hit Too Many Requests/);
+  assert.match(warnings[0], /retryAfter=2/);
+  assert.match(warnings[0], /retryInSeconds=3/);
 });

@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { createLogger } from '../core/logger.js';
+import { getLogger } from '../core/logger.js';
 import { normalizeTelegramPeerId } from './peer.js';
 import { withTelegramRetry } from './retry.js';
 import { TelegramThrottle } from './throttle.js';
@@ -10,7 +10,7 @@ export class MediaDownloader {
     this.client = client;
     this.config = config;
     this.throttle = new TelegramThrottle(config);
-    this.logger = createLogger(config, 'media');
+    this.logger = getLogger('media');
   }
 
   async downloadPostMedia(post) {

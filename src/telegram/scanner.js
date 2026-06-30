@@ -1,6 +1,6 @@
 import { debugParseMessage, parseMessagesToPosts } from '../core/postParser.js';
 import { subtractDays } from '../core/date.js';
-import { createLogger } from '../core/logger.js';
+import { getLogger } from '../core/logger.js';
 import { normalizeTelegramPeerId } from './peer.js';
 import { withTelegramRetry } from './retry.js';
 import { TelegramThrottle } from './throttle.js';
@@ -11,7 +11,7 @@ export class TelegramScanner {
     this.repository = repository;
     this.config = config;
     this.throttle = new TelegramThrottle(config);
-    this.logger = createLogger(config, 'scanner');
+    this.logger = getLogger('scanner');
   }
 
   async sync() {

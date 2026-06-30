@@ -2,8 +2,11 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import test from 'node:test';
+import { configureLogger } from '../src/core/logger.js';
 import { PostRepository } from '../src/database/postRepository.js';
 import { SelectionPublisher } from '../src/telegram/publisher.js';
+
+configureLogger({ logging: { logLevel: 'SILENT' } });
 
 test('SelectionPublisher.waitForIdle waits for active handlers', async () => {
   const publisher = new SelectionPublisher({

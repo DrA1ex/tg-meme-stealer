@@ -1,8 +1,8 @@
 import { getScheduledPublishEntries } from '../core/selection.js';
-import { createLogger } from '../core/logger.js';
+import { getLogger } from '../core/logger.js';
 
 export class Scheduler {
-  constructor(config, handlers, logger = createLogger(config, 'scheduler')) {
+  constructor(config, handlers, logger = getLogger('scheduler')) {
     this.config = config;
     this.handlers = typeof handlers === 'function' ? { sync: handlers, publish: handlers } : handlers;
     this.logger = logger;

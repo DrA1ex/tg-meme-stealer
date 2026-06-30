@@ -6,16 +6,45 @@ const LEVELS = {
   silent: 100
 };
 
-export function createLogger(config = {}, scope = 'app', sink = console) {
-  const configuredLevel = String(config.logging?.logLevel || 'INFO').toLowerCase();
-  const minLevel = LEVELS[configuredLevel] ?? LEVELS.info;
+let globalConfig = { logging: { logLevel: 'INFO' } };
+let globalSink = console;
 
+export const logger = getLogger('app');
+
+export function configureLogger(config = {}, sink = console) {
+  globalConfig = config || {};
+  globalSink = sink || console;
+}
+
+export function getLogger(scope = 'app') {
+  return createScopedLogger({
+    scope,
+    getConfig: () => globalConfig,
+    getSink: () => globalSink
+  });
+}
+
+export function createLogger(config = {}, scope = 'app', sink = console) {
+  return createScopedLogger({
+    scope,
+    getConfig: () => config,
+    getSink: () => sink
+  });
+}
+
+function createScopedLogger({ scope, getConfig, getSink }) {
   return {
-    debug: (message, fields) => writeLog(sink, minLevel, 'debug', scope, message, fields),
-    info: (message, fields) => writeLog(sink, minLevel, 'info', scope, message, fields),
-    warn: (message, fields) => writeLog(sink, minLevel, 'warn', scope, message, fields),
-    error: (message, fields) => writeLog(sink, minLevel, 'error', scope, message, fields)
+    debug: (message, fields) => writeLog(getSink(), getMinLevel(getConfig()), 'debug', scope, message, fields),
+    info: (message, fields) => writeLog(getSink(), getMinLevel(getConfig()), 'info', scope, message, fields),
+    warn: (message, fields) => writeLog(getSink(), getMinLevel(getConfig()), 'warn', scope, message, fields),
+    error: (message, fields) => writeLog(getSink(), getMinLevel(getConfig()), 'error', scope, message, fields),
+    child: (childScope) => createScopedLogger({ scope: childScope, getConfig, getSink })
   };
+}
+
+function getMinLevel(config) {
+  const configuredLevel = String(config?.logging?.logLevel || 'INFO').toLowerCase();
+  return LEVELS[configuredLevel] ?? LEVELS.info;
 }
 
 export function formatLogLine({ level, scope, message, fields = {}, now = new Date() }) {

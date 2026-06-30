@@ -2,7 +2,7 @@ import { Telegraf } from 'telegraf';
 import { formatSelectionHeader } from '../core/format.js';
 import { formatJobs } from '../core/jobs.js';
 import { formatPublicationPosts, formatPublications } from '../core/publications.js';
-import { createLogger } from '../core/logger.js';
+import { getLogger } from '../core/logger.js';
 import { loadSelections } from '../core/selection.js';
 import { buildStats, formatStats } from '../core/stats.js';
 import { JobGate } from '../runtime/jobGate.js';
@@ -18,7 +18,7 @@ export class SelectionPublisher {
     this.jobGate = jobGate;
     this.config = config;
     this.bot = new Telegraf(config.telegram.botToken);
-    this.logger = createLogger(config, 'publisher');
+    this.logger = getLogger('publisher');
     this.activeHandlers = 0;
     this.idleResolvers = [];
     this.processingPublications = false;

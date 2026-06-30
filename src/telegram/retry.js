@@ -1,3 +1,7 @@
+import { getLogger } from '../core/logger.js';
+
+const logger = getLogger('retry');
+
 export async function withTelegramRetry(operation, options = {}) {
   const maxRetries = options.maxRetries ?? 5;
   const label = options.label || 'telegram request';
@@ -11,7 +15,12 @@ export async function withTelegramRetry(operation, options = {}) {
       if (!waitSeconds || attempt === maxRetries) throw error;
 
       const waitMs = (waitSeconds + 1) * 1000;
-      console.warn(`${label} hit FLOOD_WAIT_${waitSeconds}; retrying in ${waitSeconds + 1}s`);
+      logger.warn(`${label} hit FLOOD_WAIT`, {
+        waitSeconds,
+        retryInSeconds: waitSeconds + 1,
+        attempt: attempt + 1,
+        maxRetries
+      });
       await sleepFn(waitMs);
     }
   }
@@ -30,7 +39,12 @@ export async function withBotApiRetry(operation, options = {}) {
       if (!retryAfter || attempt === maxRetries) throw error;
 
       const waitMs = (retryAfter + 1) * 1000;
-      console.warn(`${label} hit Too Many Requests; retrying in ${retryAfter + 1}s`);
+      logger.warn(`${label} hit Too Many Requests`, {
+        retryAfter,
+        retryInSeconds: retryAfter + 1,
+        attempt: attempt + 1,
+        maxRetries
+      });
       await sleepFn(waitMs);
     }
   }

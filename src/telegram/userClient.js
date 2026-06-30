@@ -28,14 +28,22 @@ export async function createSession(config) {
   const client = createUserClient(config);
   await client.start({
     qrCodeHandler: (url, expires) => {
-      console.clear();
-      console.log('Scan this QR code in Telegram: Settings > Devices > Link Desktop Device');
-      console.log(`Expires: ${expires.toISOString()}`);
-      console.log(encodeQR(url, 'ascii'));
+      clearTerminal();
+      writeTerminal('Scan this QR code in Telegram: Settings > Devices > Link Desktop Device');
+      writeTerminal(`Expires: ${expires.toISOString()}`);
+      writeTerminal(encodeQR(url, 'ascii'));
     },
     password: () => client.input('2FA password: ')
   });
 
   await client.destroy();
   return path.resolve(config.telegram.sessionFile);
+}
+
+function clearTerminal() {
+  process.stdout.write('\x1Bc');
+}
+
+function writeTerminal(value) {
+  process.stdout.write(`${value}\n`);
 }

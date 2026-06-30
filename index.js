@@ -1,12 +1,13 @@
 import { loadConfig } from './src/config/index.js';
-import { createLogger } from './src/core/logger.js';
+import { configureLogger, getLogger } from './src/core/logger.js';
 import { createApp } from './src/runtime/app.js';
 import { Scheduler } from './src/runtime/scheduler.js';
 import { createSession } from './src/telegram/userClient.js';
 
 const command = process.argv[2] || 'daemon';
 const config = loadConfig();
-const logger = createLogger(config, 'runtime');
+configureLogger(config);
+const logger = getLogger('runtime');
 logger.info('Command starting', {
   command,
   sourceChatId: config.telegram.sourceChatId,
@@ -18,7 +19,7 @@ logger.info('Command starting', {
 
 if (command === 'session') {
   const sessionPath = await createSession(config);
-  console.log(`Session saved: ${sessionPath}`);
+  logger.info('Session saved', { sessionPath });
 } else if (command === 'setup') {
   const app = await createApp(config);
   let shuttingDown = false;
@@ -42,7 +43,6 @@ if (command === 'session') {
     app.publisher.launchBot();
     if (!shuttingDown) {
       logger.info('Setup bot is running', { adminId: config.telegram.adminId });
-      console.log('Setup bot is running. Open admin private chat and run /setup.');
     }
   } catch (error) {
     if (!shuttingDown || !isInterruptedLaunchError(error)) throw error;
@@ -52,22 +52,24 @@ if (command === 'session') {
   const scheduler = new Scheduler(config, {
     sync: async () => {
       const job = await app.syncWorker.sync('schedule');
-      console.log(`Sync job status: ${job.status}`);
+      logger.debug('Scheduled sync job status', { status: job.status, reason: job.reason });
       job.promise.then((sync) => {
         if (!sync?.skipped && !sync?.failed) {
-          console.log(`Sync complete: initial=${sync.isInitial}, seen=${sync.seen}`);
+          logger.info('Scheduled sync complete', { initial: sync.isInitial, seen: sync.seen });
         }
       });
       return job;
     },
     publish: async (key, now = new Date()) => {
       const publish = await app.publisher.publishAll(now, key);
-      console.log(`Publish planned: ${publish.selections.map((item) => `${item.key}:${item.status}`).join(',')}`);
+      logger.info('Scheduled publish planned', {
+        selections: publish.selections.map((item) => `${item.key}:${item.status}`).join(',')
+      });
       return publish;
     },
     publishWorker: async () => {
       const job = app.publisher.runPublicationWorker('schedule');
-      console.log(`Publish worker job status: ${job.status}`);
+      logger.debug('Scheduled publish worker job status', { status: job.status, reason: job.reason });
       return job;
     }
   });

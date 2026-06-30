@@ -1,5 +1,5 @@
 import { PostRepository } from '../database/postRepository.js';
-import { createLogger } from '../core/logger.js';
+import { getLogger } from '../core/logger.js';
 import { MediaDownloader } from '../telegram/media.js';
 import { SelectionPublisher } from '../telegram/publisher.js';
 import { TelegramScanner } from '../telegram/scanner.js';
@@ -9,7 +9,7 @@ import { JobGate } from './jobGate.js';
 import { SyncWorker } from './syncWorker.js';
 
 export async function createApp(config) {
-  const logger = createLogger(config, 'app');
+  const logger = getLogger('app');
   logger.debug('Initializing app', {
     sourceChatId: config.telegram.sourceChatId,
     publishChannelId: config.telegram.publishChannelId,
