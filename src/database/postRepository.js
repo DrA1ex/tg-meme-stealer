@@ -44,19 +44,13 @@ export class PostRepository {
         period_start TEXT NOT NULL,
         period_end TEXT NOT NULL,
         status TEXT NOT NULL,
-        published_at TEXT NOT NULL,
-        created_at TEXT,
-        updated_at TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
         finished_at TEXT,
         last_error TEXT,
         data TEXT NOT NULL DEFAULT '{}'
       )
     `);
-    await this.ensureColumn('publications', 'key', 'TEXT');
-    await this.ensureColumn('publications', 'created_at', 'TEXT');
-    await this.ensureColumn('publications', 'updated_at', 'TEXT');
-    await this.ensureColumn('publications', 'finished_at', 'TEXT');
-    await this.ensureColumn('publications', 'last_error', 'TEXT');
     await this.db.exec(`
       CREATE UNIQUE INDEX IF NOT EXISTS idx_publications_key_active
       ON publications(key)
@@ -76,8 +70,6 @@ export class PostRepository {
         FOREIGN KEY (publication_id) REFERENCES publications(id) ON DELETE CASCADE
       )
     `);
-    await this.ensureColumn('publication_posts', 'bot_message_id', 'INTEGER');
-    await this.ensureColumn('publication_posts', 'sent_at', 'TEXT');
     await this.db.exec(`
       CREATE TABLE IF NOT EXISTS job_locks (
         lock_key TEXT PRIMARY KEY,
@@ -193,10 +185,10 @@ export class PostRepository {
     try {
       const result = await this.run(
         `
-          INSERT INTO publications (selection_key, title, period_start, period_end, status, published_at, created_at, updated_at, finished_at, data)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          INSERT INTO publications (selection_key, title, period_start, period_end, status, created_at, updated_at, finished_at, data)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         `,
-        [selectionKey, title, periodStart, periodEnd, status, now, now, now, now, JSON.stringify(data)]
+        [selectionKey, title, periodStart, periodEnd, status, now, now, now, JSON.stringify(data)]
       );
       const publicationId = result.lastID;
 
@@ -225,11 +217,11 @@ export class PostRepository {
       const result = await this.run(
         `
           INSERT INTO publications (
-            key, selection_key, title, period_start, period_end, status, published_at, created_at, updated_at, data
+            key, selection_key, title, period_start, period_end, status, created_at, updated_at, data
           )
-          VALUES (?, ?, ?, ?, ?, 'created', ?, ?, ?, ?)
+          VALUES (?, ?, ?, ?, ?, 'created', ?, ?, ?)
         `,
-        [key, selectionKey, title, periodStart, periodEnd, now, now, now, JSON.stringify(data)]
+        [key, selectionKey, title, periodStart, periodEnd, now, now, JSON.stringify(data)]
       );
       return result.lastID;
     } catch (error) {
@@ -243,7 +235,7 @@ export class PostRepository {
     const rows = await this.all(
       `
         SELECT id, key, selection_key AS selectionKey, title, period_start AS periodStart, period_end AS periodEnd,
-               status, published_at AS publishedAt, created_at AS createdAt, updated_at AS updatedAt,
+               status, created_at AS createdAt, updated_at AS updatedAt,
                finished_at AS finishedAt, last_error AS lastError, data
         FROM publications
         WHERE status IN ('running', 'created')
@@ -278,7 +270,7 @@ export class PostRepository {
         LEFT JOIN publication_posts pp ON pp.publication_id = p.id
         WHERE p.status IN ('published', 'dry_run', 'failed', 'cancelled')
         GROUP BY p.id
-        ORDER BY COALESCE(p.updated_at, p.finished_at, p.published_at, p.created_at) DESC, p.id DESC
+        ORDER BY COALESCE(p.updated_at, p.finished_at, p.created_at) DESC, p.id DESC
         LIMIT ?
       `,
       [finishedLimit]
@@ -320,8 +312,8 @@ export class PostRepository {
     await this.run('BEGIN');
     try {
       await this.run(
-        'UPDATE publications SET status = ?, published_at = ?, updated_at = ?, finished_at = ?, last_error = NULL, data = ? WHERE id = ?',
-        [status, now, now, status === 'published' || status === 'dry_run' || status === 'failed' ? now : null, JSON.stringify(data), publicationId]
+        'UPDATE publications SET status = ?, updated_at = ?, finished_at = ?, last_error = NULL, data = ? WHERE id = ?',
+        [status, now, status === 'published' || status === 'dry_run' || status === 'failed' ? now : null, JSON.stringify(data), publicationId]
       );
 
       for (let index = 0; index < posts.length; index += 1) {
@@ -412,12 +404,6 @@ export class PostRepository {
 
   async releaseJobLock(lockKey) {
     await this.run('DELETE FROM job_locks WHERE lock_key = ?', [lockKey]);
-  }
-
-  async ensureColumn(tableName, columnName, definition) {
-    const columns = await this.all(`PRAGMA table_info(${tableName})`);
-    if (columns.some((column) => column.name === columnName)) return;
-    await this.run(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${definition}`);
   }
 
   async run(sql, params = []) {
