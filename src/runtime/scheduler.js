@@ -38,7 +38,8 @@ export class Scheduler {
   scheduleSync() {
     const intervalMs = this.config.sync.intervalHours * 60 * 60 * 1000;
     const nextRunAt = new Date(Date.now() + intervalMs);
-    this.logger.debug('Scheduled sync', {
+    this.logger.info('Timer scheduled', {
+      timer: 'sync',
       intervalHours: intervalMs / 60 / 60 / 1000,
       delayMs: intervalMs,
       nextRunAt
@@ -52,7 +53,8 @@ export class Scheduler {
   scheduleRetention({ initial = false } = {}) {
     if (!this.handlers.retention) return;
     const delayMs = getRetentionDelayMs(this.config, initial);
-    this.logger.debug('Scheduled retention', {
+    this.logger.info('Timer scheduled', {
+      timer: 'retention',
       initial,
       delayMs,
       nextRunAt: new Date(Date.now() + delayMs)
@@ -78,7 +80,8 @@ export class Scheduler {
       period
     });
     const delayMs = nextRunAt.getTime() - now.getTime();
-    this.logger.debug('Scheduled publication', {
+    this.logger.info('Timer scheduled', {
+      timer: 'publication',
       key,
       period,
       time,
@@ -144,7 +147,12 @@ export class Scheduler {
 
   schedulePublicationWorker() {
     const intervalMs = Math.max(1, Number(this.config.publish?.workerIntervalMinutes ?? 1)) * 60 * 1000;
-    this.logger.debug('Scheduled publication worker', { intervalMs, nextRunAt: new Date(Date.now() + intervalMs) });
+    this.logger.info('Timer scheduled', {
+      timer: 'publication_worker',
+      intervalMinutes: intervalMs / 60 / 1000,
+      delayMs: intervalMs,
+      nextRunAt: new Date(Date.now() + intervalMs)
+    });
     void this.handlers.publishWorker();
     this.scheduleTimeout(async () => {
       await this.handlers.publishWorker();

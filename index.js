@@ -1,6 +1,7 @@
 import { loadConfig } from './src/config/index.js';
 import { configureLogger, getLogger } from './src/core/logger.js';
 import { createApp } from './src/runtime/app.js';
+import { formatScheduledPublishLog } from './src/runtime/publishLog.js';
 import { Scheduler } from './src/runtime/scheduler.js';
 import { createSession } from './src/telegram/userClient.js';
 
@@ -68,11 +69,7 @@ if (command === 'session') {
         reason: job.reason || ''
       });
       const publish = await job.promise;
-      logger.info('Scheduled publish enqueue complete', {
-        selections: publish.selections?.map((item) => `${item.key}:${item.status}`).join(',') || '',
-        skipped: Boolean(publish.skipped),
-        reason: publish.reason || ''
-      });
+      logger.info('Scheduled publish enqueue complete', formatScheduledPublishLog(publish));
       return publish;
     },
     publishWorker: async () => {

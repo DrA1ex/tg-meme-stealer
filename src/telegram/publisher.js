@@ -166,9 +166,9 @@ export class SelectionPublisher {
     if (!options.force) {
       const existing = await getBlockingPublication(this.repository, canonicalKey);
       if (isBlockingPublication(existing)) {
-        this.logger.info('Publication request skipped: already exists', {
+        this.logger.info('Publication request skipped: already published or scheduled', {
           selection: spec.key,
-          key: canonicalKey,
+          publicationKey: canonicalKey,
           status: existing.status
         });
         return {
@@ -204,9 +204,9 @@ export class SelectionPublisher {
     });
     if (!publicationId) {
       const existing = await getBlockingPublication(this.repository, canonicalKey);
-      this.logger.info('Publication request skipped: unique collision', {
+      this.logger.info('Publication request skipped: another scheduler already created it', {
         selection: selection.key,
-        key: canonicalKey,
+        publicationKey: canonicalKey,
         status: existing?.status
       });
       return {
