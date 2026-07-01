@@ -150,6 +150,52 @@ test('Scheduler runs retention after initial delay and then schedules interval',
   assert.equal(delays[1].delayMs, 24 * 60 * 60 * 1000);
 });
 
+test('Scheduler wakes publication worker on startup but not on interval reschedule', async () => {
+  const delays = [];
+  const events = [];
+  const scheduler = new Scheduler(
+    {
+      schedule: {
+        enabled: true,
+        timezone: 'Asia/Yekaterinburg'
+      },
+      sync: { runOnStart: false, intervalHours: 24 },
+      publish: {
+        workerIntervalMinutes: 10,
+        selections: {}
+      },
+      logging: { logLevel: 'silent' }
+    },
+    {
+      sync: async () => {},
+      publish: async () => {},
+      publishWorker: async () => {
+        events.push('worker');
+      }
+    }
+  );
+  scheduler.scheduleSync = () => {};
+  scheduler.scheduleRetention = () => {};
+  scheduler.schedulePublications = () => {};
+  scheduler.planMissedPublications = async () => {};
+  scheduler.scheduleTimeout = (fn, delayMs) => {
+    delays.push({ fn, delayMs });
+    return { fake: true };
+  };
+
+  await scheduler.start();
+
+  assert.deepEqual(events, ['worker']);
+  assert.equal(delays.length, 1);
+  assert.equal(delays[0].delayMs, 10 * 60 * 1000);
+
+  await delays[0].fn();
+
+  assert.deepEqual(events, ['worker', 'worker']);
+  assert.equal(delays.length, 2);
+  assert.equal(delays[1].delayMs, 10 * 60 * 1000);
+});
+
 test('Scheduler publishes with intended scheduled time instead of callback time', async () => {
   const published = [];
   const scheduler = new Scheduler(
@@ -361,7 +407,7 @@ test('Scheduler plans missed publications only after startup sync completes', as
   assert.deepEqual(events, ['sync:start', 'sync:end', 'publish:syncCompleted=true', 'worker']);
 });
 
-test('Scheduler plans missed publications on startup when they are inside request TTL', async () => {
+test('Scheduler plans missed publications inside request TTL without waking worker', async () => {
   const planned = [];
   let workerRuns = 0;
   const scheduler = new Scheduler(
@@ -389,16 +435,17 @@ test('Scheduler plans missed publications on startup when they are inside reques
     }
   );
 
-  await scheduler.planMissedPublications(new Date('2026-06-29T08:00:00.000Z'));
+  const plannedCount = await scheduler.planMissedPublications(new Date('2026-06-29T08:00:00.000Z'));
 
   assert.deepEqual(planned, [
     { key: 'best.week', scheduledAt: '2026-06-29T05:10:00.000Z' },
     { key: 'best.day', scheduledAt: '2026-06-29T05:00:00.000Z' }
   ]);
-  assert.equal(workerRuns, 1);
+  assert.equal(plannedCount, 2);
+  assert.equal(workerRuns, 0);
 });
 
-test('Scheduler does not wake publication worker when catch-up already exists', async () => {
+test('Scheduler plans catch-up checks without waking worker when request already exists', async () => {
   const planned = [];
   let workerRuns = 0;
   const scheduler = new Scheduler(

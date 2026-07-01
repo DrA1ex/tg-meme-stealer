@@ -29,9 +29,11 @@ export class Scheduler {
     if (this.config.sync.runOnStart) {
       this.logger.info('Running startup sync');
       void runHandler(this.handlers.sync)
-        .then(() => this.planMissedPublications());
+        .then(() => this.planMissedPublications())
+        .then(() => this.handlers.publishWorker());
     } else {
-      void this.planMissedPublications();
+      void this.planMissedPublications()
+        .then(() => this.handlers.publishWorker());
     }
   }
 
@@ -140,9 +142,7 @@ export class Scheduler {
       }
     }
 
-    if (planned > 0) {
-      await this.handlers.publishWorker();
-    }
+    return planned;
   }
 
   schedulePublicationWorker() {
@@ -153,7 +153,6 @@ export class Scheduler {
       delayMs: intervalMs,
       nextRunAt: new Date(Date.now() + intervalMs)
     });
-    void this.handlers.publishWorker();
     this.scheduleTimeout(async () => {
       await this.handlers.publishWorker();
       this.schedulePublicationWorker();
