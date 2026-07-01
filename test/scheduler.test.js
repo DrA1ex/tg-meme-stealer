@@ -102,6 +102,94 @@ test('Scheduler skips timer sync while startup sync is still running', async () 
   resolveStartupSync();
 });
 
+test('Scheduler runs retention after initial delay and then schedules interval', async () => {
+  const delays = [];
+  let retentionRuns = 0;
+  const scheduler = new Scheduler(
+    {
+      schedule: {
+        enabled: true,
+        timezone: 'Asia/Yekaterinburg'
+      },
+      sync: {
+        runOnStart: false,
+        intervalHours: 24,
+        retentionInitialDelayMinutes: 15,
+        retentionIntervalHours: 24
+      },
+      publish: { selections: {} },
+      logging: { logLevel: 'silent' }
+    },
+    {
+      sync: async () => {},
+      publish: async () => {},
+      publishWorker: async () => {},
+      retention: async () => {
+        retentionRuns += 1;
+      }
+    }
+  );
+  scheduler.scheduleSync = () => {};
+  scheduler.schedulePublicationWorker = () => {};
+  scheduler.schedulePublications = () => {};
+  scheduler.planMissedPublications = async () => {};
+  scheduler.scheduleTimeout = (fn, delayMs) => {
+    delays.push({ fn, delayMs });
+    return { fake: true };
+  };
+
+  await scheduler.start();
+
+  assert.equal(delays.length, 1);
+  assert.equal(delays[0].delayMs, 15 * 60 * 1000);
+
+  await delays[0].fn();
+
+  assert.equal(retentionRuns, 1);
+  assert.equal(delays.length, 2);
+  assert.equal(delays[1].delayMs, 24 * 60 * 60 * 1000);
+});
+
+test('Scheduler publishes with intended scheduled time instead of callback time', async () => {
+  const published = [];
+  const scheduler = new Scheduler(
+    {
+      schedule: {
+        enabled: true,
+        timezone: 'UTC'
+      },
+      sync: {
+        runOnStart: false,
+        intervalHours: 24
+      },
+      publish: {
+        selections: {
+          best: {
+            day: { enabled: true, time: '10:00' }
+          }
+        }
+      },
+      logging: { logLevel: 'silent' }
+    },
+    {
+      publish: async (key, scheduledAt) => published.push({ key, scheduledAt: scheduledAt.toISOString() }),
+      publishWorker: async () => {}
+    }
+  );
+  scheduler.scheduleTimeout = (fn) => {
+    if (!scheduler.scheduledCallback) scheduler.scheduledCallback = fn;
+    return { fake: true };
+  };
+
+  scheduler.schedulePublication('best.day', '10:00', new Date('2026-06-29T09:59:00.000Z'));
+  await scheduler.scheduledCallback();
+
+  assert.deepEqual(published, [{
+    key: 'best.day',
+    scheduledAt: '2026-06-29T10:00:00.000Z'
+  }]);
+});
+
 test('Scheduler plans missed publications only after startup sync completes', async () => {
   let resolveSync;
   let resolveCatchup;

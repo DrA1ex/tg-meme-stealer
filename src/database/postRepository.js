@@ -108,6 +108,14 @@ export class PostRepository {
     await this.run('DELETE FROM posts WHERE chat_id = ? AND message_id = ?', [String(chatId), messageId]);
   }
 
+  async deletePostsOlderThan(chatId, beforeIso) {
+    const result = await this.run(
+      'DELETE FROM posts WHERE chat_id = ? AND message_date < ?',
+      [String(chatId), beforeIso]
+    );
+    return result.changes || 0;
+  }
+
   async listPostIdsSince(chatId, sinceIso) {
     return this.all(
       'SELECT message_id AS messageId FROM posts WHERE chat_id = ? AND message_date >= ? ORDER BY message_id',

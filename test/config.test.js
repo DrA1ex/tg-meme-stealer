@@ -73,7 +73,10 @@ test('validateConfig rejects all schema issues at once', () => {
       unknown: true,
       sync: {
         ...validConfig().sync,
-        initialSync: false
+        initialSync: false,
+        retentionDays: '60',
+        retentionInitialDelayMinutes: '15',
+        retentionIntervalHours: '24'
       },
       logging: {
         ...validConfig().logging,
@@ -113,6 +116,9 @@ test('validateConfig rejects all schema issues at once', () => {
   assert.match(error.message, /Invalid config:/);
   assert.match(error.message, /- unknown: unsupported option/);
   assert.match(error.message, /- sync\.initialSync: unsupported option/);
+  assert.match(error.message, /- sync\.retentionDays: expected number, got string/);
+  assert.match(error.message, /- sync\.retentionInitialDelayMinutes: expected number, got string/);
+  assert.match(error.message, /- sync\.retentionIntervalHours: expected number, got string/);
   assert.match(error.message, /- logging\.logLevel: expected string, got number/);
   assert.match(error.message, /- logging\.level: unsupported option/);
   assert.match(error.message, /- schedule\.runOnStart: unsupported option/);
@@ -144,6 +150,9 @@ function validConfig() {
       mediaDir: 'tmp/media',
       intervalHours: 24,
       runOnStart: true,
+      retentionDays: 60,
+      retentionInitialDelayMinutes: 15,
+      retentionIntervalHours: 24,
       throttle: {
         enabled: true,
         historyMinMs: 800,

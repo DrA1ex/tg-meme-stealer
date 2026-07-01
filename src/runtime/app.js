@@ -6,6 +6,7 @@ import { TelegramScanner } from '../telegram/scanner.js';
 import { SetupAssistant } from '../telegram/setupAssistant.js';
 import { startUserClient } from '../telegram/userClient.js';
 import { JobGate } from './jobGate.js';
+import { RetentionWorker } from './retentionWorker.js';
 import { SyncWorker } from './syncWorker.js';
 
 export async function createApp(config) {
@@ -32,6 +33,7 @@ export async function createApp(config) {
   const scanner = new TelegramScanner({ client: userClient, repository, config });
   const jobGate = new JobGate();
   const syncWorker = new SyncWorker({ scanner, jobGate, config });
+  const retentionWorker = new RetentionWorker({ scanner, jobGate });
   const mediaDownloader = new MediaDownloader({ client: userClient, config });
   const setupAssistant = new SetupAssistant({ scanner, mediaDownloader, config });
   const publisher = new SelectionPublisher({ repository, mediaDownloader, setupAssistant, syncWorker, jobGate, config });
@@ -43,6 +45,7 @@ export async function createApp(config) {
     scanner,
     jobGate,
     syncWorker,
+    retentionWorker,
     publisher,
     async close() {
       if (closed) return;

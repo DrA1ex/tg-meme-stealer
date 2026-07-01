@@ -60,6 +60,9 @@ const CONFIG_SCHEMA = {
     mediaDir: STRING,
     intervalHours: NUMBER,
     runOnStart: BOOLEAN,
+    retentionDays: NUMBER,
+    retentionInitialDelayMinutes: NUMBER,
+    retentionIntervalHours: NUMBER,
     throttle: {
       enabled: BOOLEAN,
       historyMinMs: NUMBER,

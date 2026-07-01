@@ -15,6 +15,9 @@
     "mediaDir": "tmp/media",
     "intervalHours": 24,
     "runOnStart": true,
+    "retentionDays": 60,
+    "retentionInitialDelayMinutes": 15,
+    "retentionIntervalHours": 24,
     "throttle": {
       "enabled": true,
       "historyMinMs": 800,

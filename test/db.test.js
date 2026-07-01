@@ -232,6 +232,69 @@ test('PostRepository lists recent publications and detailed posts', async () => 
   await fs.rm(dbPath, { force: true });
 });
 
+test('PostRepository deletes posts older than retention cutoff without deleting publication history', async () => {
+  const dbPath = path.join('/private/tmp', `tg-memes-${process.pid}-${Date.now()}-retention.sqlite`);
+  await fs.rm(dbPath, { force: true });
+  const repository = new PostRepository(dbPath);
+  await repository.init();
+
+  const oldPost = postRow(1, '2026-04-01T00:00:00.000Z');
+  const freshPost = postRow(2, '2026-06-01T00:00:00.000Z');
+  await repository.upsertPost(oldPost);
+  await repository.upsertPost(freshPost);
+  const publicationId = await repository.createPublication({
+    selectionKey: 'best.month',
+    title: 'Best month',
+    periodStart: '2026-04-01T00:00:00.000Z',
+    periodEnd: '2026-05-01T00:00:00.000Z',
+    status: 'published',
+    posts: [oldPost],
+    data: { count: 1 }
+  });
+
+  const deleted = await repository.deletePostsOlderThan(-1002, '2026-05-01T00:00:00.000Z');
+  const posts = await repository.all('SELECT message_id AS messageId FROM posts ORDER BY message_id');
+  const publicationPosts = await repository.listPublicationPosts(publicationId);
+
+  assert.equal(deleted, 1);
+  assert.deepEqual(posts, [{ messageId: 2 }]);
+  assert.equal(publicationPosts.length, 1);
+  assert.equal(publicationPosts[0].messageId, 1);
+
+  await repository.close();
+  await fs.rm(dbPath, { force: true });
+});
+
+test('PostRepository selection windows are half-open at the boundary', async () => {
+  const dbPath = path.join('/private/tmp', `tg-memes-${process.pid}-${Date.now()}-boundary.sqlite`);
+  await fs.rm(dbPath, { force: true });
+  const repository = new PostRepository(dbPath);
+  await repository.init();
+
+  await repository.upsertPost(post({ messageId: 1, likes: 10, dislikes: 0, messageDate: '2026-06-29T09:59:59.999Z' }));
+  await repository.upsertPost(post({ messageId: 2, likes: 20, dislikes: 0, messageDate: '2026-06-29T10:00:00.000Z' }));
+  await repository.upsertPost(post({ messageId: 3, likes: 30, dislikes: 0, messageDate: '2026-06-30T10:00:00.000Z' }));
+
+  const previous = await repository.getTopPosts({
+    chatId: -1001,
+    sinceIso: '2026-06-28T10:00:00.000Z',
+    untilIso: '2026-06-29T10:00:00.000Z',
+    limit: 10
+  });
+  const next = await repository.getTopPosts({
+    chatId: -1001,
+    sinceIso: '2026-06-29T10:00:00.000Z',
+    untilIso: '2026-06-30T10:00:00.000Z',
+    limit: 10
+  });
+
+  assert.deepEqual(previous.map((row) => row.messageId), [1]);
+  assert.deepEqual(next.map((row) => row.messageId), [2]);
+
+  await repository.close();
+  await fs.rm(dbPath, { force: true });
+});
+
 function publicationClaim() {
   return {
     key: 'publish:best.week:2026-W27',
@@ -243,6 +306,19 @@ function publicationClaim() {
   };
 }
 
+function postRow(messageId, messageDate) {
+  return {
+    chatId: -1002,
+    messageId,
+    author: 'Alice',
+    text: 'Post',
+    likes: 10,
+    dislikes: 1,
+    data: {},
+    messageDate
+  };
+}
+
 function post(overrides) {
   return {
     chatId: -1001,
@@ -251,7 +327,7 @@ function post(overrides) {
     text: 'By Alice',
     likes: overrides.likes,
     dislikes: overrides.dislikes,
-    messageDate: '2026-06-15T00:00:00.000Z',
+    messageDate: overrides.messageDate || '2026-06-15T00:00:00.000Z',
     data: { media: [] }
   };
 }

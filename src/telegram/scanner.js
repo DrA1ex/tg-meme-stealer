@@ -338,6 +338,18 @@ export class TelegramScanner {
     return deleted;
   }
 
+  async cleanupOldPosts(now = new Date()) {
+    const retentionDays = getPostRetentionDays(this.config);
+    const before = subtractDays(now, retentionDays);
+    const pruned = await this.repository.deletePostsOlderThan(this.config.telegram.sourceChatId, before.toISOString());
+    this.logger.info('Old-post cleanup finished', {
+      retentionDays,
+      before: before.toISOString(),
+      pruned
+    });
+    return pruned;
+  }
+
   async getHistory(params) {
     const peerId = normalizeTelegramPeerId(this.config.telegram.sourceChatId);
     this.logger.info('Requesting history', {
@@ -365,6 +377,10 @@ export function getInitialScanDays(config) {
     return Number(config.sync.initialScanDays);
   }
   return 60;
+}
+
+export function getPostRetentionDays(config) {
+  return Math.max(1, Number(config.sync?.retentionDays ?? 60));
 }
 
 export function getBackfillPostAction({ post, sinceDate, updateSinceDate, existingIds }) {

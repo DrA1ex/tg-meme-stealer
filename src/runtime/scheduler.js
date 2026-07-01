@@ -20,6 +20,7 @@ export class Scheduler {
       runOnStart: Boolean(this.config.sync.runOnStart)
     });
     this.scheduleSync();
+    this.scheduleRetention({ initial: true });
     this.schedulePublicationWorker();
     this.schedulePublications();
     this.logger.debug('Scheduler started', { timers: this.timers.size });
@@ -46,6 +47,20 @@ export class Scheduler {
     }, intervalMs);
   }
 
+  scheduleRetention({ initial = false } = {}) {
+    if (!this.handlers.retention) return;
+    const delayMs = getRetentionDelayMs(this.config, initial);
+    this.logger.debug('Scheduled retention', {
+      initial,
+      delayMs,
+      nextRunAt: new Date(Date.now() + delayMs)
+    });
+    this.scheduleTimeout(async () => {
+      await runHandler(this.handlers.retention);
+      this.scheduleRetention();
+    }, delayMs);
+  }
+
   schedulePublications(now = new Date()) {
     for (const entry of getScheduledPublishEntries(this.config)) {
       this.schedulePublication(entry.key, entry.time, now);
@@ -70,7 +85,7 @@ export class Scheduler {
       nextRunAt
     });
     this.scheduleTimeout(async () => {
-      await this.handlers.publish(key, new Date());
+      await this.handlers.publish(key, nextRunAt);
       await this.handlers.publishWorker();
       this.schedulePublication(key, time);
     }, delayMs);
@@ -138,6 +153,13 @@ export class Scheduler {
     this.timers.clear();
     this.logger.debug('Scheduler stopped');
   }
+}
+
+function getRetentionDelayMs(config, initial) {
+  if (initial) {
+    return Math.max(0, Number(config.sync?.retentionInitialDelayMinutes ?? 15)) * 60 * 1000;
+  }
+  return Math.max(1, Number(config.sync?.retentionIntervalHours ?? 24)) * 60 * 60 * 1000;
 }
 
 async function runHandler(handler) {

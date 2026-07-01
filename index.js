@@ -71,6 +71,11 @@ if (command === 'session') {
       const job = app.publisher.runPublicationWorker('schedule');
       logger.debug('Scheduled publish worker job status', { status: job.status, reason: job.reason });
       return job;
+    },
+    retention: async () => {
+      const job = app.retentionWorker.run('schedule');
+      logger.debug('Scheduled retention job status', { status: job.status, reason: job.reason });
+      return job;
     }
   });
   let shuttingDown = false;
