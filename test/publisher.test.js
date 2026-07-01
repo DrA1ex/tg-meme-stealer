@@ -387,8 +387,178 @@ test('SelectionPublisher.runManualPublish plans selections and replies with job 
   });
 
   assert.equal(replies.length, 1);
-  assert.match(replies[0], /best.week: scheduled \(1\)/);
+  assert.match(replies[0], /best\.week: publication request created \(1 posts\)/);
   assert.match(replies[0], /Worker job status: running/);
+});
+
+test('SelectionPublisher.runManualPublish replies when requested publication already exists', async () => {
+  const replies = [];
+  let loadedPosts = false;
+  const publisher = new SelectionPublisher({
+    repository: {
+      getPublicationByKey: async () => ({ id: 10, status: 'published', data: { count: 5 } }),
+      getTopPosts: async () => {
+        loadedPosts = true;
+        return [post(1, 'Alice')];
+      }
+    },
+    mediaDownloader: {},
+    setupAssistant: null,
+    config: {
+      ...config(),
+      publish: {
+        dryRun: false,
+        selections: {
+          best: {
+            day: { enabled: true, limit: 5, template: 'Best day' }
+          }
+        }
+      }
+    }
+  });
+
+  await publisher.runManualPublish({
+    message: { text: '/publish day' },
+    reply: async (message) => replies.push(message)
+  });
+
+  assert.equal(loadedPosts, false);
+  assert.equal(replies.length, 1);
+  assert.match(replies[0], /best\.day: already published\. Nothing was scheduled\./);
+  assert.match(replies[0], /No new publication request was created\. Worker was not started\./);
+});
+
+test('SelectionPublisher.runManualPublish supports best and controversial wildcards', async () => {
+  const topSpecs = [];
+  const controversialSpecs = [];
+  const insertedKeys = [];
+  const replies = [];
+  const publisher = new SelectionPublisher({
+    repository: {
+      getPublicationByKey: async () => null,
+      getTopPosts: async (spec) => {
+        topSpecs.push(spec.key);
+        return [post(topSpecs.length, 'Alice')];
+      },
+      getControversialPosts: async (spec) => {
+        controversialSpecs.push(spec.key);
+        return [post(10 + controversialSpecs.length, 'Bob')];
+      },
+      tryCreatePublicationRequest: async ({ key }) => {
+        insertedKeys.push(key);
+        return insertedKeys.length;
+      },
+      getNextPublicationRequest: async () => null
+    },
+    mediaDownloader: {},
+    setupAssistant: null,
+    config: {
+      ...config(),
+      publish: {
+        dryRun: false,
+        selections: {
+          best: {
+            month: { enabled: true, limit: 1, template: 'Best month' },
+            week: { enabled: true, limit: 1, template: 'Best week' },
+            day: { enabled: true, limit: 1, template: 'Best day' }
+          },
+          controversial: {
+            month: { enabled: true, limit: 1, threshold: 0.3, template: 'Controversial month' },
+            week: { enabled: true, limit: 1, threshold: 0.3, template: 'Controversial week' },
+            day: { enabled: true, limit: 1, threshold: 0.3, template: 'Controversial day' }
+          }
+        }
+      }
+    }
+  });
+
+  await publisher.runManualPublish({
+    message: { text: '/publish best.* controversial.*' },
+    reply: async (message) => replies.push(message)
+  });
+
+  assert.deepEqual(topSpecs, ['best.month', 'best.week', 'best.day']);
+  assert.deepEqual(controversialSpecs, ['controversial.month', 'controversial.week', 'controversial.day']);
+  assert.equal(insertedKeys.length, 6);
+  assert.match(replies[0], /best\.month: publication request created/);
+  assert.match(replies[0], /controversial\.day: publication request created/);
+});
+
+test('SelectionPublisher.runManualPublish force schedules an explicitly disabled selection', async () => {
+  const replies = [];
+  const queried = [];
+  const insertedKeys = [];
+  const publisher = new SelectionPublisher({
+    repository: {
+      getPublicationByKey: async () => null,
+      getControversialPosts: async (spec) => {
+        queried.push(spec.key);
+        return [post(1, 'Alice')];
+      },
+      tryCreatePublicationRequest: async ({ key }) => {
+        insertedKeys.push(key);
+        return 123;
+      },
+      getNextPublicationRequest: async () => null
+    },
+    mediaDownloader: {},
+    setupAssistant: null,
+    config: {
+      ...config(),
+      publish: {
+        dryRun: false,
+        selections: {
+          controversial: {
+            week: { enabled: false, limit: 1, threshold: 0.3, template: 'Controversial week' }
+          }
+        }
+      }
+    }
+  });
+
+  await publisher.runManualPublish({
+    message: { text: '/publish controversial.week -force' },
+    reply: async (message) => replies.push(message)
+  });
+
+  assert.deepEqual(queried, ['controversial.week']);
+  assert.equal(insertedKeys.length, 1);
+  assert.match(insertedKeys[0], /^publish:force:[a-z0-9]{6}:controversial\.week:2026-W27$/);
+  assert.match(replies[0], /controversial\.week: publication request created \(1 posts\) forced/);
+});
+
+test('SelectionPublisher.runManualPublish does not schedule disabled selection without force', async () => {
+  const replies = [];
+  let queried = false;
+  const publisher = new SelectionPublisher({
+    repository: {
+      getControversialPosts: async () => {
+        queried = true;
+        return [post(1, 'Alice')];
+      }
+    },
+    mediaDownloader: {},
+    setupAssistant: null,
+    config: {
+      ...config(),
+      publish: {
+        dryRun: false,
+        selections: {
+          controversial: {
+            week: { enabled: false, limit: 1, threshold: 0.3, template: 'Controversial week' }
+          }
+        }
+      }
+    }
+  });
+
+  await publisher.runManualPublish({
+    message: { text: '/publish controversial.week' },
+    reply: async (message) => replies.push(message)
+  });
+
+  assert.equal(queried, false);
+  assert.deepEqual(replies, ['No enabled selections matched. Use -force to publish an explicitly disabled selection.']);
 });
 
 test('SelectionPublisher.runManualPublish shows help without selection arguments', async () => {
@@ -469,7 +639,7 @@ test('SelectionPublisher.runManualPublish supports force scheduling', async () =
 
   assert.equal(keys.length, 1);
   assert.match(keys[0], /^publish:force:[a-z0-9]{6}:best\.week:2026-W27$/);
-  assert.match(replies[0], /best.week: scheduled \(1\) forced/);
+  assert.match(replies[0], /best\.week: publication request created \(1 posts\) forced/);
 });
 
 test('SelectionPublisher.runManualPublish supports single-dash force scheduling', async () => {
@@ -507,7 +677,7 @@ test('SelectionPublisher.runManualPublish supports single-dash force scheduling'
 
   assert.equal(keys.length, 1);
   assert.match(keys[0], /^publish:force:[a-z0-9]{6}:best\.week:2026-W27$/);
-  assert.match(replies[0], /best.week: scheduled \(1\) forced/);
+  assert.match(replies[0], /best\.week: publication request created \(1 posts\) forced/);
 });
 
 test('SelectionPublisher.handleBotError replies to admin and does not throw', async () => {
@@ -608,6 +778,7 @@ test('SelectionPublisher.replyPublications returns recent publications table', a
         assert.deepEqual(options, { limit: 10 });
         return [{
           id: 7,
+          key: 'publish:best.week:2026-W27',
           status: 'published',
           selectionKey: 'best.week',
           title: 'Best week',
@@ -628,8 +799,11 @@ test('SelectionPublisher.replyPublications returns recent publications table', a
 
   assert.equal(replies.length, 1);
   assert.match(replies[0].message, /Publications/);
-  assert.match(replies[0].message, /best\.week/);
+  assert.match(replies[0].message, /publish:best\.week:2026-W27/);
   assert.match(replies[0].message, /10\/10/);
+  assert.doesNotMatch(replies[0].message, /updated/i);
+  assert.doesNotMatch(replies[0].message, /\bselection\b/i);
+  assert.doesNotMatch(replies[0].message, /\btitle\b/i);
   assert.deepEqual(replies[0].options, { parse_mode: 'Markdown' });
 });
 
@@ -643,7 +817,10 @@ test('SelectionPublisher.replyPublication returns publication posts table', asyn
           id: 7,
           status: 'published',
           selectionKey: 'best.week',
-          title: 'Best week'
+          title: 'Best week',
+          createdAt: '2026-06-29T10:00:00.000Z',
+          updatedAt: '2026-06-29T11:00:00.000Z',
+          finishedAt: '2026-06-29T12:00:00.000Z'
         };
       },
       listPublicationPostsDetailed: async (id) => {
@@ -671,6 +848,9 @@ test('SelectionPublisher.replyPublication returns publication posts table', asyn
 
   assert.equal(replies.length, 1);
   assert.match(replies[0].message, /Publication #7/);
+  assert.match(replies[0].message, /Created: 2026-06-29 10:00:00Z/);
+  assert.match(replies[0].message, /Finished: 2026-06-29 12:00:00Z/);
+  assert.doesNotMatch(replies[0].message, /Updated:/);
   assert.match(replies[0].message, /123/);
   assert.match(replies[0].message, /Alice/);
   assert.deepEqual(replies[0].options, { parse_mode: 'Markdown' });

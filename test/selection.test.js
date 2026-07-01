@@ -27,10 +27,30 @@ test('buildSelectionSpecs filters by publish keys and supports aliases', () => {
   assert.deepEqual(specs.map((spec) => spec.key), ['best.week', 'controversial.week']);
 });
 
+test('buildSelectionSpecs can include disabled selections when explicitly requested', () => {
+  const normal = buildSelectionSpecs(config(), new Date('2026-06-29T00:00:00.000Z'), ['controversial.day']);
+  const forced = buildSelectionSpecs(config(), new Date('2026-06-29T00:00:00.000Z'), ['controversial.day'], {
+    includeDisabled: true
+  });
+
+  assert.deepEqual(normal.map((spec) => spec.key), []);
+  assert.deepEqual(forced.map((spec) => spec.key), ['controversial.day']);
+});
+
 test('normalizeSelectionKeys expands type aliases and rejects unknown keys', () => {
   assert.deepEqual(normalizeSelectionKeys('day'), ['best.day']);
   assert.deepEqual(normalizeSelectionKeys('fresh'), ['best.day']);
   assert.deepEqual(normalizeSelectionKeys('controversial'), [
+    'controversial.month',
+    'controversial.week',
+    'controversial.day'
+  ]);
+  assert.deepEqual(normalizeSelectionKeys('best.*'), [
+    'best.month',
+    'best.week',
+    'best.day'
+  ]);
+  assert.deepEqual(normalizeSelectionKeys('controversial.*'), [
     'controversial.month',
     'controversial.week',
     'controversial.day'

@@ -6,17 +6,15 @@ export function formatPublications(publications) {
 
   const tableRows = rows.map((row) => ({
     id: String(row.id),
+    key: row.key || '',
     status: row.status || '',
-    selection: row.selectionKey || '',
-    progress: formatProgress(row),
-    updated: formatDate(row.finishedAt || row.updatedAt || row.createdAt),
-    title: trim(row.title || '', 32)
+    progress: formatProgress(row)
   }));
 
   return [
     'Publications',
     '```',
-    formatTable(tableRows, ['id', 'status', 'selection', 'progress', 'updated', 'title']),
+    formatTable(tableRows, ['id', 'key', 'status', 'progress']),
     '```'
   ].join('\n');
 }
@@ -33,6 +31,9 @@ export function formatPublicationPosts(publication, posts) {
     `Posts: ${rows.length}`
   ];
 
+  if (publication.createdAt) lines.push(`Created: ${formatDate(publication.createdAt)}`);
+  if (publication.finishedAt) lines.push(`Finished: ${formatDate(publication.finishedAt)}`);
+  if (!publication.finishedAt && publication.updatedAt) lines.push(`Updated: ${formatDate(publication.updatedAt)}`);
   if (publication.lastError) lines.push(`Last error: ${trim(publication.lastError, 160)}`);
   if (rows.length === 0) return [...lines, '', 'No posts.'].join('\n');
 

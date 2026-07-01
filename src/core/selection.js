@@ -4,7 +4,7 @@ import { renderTemplate } from './format.js';
 const PERIODS = ['month', 'week', 'day'];
 const TYPES = ['best', 'controversial'];
 
-export function buildSelectionSpecs(config, now = new Date(), keys = null) {
+export function buildSelectionSpecs(config, now = new Date(), keys = null, options = {}) {
   const chatId = config.telegram.sourceChatId;
   const requestedKeys = keys ? new Set(normalizeSelectionKeys(keys)) : null;
   const specs = [];
@@ -12,7 +12,7 @@ export function buildSelectionSpecs(config, now = new Date(), keys = null) {
   for (const type of TYPES) {
     for (const period of PERIODS) {
       const entry = config.publish?.selections?.[type]?.[period];
-      if (!entry?.enabled) continue;
+      if (!entry?.enabled && !options.includeDisabled) continue;
 
       const key = `${type}.${period}`;
       if (requestedKeys && !requestedKeys.has(key)) continue;
@@ -78,6 +78,7 @@ function normalizeSelectionKey(key) {
   if (key === undefined || key === null || key === '') return [];
   if (key === 'fresh') return ['best.day'];
   if (PERIODS.includes(key)) return [`best.${key}`];
+  if (TYPES.map((type) => `${type}.*`).includes(key)) return PERIODS.map((period) => `${key.slice(0, -2)}.${period}`);
   if (TYPES.includes(key)) return PERIODS.map((period) => `${key}.${period}`);
   if (/^(best|controversial)\.(month|week|day)$/.test(key)) return [key];
   throw new Error(`Unknown publish selection: ${key}. Expected month, week, day, best.*, or controversial.*.`);

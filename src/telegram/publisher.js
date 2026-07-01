@@ -142,7 +142,9 @@ export class SelectionPublisher {
   }
 
   async planPublicationRequests(now = new Date(), keys = null, options = {}) {
-    const specs = buildSelectionSpecs(this.config, now, keys);
+    const specs = buildSelectionSpecs(this.config, now, keys, {
+      includeDisabled: Boolean(options.force && keys)
+    });
     this.logger.debug('Publish planning started', {
       targetChatId: this.config.telegram.publishChannelId,
       keys: keys || 'all',
@@ -594,22 +596,35 @@ function formatJobStatus(label, job) {
 }
 
 function formatPublishResult(result, job = null) {
+  if (result.selections.length === 0) {
+    return 'No enabled selections matched. Use -force to publish an explicitly disabled selection.';
+  }
+  const requested = result.selections.some((selection) => selection.requested || selection.status === 'scheduled');
   const lines = result.selections.map((selection) => {
     if (selection.status === 'scheduled') {
-      return `${selection.key}: scheduled (${selection.count})${selection.forced ? ' forced' : ''}`;
+      return `${selection.key}: publication request created (${selection.count} posts)${selection.forced ? ' forced' : ''}`;
     }
     if (selection.status === 'exists') {
-      return `${selection.key}: already ${selection.publicationStatus || 'scheduled'}`;
+      return `${selection.key}: already ${describePublicationStatus(selection.publicationStatus)}`;
     }
     if (selection.status === 'empty') {
-      return `${selection.key}: no posts`;
+      return `${selection.key}: no matching posts, nothing was scheduled`;
     }
     return `${selection.key}: ${selection.status}`;
   });
   if (job) {
     lines.push(`Worker job status: ${job.status}${job.reason ? ` (${job.reason})` : ''}`);
+  } else if (!requested) {
+    lines.push('No new publication request was created. Worker was not started.');
   }
-  return lines.join('\n') || 'No selections matched.';
+  return lines.join('\n');
+}
+
+function describePublicationStatus(status) {
+  if (status === 'published') return 'published. Nothing was scheduled.';
+  if (status === 'created') return 'scheduled and waiting for the worker.';
+  if (status === 'running') return 'being published now.';
+  return status || 'scheduled';
 }
 
 function formatPublishHelp() {
@@ -618,10 +633,12 @@ function formatPublishHelp() {
     '',
     'Examples:',
     '/publish week',
+    '/publish best.*',
+    '/publish controversial.*',
     '/publish best.week controversial.week',
     '/publish best.week --force',
     '',
-    'Selections: month, week, day, best.month, best.week, best.day, controversial.month, controversial.week, controversial.day.'
+    'Selections: month, week, day, best.*, controversial.*, best.month, best.week, best.day, controversial.month, controversial.week, controversial.day.'
   ].join('\n');
 }
 
