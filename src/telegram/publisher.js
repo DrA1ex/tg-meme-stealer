@@ -256,7 +256,7 @@ export class SelectionPublisher {
   }
 
   runPublicationWorker(source = 'manual') {
-    return this.jobGate.run('publish-worker', () => this.executePublicationWorker(source));
+    return this.jobGate.run('publish-worker', () => this.executePublicationWorker(source), { queueIfRunning: true });
   }
 
   async executePublicationWorker(source) {
@@ -628,6 +628,9 @@ function formatPublishResult(result, job = null) {
 function formatPublishWorkerStatus(job, requestCreated) {
   if (requestCreated && job.status === 'skipped' && job.reason === 'duplicate_job') {
     return 'Worker is already running. The created publication request will be processed by the active worker.';
+  }
+  if (requestCreated && job.status === 'scheduled') {
+    return 'Worker is already running. A follow-up worker run was queued and will process the created publication request after the current operation.';
   }
   if (requestCreated && job.status === 'busy') {
     return 'Worker is busy. The created publication request will be processed when the worker runs.';

@@ -606,6 +606,45 @@ test('SelectionPublisher.runManualPublish explains when worker is already runnin
   assert.doesNotMatch(replies[0], /Worker job status: skipped/);
 });
 
+test('SelectionPublisher.runManualPublish explains when follow-up worker is queued', async () => {
+  const replies = [];
+  const publisher = new SelectionPublisher({
+    repository: {
+      getPublicationByKey: async () => null,
+      getControversialPosts: async () => [post(1, 'Alice')],
+      tryCreatePublicationRequest: async () => 123
+    },
+    mediaDownloader: {},
+    setupAssistant: null,
+    jobGate: {
+      run: () => ({
+        status: 'scheduled',
+        key: 'publish-worker',
+        promise: Promise.resolve({ queued: true })
+      })
+    },
+    config: {
+      ...config(),
+      publish: {
+        dryRun: false,
+        selections: {
+          controversial: {
+            day: { enabled: false, limit: 3, threshold: 0.3, template: 'Controversial day' }
+          }
+        }
+      }
+    }
+  });
+
+  await publisher.runManualPublish({
+    message: { text: '/publish controversial.day -force' },
+    reply: async (message) => replies.push(message)
+  });
+
+  assert.match(replies[0], /A follow-up worker run was queued/);
+  assert.doesNotMatch(replies[0], /Worker job status: scheduled/);
+});
+
 test('SelectionPublisher.runManualPublish does not schedule disabled selection without force', async () => {
   const replies = [];
   let queried = false;

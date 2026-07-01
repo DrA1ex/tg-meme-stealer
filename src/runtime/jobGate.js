@@ -4,12 +4,19 @@ export class JobGate {
   constructor(logger = getLogger('jobGate')) {
     this.runningKey = null;
     this.queue = [];
-    this.keys = new Set();
+    this.keyCounts = new Map();
     this.logger = logger;
   }
 
-  run(key, fn) {
-    if (this.keys.has(key)) {
+  run(key, fn, options = {}) {
+    if (this.hasKey(key)) {
+      if (options.queueIfRunning && this.runningKey === key && !this.hasQueuedKey(key)) {
+        const task = createTask(key, fn);
+        this.queue.push(task);
+        this.addKey(key);
+        return jobStatus('scheduled', task);
+      }
+
       this.logger.warn('Job enqueue skipped', {
         attemptKey: key,
         reason: 'duplicate_job',
@@ -22,7 +29,7 @@ export class JobGate {
     }
 
     const task = createTask(key, fn);
-    this.keys.add(key);
+    this.addKey(key);
 
     if (this.runningKey) {
       this.queue.push(task);
@@ -58,7 +65,7 @@ export class JobGate {
         });
       })
       .finally(() => {
-        this.keys.delete(task.key);
+        this.deleteKey(task.key);
         this.runningKey = null;
         this.startNext();
       });
@@ -67,6 +74,27 @@ export class JobGate {
   startNext() {
     const next = this.queue.shift();
     if (next) this.start(next);
+  }
+
+  hasQueuedKey(key) {
+    return this.queue.some((task) => task.key === key);
+  }
+
+  hasKey(key) {
+    return this.keyCounts.has(key);
+  }
+
+  addKey(key) {
+    this.keyCounts.set(key, (this.keyCounts.get(key) || 0) + 1);
+  }
+
+  deleteKey(key) {
+    const count = this.keyCounts.get(key) || 0;
+    if (count <= 1) {
+      this.keyCounts.delete(key);
+      return;
+    }
+    this.keyCounts.set(key, count - 1);
   }
 }
 

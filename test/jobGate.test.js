@@ -61,3 +61,38 @@ test('JobGate runIfIdle returns busy when any job is running', async () => {
   releaseFirst();
   await first.promise;
 });
+
+test('JobGate can queue one follow-up for a running duplicate key', async () => {
+  let releaseFirst;
+  const events = [];
+  const gate = new JobGate();
+
+  const first = gate.run('publish-worker', async () => {
+    events.push('first:start');
+    await new Promise((resolve) => {
+      releaseFirst = resolve;
+    });
+    events.push('first:end');
+    return 'first';
+  });
+  const followUp = gate.run('publish-worker', async () => {
+    events.push('follow-up');
+    return 'follow-up';
+  }, { queueIfRunning: true });
+  const duplicateFollowUp = gate.run('publish-worker', async () => {
+    throw new Error('second follow-up should not run');
+  }, { queueIfRunning: true });
+
+  assert.equal(first.status, 'running');
+  assert.equal(followUp.status, 'scheduled');
+  assert.equal(duplicateFollowUp.status, 'skipped');
+  assert.equal(duplicateFollowUp.reason, 'duplicate_job');
+
+  await Promise.resolve();
+  assert.deepEqual(events, ['first:start']);
+
+  releaseFirst();
+  assert.equal(await first.promise, 'first');
+  assert.equal(await followUp.promise, 'follow-up');
+  assert.deepEqual(events, ['first:start', 'first:end', 'follow-up']);
+});
