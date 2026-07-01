@@ -3,7 +3,7 @@ import { formatSelectionHeader } from '../core/format.js';
 import { formatJobs } from '../core/jobs.js';
 import { formatPublicationPosts, formatPublications } from '../core/publications.js';
 import { getLogger } from '../core/logger.js';
-import { loadSelections } from '../core/selection.js';
+import { buildSelectionSpecs, loadSelection } from '../core/selection.js';
 import { buildStats, formatStats } from '../core/stats.js';
 import { JobGate } from '../runtime/jobGate.js';
 import { withBotApiRetry } from './retry.js';
@@ -97,33 +97,102 @@ export class SelectionPublisher {
   }
 
   async publishAll(now = new Date(), keys = null, options = {}) {
-    const selections = await loadSelections(this.repository, this.config, now, keys);
-    this.logger.debug('Publish cycle started', {
+    return this.planPublicationRequests(now, keys, options);
+  }
+
+  schedulePublicationRequestFromSchedule(key, scheduledAt = new Date()) {
+    const specs = buildSelectionSpecs(this.config, scheduledAt, key);
+    if (specs.length === 0) {
+      this.logger.info('Scheduled publication skipped', {
+        selectionKey: key,
+        scheduledAt,
+        reason: 'empty_selection'
+      });
+      return {
+        status: 'skipped',
+        key: `publish-schedule:${key}`,
+        reason: 'empty_selection',
+        promise: Promise.resolve({
+          skipped: true,
+          reason: 'empty_selection',
+          selections: []
+        })
+      };
+    }
+
+    const gateKey = `publish-schedule:${getPublicationKeyFromSpec(specs[0], this.config)}`;
+    const job = this.jobGate.run(gateKey, () => this.planPublicationRequests(scheduledAt, key, { source: 'schedule' }));
+    if (job.status === 'skipped' || job.status === 'busy') {
+      this.logger.info('Scheduled publication enqueue skipped', {
+        selectionKey: key,
+        publicationKey: gateKey.slice('publish-schedule:'.length),
+        scheduledAt,
+        status: job.status,
+        reason: job.reason || ''
+      });
+    } else {
+      this.logger.debug('Scheduled publication enqueue job accepted', {
+        selectionKey: key,
+        publicationKey: gateKey.slice('publish-schedule:'.length),
+        scheduledAt,
+        status: job.status
+      });
+    }
+    return job;
+  }
+
+  async planPublicationRequests(now = new Date(), keys = null, options = {}) {
+    const specs = buildSelectionSpecs(this.config, now, keys);
+    this.logger.debug('Publish planning started', {
       targetChatId: this.config.telegram.publishChannelId,
       keys: keys || 'all',
-      selections: selections.length,
+      selections: specs.length,
       force: Boolean(options.force)
     });
     const results = [];
-    for (const selection of selections) {
-      results.push(await this.createPublicationRequest(selection, options));
+    for (const spec of specs) {
+      results.push(await this.planPublicationRequest(spec, options));
     }
     return {
-      selections: selections.map((selection, index) => ({
-        key: selection.key,
-        count: selection.posts.length,
+      selections: specs.map((spec, index) => ({
+        key: spec.key,
         ...results[index]
       }))
     };
   }
 
-  async createPublicationRequest(selection, options = {}) {
-    if (selection.posts.length === 0) {
-      this.logger.debug('Selection skipped: no posts', { selection: selection.key });
-      return { status: 'empty', requested: false };
+  async planPublicationRequest(spec, options = {}) {
+    const canonicalKey = getPublicationKeyFromSpec(spec, this.config);
+    if (!options.force) {
+      const existing = await getBlockingPublication(this.repository, canonicalKey);
+      if (isBlockingPublication(existing)) {
+        this.logger.info('Publication request skipped: already exists', {
+          selection: spec.key,
+          key: canonicalKey,
+          status: existing.status
+        });
+        return {
+          status: 'exists',
+          requested: false,
+          count: getExpectedPublicationCount(existing),
+          publicationId: existing.id,
+          publicationStatus: existing.status,
+          publicationKey: canonicalKey
+        };
+      }
     }
 
-    const canonicalKey = getPublicationKey(selection, this.config);
+    const selection = await loadSelection(this.repository, spec);
+    return this.createPublicationRequest(selection, { ...options, canonicalKey });
+  }
+
+  async createPublicationRequest(selection, options = {}) {
+    if (selection.posts.length === 0) {
+      this.logger.info('Publication request skipped: no posts', { selection: selection.key });
+      return { status: 'empty', requested: false, count: 0 };
+    }
+
+    const canonicalKey = options.canonicalKey || getPublicationKey(selection, this.config);
     const key = options.force ? getForcedPublicationKey(selection, this.config) : canonicalKey;
     const publicationId = await this.repository.tryCreatePublicationRequest({
       key,
@@ -134,8 +203,8 @@ export class SelectionPublisher {
       data: { count: selection.posts.length, key, canonicalKey, forced: Boolean(options.force), selection }
     });
     if (!publicationId) {
-      const existing = await this.repository.getPublicationByKey(canonicalKey);
-      this.logger.debug('Selection skipped: request already exists', {
+      const existing = await getBlockingPublication(this.repository, canonicalKey);
+      this.logger.info('Publication request skipped: unique collision', {
         selection: selection.key,
         key: canonicalKey,
         status: existing?.status
@@ -143,6 +212,7 @@ export class SelectionPublisher {
       return {
         status: existing?.status ? 'exists' : 'duplicate',
         requested: false,
+        count: selection.posts.length,
         publicationId: existing?.id || null,
         publicationStatus: existing?.status || '',
         publicationKey: canonicalKey
@@ -152,6 +222,7 @@ export class SelectionPublisher {
     return {
       status: 'scheduled',
       requested: true,
+      count: selection.posts.length,
       publicationId,
       publicationKey: key,
       forced: Boolean(options.force)
@@ -178,7 +249,7 @@ export class SelectionPublisher {
   }
 
   runPublicationWorker(source = 'manual') {
-    return this.jobGate.run('publish', () => this.executePublicationWorker(source));
+    return this.jobGate.run('publish-worker', () => this.executePublicationWorker(source));
   }
 
   async executePublicationWorker(source) {
@@ -408,6 +479,25 @@ function getPublicationKey(selection, config) {
     selection.key,
     getPublicationBucket(selection.period, new Date(selection.untilIso), config.schedule?.timezone || 'UTC')
   ].join(':');
+}
+
+function getPublicationKeyFromSpec(spec, config) {
+  return getPublicationKey(spec, config);
+}
+
+function isBlockingPublication(publication) {
+  return ['created', 'running', 'published'].includes(publication?.status);
+}
+
+function getExpectedPublicationCount(publication) {
+  return Number(publication?.data?.count || publication?.data?.selection?.posts?.length || 0);
+}
+
+async function getBlockingPublication(repository, key) {
+  if (typeof repository.getBlockingPublicationByKey === 'function') {
+    return repository.getBlockingPublicationByKey(key);
+  }
+  return repository.getPublicationByKey(key);
 }
 
 function getForcedPublicationKey(selection, config) {

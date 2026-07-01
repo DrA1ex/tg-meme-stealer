@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { configureLogger } from '../src/core/logger.js';
 import { JobGate } from '../src/runtime/jobGate.js';
+
+configureLogger({ logging: { logLevel: 'SILENT' } });
 
 test('JobGate queues different keys and skips duplicate keys', async () => {
   let releaseFirst;

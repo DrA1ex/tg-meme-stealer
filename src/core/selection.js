@@ -57,17 +57,21 @@ export async function loadSelections(repository, config, now = new Date(), keys 
   const selections = [];
 
   for (const spec of specs) {
-    const posts = spec.type === 'controversial'
-      ? await repository.getControversialPosts(spec)
-      : await repository.getTopPosts(spec);
-    selections.push({
-      ...spec,
-      title: renderSelectionTemplate(spec, posts),
-      posts
-    });
+    selections.push(await loadSelection(repository, spec));
   }
 
   return selections;
+}
+
+export async function loadSelection(repository, spec) {
+  const posts = spec.type === 'controversial'
+    ? await repository.getControversialPosts(spec)
+    : await repository.getTopPosts(spec);
+  return {
+    ...spec,
+    title: renderSelectionTemplate(spec, posts),
+    posts
+  };
 }
 
 function normalizeSelectionKey(key) {
@@ -85,7 +89,7 @@ function getPeriodStart(period, entry, now) {
   return subtractHours(now, entry.windowHours || 24);
 }
 
-function renderSelectionTemplate(spec, posts) {
+export function renderSelectionTemplate(spec, posts) {
   return renderTemplate(spec.template || spec.key, {
     key: spec.key,
     type: spec.type,

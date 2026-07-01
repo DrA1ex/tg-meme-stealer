@@ -87,8 +87,10 @@ export class Scheduler {
       nextRunAt
     });
     this.scheduleTimeout(async () => {
-      await this.handlers.publish(key, nextRunAt);
-      await this.handlers.publishWorker();
+      const result = await resolveHandlerResult(this.handlers.publish(key, nextRunAt));
+      if (hasScheduledPublicationRequest(result)) {
+        await this.handlers.publishWorker();
+      }
       this.schedulePublication(key, time);
     }, delayMs);
   }
@@ -115,14 +117,24 @@ export class Scheduler {
         continue;
       }
 
-      this.logger.info('Planning missed publication', {
-        key: entry.key,
-        scheduledAt,
-        ageMs,
-        requestTtlMs
-      });
-      await this.handlers.publish(entry.key, scheduledAt);
-      planned += 1;
+      const result = await resolveHandlerResult(this.handlers.publish(entry.key, scheduledAt));
+      if (hasScheduledPublicationRequest(result)) {
+        this.logger.info('Catch-up publication scheduled', {
+          key: entry.key,
+          scheduledAt,
+          ageMs,
+          requestTtlMs
+        });
+        planned += 1;
+      } else {
+        this.logger.debug('Catch-up publication skipped', {
+          key: entry.key,
+          scheduledAt,
+          ageMs,
+          requestTtlMs,
+          statuses: getPublicationStatuses(result)
+        });
+      }
     }
 
     if (planned > 0) {
@@ -196,6 +208,23 @@ async function runHandler(handler) {
   const job = await handler();
   if (job?.promise) await job.promise;
   return job;
+}
+
+async function resolveHandlerResult(result) {
+  const resolved = await result;
+  if (resolved?.promise) return resolved.promise;
+  return resolved;
+}
+
+function hasScheduledPublicationRequest(result) {
+  if (result?.skipped) return false;
+  if (!result || !Array.isArray(result.selections)) return true;
+  return result.selections.some((selection) => selection.requested || selection.status === 'scheduled');
+}
+
+function getPublicationStatuses(result) {
+  if (!result || !Array.isArray(result.selections)) return '';
+  return result.selections.map((selection) => `${selection.key}:${selection.status}`).join(',');
 }
 
 export function getDelayUntilLocalTime({ now = new Date(), time, timezone }) {

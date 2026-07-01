@@ -1,12 +1,21 @@
+import { getLogger } from '../core/logger.js';
+
 export class JobGate {
-  constructor() {
+  constructor(logger = getLogger('jobGate')) {
     this.runningKey = null;
     this.queue = [];
     this.keys = new Set();
+    this.logger = logger;
   }
 
   run(key, fn) {
     if (this.keys.has(key)) {
+      this.logger.info('Job skipped', {
+        key,
+        reason: 'duplicate_job',
+        runningKey: this.runningKey || '',
+        queued: this.queue.length
+      });
       return skippedJob(key, 'duplicate_job');
     }
 
@@ -24,6 +33,12 @@ export class JobGate {
 
   runIfIdle(key, fn) {
     if (this.runningKey || this.queue.length > 0) {
+      this.logger.info('Job skipped', {
+        key,
+        reason: 'busy',
+        runningKey: this.runningKey || '',
+        queued: this.queue.length
+      });
       return skippedJob(key, 'busy', 'busy');
     }
     return this.run(key, fn);

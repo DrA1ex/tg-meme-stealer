@@ -247,6 +247,23 @@ export class PostRepository {
     return rows[0] ? deserializePublication(rows[0]) : null;
   }
 
+  async getBlockingPublicationByKey(key) {
+    const rows = await this.all(
+      `
+        SELECT id, key, selection_key AS selectionKey, title, period_start AS periodStart, period_end AS periodEnd,
+               status, created_at AS createdAt, updated_at AS updatedAt,
+               finished_at AS finishedAt, last_error AS lastError, data
+        FROM publications
+        WHERE key = ?
+          AND status IN ('created', 'running', 'published')
+        ORDER BY id DESC
+        LIMIT 1
+      `,
+      [key]
+    );
+    return rows[0] ? deserializePublication(rows[0]) : null;
+  }
+
   async getPublicationById(publicationId) {
     const rows = await this.all(
       `

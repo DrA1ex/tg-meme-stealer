@@ -110,6 +110,42 @@ test('PostRepository dry-run publications do not block later real publication', 
   await fs.rm(dbPath, { force: true });
 });
 
+test('PostRepository blocking publication lookup ignores newer non-blocking rows', async () => {
+  const dbPath = path.join('/private/tmp', `tg-memes-${process.pid}-${Date.now()}-blocking-publication.sqlite`);
+  await fs.rm(dbPath, { force: true });
+  const repository = new PostRepository(dbPath);
+  await repository.init();
+
+  const active = await repository.tryCreatePublicationRequest(publicationClaim());
+  await repository.failPublication(active, new Error('temporary failure'));
+  const published = await repository.tryCreatePublicationRequest(publicationClaim());
+  await repository.finishPublication(published, {
+    status: 'published',
+    posts: [],
+    data: { count: 0 }
+  });
+  const failed = await repository.tryCreatePublicationRequest({
+    ...publicationClaim(),
+    key: 'publish:best.week:2026-W27-force'
+  });
+  await repository.failPublication(failed, new Error('newer failed row'));
+  await repository.run(
+    'UPDATE publications SET key = ?, updated_at = ? WHERE id = ?',
+    ['publish:best.week:2026-W27', '2026-06-29T12:00:00.000Z', failed]
+  );
+
+  const latest = await repository.getPublicationByKey('publish:best.week:2026-W27');
+  const blocking = await repository.getBlockingPublicationByKey('publish:best.week:2026-W27');
+
+  assert.equal(latest.id, failed);
+  assert.equal(latest.status, 'failed');
+  assert.equal(blocking.id, published);
+  assert.equal(blocking.status, 'published');
+
+  await repository.close();
+  await fs.rm(dbPath, { force: true });
+});
+
 test('PostRepository finishPublication preserves sent post metadata', async () => {
   const dbPath = path.join('/private/tmp', `tg-memes-${process.pid}-${Date.now()}-sent-posts.sqlite`);
   await fs.rm(dbPath, { force: true });

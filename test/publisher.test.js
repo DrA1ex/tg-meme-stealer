@@ -77,11 +77,19 @@ test('SelectionPublisher.launchBot does not wait for polling promise', () => {
 
 test('SelectionPublisher skips Telegram calls when publication request already exists', async () => {
   let telegramCalls = 0;
+  let postQueries = 0;
+  let insertAttempts = 0;
   const publisher = new SelectionPublisher({
     repository: {
-      getTopPosts: async () => [post(1, 'Alice')],
-      tryCreatePublicationRequest: async () => null,
-      getPublicationByKey: async () => ({ id: 10, status: 'published' }),
+      getTopPosts: async () => {
+        postQueries += 1;
+        return [post(1, 'Alice')];
+      },
+      tryCreatePublicationRequest: async () => {
+        insertAttempts += 1;
+        return null;
+      },
+      getPublicationByKey: async () => ({ id: 10, status: 'published', data: { count: 1 } }),
       getNextPublicationRequest: async () => null
     },
     mediaDownloader: {},
@@ -107,6 +115,8 @@ test('SelectionPublisher skips Telegram calls when publication request already e
   const result = await publisher.publishAll(new Date('2026-06-29T00:00:00.000Z'), ['best.week']);
 
   assert.equal(telegramCalls, 0);
+  assert.equal(postQueries, 0);
+  assert.equal(insertAttempts, 0);
   assert.deepEqual(result.selections, [{
     key: 'best.week',
     count: 1,
@@ -158,6 +168,120 @@ test('SelectionPublisher handles concurrent publication scheduling collision wit
 
   await repository.close();
   await fs.rm(dbPath, { force: true });
+});
+
+test('SelectionPublisher scheduled enqueue skips existing publication before selecting posts', async () => {
+  let postQueries = 0;
+  let insertAttempts = 0;
+  const publisher = new SelectionPublisher({
+    repository: {
+      getPublicationByKey: async () => ({ id: 20, status: 'published', data: { count: 3 } }),
+      getTopPosts: async () => {
+        postQueries += 1;
+        return [post(1, 'Alice')];
+      },
+      tryCreatePublicationRequest: async () => {
+        insertAttempts += 1;
+        return 123;
+      }
+    },
+    mediaDownloader: {},
+    setupAssistant: null,
+    config: {
+      ...config(),
+      publish: {
+        dryRun: false,
+        selections: {
+          best: {
+            week: { enabled: true, limit: 10, template: 'Best week' }
+          }
+        }
+      }
+    }
+  });
+
+  const job = publisher.schedulePublicationRequestFromSchedule('best.week', new Date('2026-06-29T00:00:00.000Z'));
+  const result = await job.promise;
+
+  assert.equal(job.status, 'running');
+  assert.equal(postQueries, 0);
+  assert.equal(insertAttempts, 0);
+  assert.deepEqual(result.selections, [{
+    key: 'best.week',
+    status: 'exists',
+    requested: false,
+    count: 3,
+    publicationId: 20,
+    publicationStatus: 'published',
+    publicationKey: 'publish:best.week:2026-W27'
+  }]);
+});
+
+test('SelectionPublisher scheduled enqueue skips same canonical key but queues different keys', async () => {
+  let releaseFirst;
+  const events = [];
+  const publisher = new SelectionPublisher({
+    repository: {
+      getPublicationByKey: async (key) => {
+        events.push(`exists:${key}`);
+        if (key === 'publish:best.week:2026-W27') {
+          await new Promise((resolve) => {
+            releaseFirst = resolve;
+          });
+        }
+        return null;
+      },
+      getTopPosts: async ({ period }) => {
+        events.push(`posts:${period}`);
+        return [post(period === 'week' ? 1 : 2, 'Alice')];
+      },
+      tryCreatePublicationRequest: async ({ key }) => {
+        events.push(`insert:${key}`);
+        return key.endsWith('2026-W27') ? 101 : 102;
+      }
+    },
+    mediaDownloader: {},
+    setupAssistant: null,
+    config: {
+      ...config(),
+      publish: {
+        dryRun: false,
+        selections: {
+          best: {
+            week: { enabled: true, limit: 1, template: 'Best week' },
+            day: { enabled: true, limit: 1, template: 'Best day' }
+          }
+        }
+      }
+    }
+  });
+
+  const first = publisher.schedulePublicationRequestFromSchedule('best.week', new Date('2026-06-29T00:00:00.000Z'));
+  const duplicate = publisher.schedulePublicationRequestFromSchedule('best.week', new Date('2026-06-29T00:00:00.000Z'));
+  const different = publisher.schedulePublicationRequestFromSchedule('best.day', new Date('2026-06-29T00:00:00.000Z'));
+
+  assert.equal(first.status, 'running');
+  assert.equal(duplicate.status, 'skipped');
+  assert.equal(duplicate.reason, 'duplicate_job');
+  assert.equal(different.status, 'scheduled');
+
+  await Promise.resolve();
+  assert.deepEqual(events, ['exists:publish:best.week:2026-W27']);
+
+  releaseFirst();
+  const firstResult = await first.promise;
+  const differentResult = await different.promise;
+
+  assert.equal(firstResult.selections[0].status, 'scheduled');
+  assert.equal(differentResult.selections[0].status, 'scheduled');
+  assert.deepEqual(events, [
+    'exists:publish:best.week:2026-W27',
+    'posts:week',
+    'insert:publish:best.week:2026-W27',
+    'exists:publish:best.day:2026-06-29',
+    'posts:day',
+    'insert:publish:best.day:2026-06-29'
+  ]);
 });
 
 test('SelectionPublisher keeps request resumable when Telegram send fails', async () => {
@@ -237,6 +361,7 @@ test('SelectionPublisher.runManualPublish plans selections and replies with job 
   const replies = [];
   const publisher = new SelectionPublisher({
     repository: {
+      getPublicationByKey: async () => null,
       getTopPosts: async () => [post(1, 'Alice')],
       tryCreatePublicationRequest: async () => 123,
       getNextPublicationRequest: async () => null
@@ -314,6 +439,7 @@ test('SelectionPublisher.runManualPublish supports force scheduling', async () =
   const replies = [];
   const publisher = new SelectionPublisher({
     repository: {
+      getPublicationByKey: async () => null,
       getTopPosts: async () => [post(1, 'Alice')],
       tryCreatePublicationRequest: async ({ key }) => {
         keys.push(key);
@@ -351,6 +477,7 @@ test('SelectionPublisher.runManualPublish supports single-dash force scheduling'
   const replies = [];
   const publisher = new SelectionPublisher({
     repository: {
+      getPublicationByKey: async () => null,
       getTopPosts: async () => [post(1, 'Alice')],
       tryCreatePublicationRequest: async ({ key }) => {
         keys.push(key);

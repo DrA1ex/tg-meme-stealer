@@ -61,9 +61,17 @@ if (command === 'session') {
       return job;
     },
     publish: async (key, now = new Date()) => {
-      const publish = await app.publisher.publishAll(now, key);
-      logger.info('Scheduled publish planned', {
-        selections: publish.selections.map((item) => `${item.key}:${item.status}`).join(',')
+      const job = app.publisher.schedulePublicationRequestFromSchedule(key, now);
+      logger.debug('Scheduled publish enqueue job status', {
+        key,
+        status: job.status,
+        reason: job.reason || ''
+      });
+      const publish = await job.promise;
+      logger.info('Scheduled publish enqueue complete', {
+        selections: publish.selections?.map((item) => `${item.key}:${item.status}`).join(',') || '',
+        skipped: Boolean(publish.skipped),
+        reason: publish.reason || ''
       });
       return publish;
     },

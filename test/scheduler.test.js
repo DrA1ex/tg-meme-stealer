@@ -398,6 +398,50 @@ test('Scheduler plans missed publications on startup when they are inside reques
   assert.equal(workerRuns, 1);
 });
 
+test('Scheduler does not wake publication worker when catch-up already exists', async () => {
+  const planned = [];
+  let workerRuns = 0;
+  const scheduler = new Scheduler(
+    {
+      schedule: {
+        enabled: true,
+        timezone: 'Asia/Yekaterinburg'
+      },
+      publish: {
+        requestTtlHours: 12,
+        selections: {
+          best: {
+            day: { enabled: true, time: '10:00' }
+          }
+        }
+      },
+      logging: { logLevel: 'silent' }
+    },
+    {
+      publish: async (key, scheduledAt) => {
+        planned.push({ key, scheduledAt: scheduledAt.toISOString() });
+        return {
+          selections: [{
+            key,
+            status: 'exists',
+            requested: false
+          }]
+        };
+      },
+      publishWorker: async () => {
+        workerRuns += 1;
+      }
+    }
+  );
+
+  await scheduler.planMissedPublications(new Date('2026-06-29T08:00:00.000Z'));
+
+  assert.deepEqual(planned, [
+    { key: 'best.day', scheduledAt: '2026-06-29T05:00:00.000Z' }
+  ]);
+  assert.equal(workerRuns, 0);
+});
+
 test('Scheduler skips missed publications older than request TTL', async () => {
   const planned = [];
   let workerRuns = 0;
