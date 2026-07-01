@@ -142,7 +142,7 @@ function validConfig() {
       botToken: 'token'
     },
     database: { path: 'data/posts.sqlite' },
-    logging: { logLevel: 'silent' },
+    logging: { logLevel: 'silent', color: 'never' },
     sync: {
       initialScanDays: 60,
       refreshRecentDays: 7,
