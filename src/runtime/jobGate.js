@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { getLogger } from '../core/logger.js';
 
 export class JobGate {
@@ -5,10 +6,14 @@ export class JobGate {
     this.runningKey = null;
     this.queue = [];
     this.keyCounts = new Map();
+    this.taskContext = new AsyncLocalStorage();
     this.logger = logger;
   }
 
   run(key, fn, options = {}) {
+    const nestedJob = this.handleNestedRun(key, fn);
+    if (nestedJob) return nestedJob;
+
     if (this.hasKey(key)) {
       if (options.queueIfRunning && this.runningKey === key && !this.hasQueuedKey(key)) {
         const task = createTask(key, fn);
@@ -21,7 +26,7 @@ export class JobGate {
         attemptKey: key,
         reason: 'duplicate_job',
         duplicateKey: key,
-        duplicateLocation: this.runningKey === key ? 'running' : 'queued',
+        duplicateLocation: this.hasQueuedKey(key) ? 'queued' : 'running',
         currentRunningKey: this.runningKey || '',
         queueSize: this.queue.length
       });
@@ -41,6 +46,9 @@ export class JobGate {
   }
 
   runIfIdle(key, fn) {
+    const nestedJob = this.handleNestedRun(key, fn);
+    if (nestedJob) return nestedJob;
+
     if (this.runningKey || this.queue.length > 0) {
       this.logger.warn('Job enqueue skipped', {
         attemptKey: key,
@@ -55,20 +63,27 @@ export class JobGate {
 
   start(task) {
     this.runningKey = task.key;
-    Promise.resolve()
-      .then(task.fn)
-      .then((result) => task.resolve(result))
-      .catch((error) => {
-        task.resolve({
-          failed: true,
-          error: error?.message || String(error)
-        });
-      })
-      .finally(() => {
-        this.deleteKey(task.key);
-        this.runningKey = null;
-        this.startNext();
+    void Promise.resolve().then(() => this.execute(task));
+  }
+
+  async execute(task) {
+    try {
+      const result = await this.taskContext.run({ key: task.key }, async () => task.fn());
+      this.finish(task);
+      task.resolve(result);
+    } catch (error) {
+      this.finish(task);
+      task.resolve({
+        failed: true,
+        error: error?.message || String(error)
       });
+    }
+  }
+
+  finish(task) {
+    this.deleteKey(task.key);
+    this.runningKey = null;
+    this.startNext();
   }
 
   startNext() {
@@ -96,6 +111,30 @@ export class JobGate {
     }
     this.keyCounts.set(key, count - 1);
   }
+
+  handleNestedRun(key, fn) {
+    const nestedTask = this.taskContext.getStore();
+    if (!nestedTask) return null;
+    if (nestedTask.key === key) return inlineJob(key, fn);
+    throw this.createNestedDeadlockError(key, nestedTask);
+  }
+
+  createNestedDeadlockError(key, nestedTask) {
+    const message = 'Detected nested dead-lock, forbidden';
+    const error = new Error(message);
+    error.code = 'NESTED_DEADLOCK';
+    error.attemptKey = key;
+    error.currentTaskKey = nestedTask.key;
+
+    this.logger.error(message, {
+      attemptKey: key,
+      currentTaskKey: nestedTask.key,
+      currentRunningKey: this.runningKey || '',
+      queueSize: this.queue.length
+    });
+
+    return error;
+  }
 }
 
 function createTask(key, fn) {
@@ -111,6 +150,27 @@ function jobStatus(status, task) {
     status,
     key: task.key,
     promise: task.promise
+  };
+}
+
+function inlineJob(key, fn) {
+  let promise;
+  try {
+    promise = Promise.resolve(fn());
+  } catch (error) {
+    promise = Promise.resolve({
+      failed: true,
+      error: error?.message || String(error)
+    });
+  }
+
+  return {
+    status: 'running',
+    key,
+    promise: promise.catch((error) => ({
+      failed: true,
+      error: error?.message || String(error)
+    }))
   };
 }
 
