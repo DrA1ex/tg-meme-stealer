@@ -146,7 +146,7 @@ export class Scheduler {
   }
 
   schedulePublicationWorker() {
-    const intervalMs = Math.max(1, Number(this.config.publish?.workerIntervalMinutes ?? 1)) * 60 * 1000;
+    const intervalMs = Math.max(1, Number(this.config.publish?.workerIntervalMinutes ?? 10)) * 60 * 1000;
     this.logger.info('Timer scheduled', {
       timer: 'publication_worker',
       intervalMinutes: intervalMs / 60 / 1000,

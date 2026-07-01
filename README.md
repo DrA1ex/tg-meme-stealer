@@ -183,7 +183,7 @@ Common options:
   "publish": {
     "dryRun": false,
     "requestTtlHours": 12,
-    "workerIntervalMinutes": 1,
+    "workerIntervalMinutes": 10,
     "selections": {
       "best": {
         "week": {
@@ -215,7 +215,7 @@ Common options:
 
 Publication schedules use `schedule.timezone`. Each enabled selection under `publish.selections` has its own local `time`, `limit`, and header `template`. Daily selections run once per day, weekly selections run once per week, and monthly selections run once per month. The `day` period uses `windowHours`; controversial selections also use `threshold`. A threshold of `0.3` means likes and dislikes may differ by at most 30% of the larger reaction count.
 
-Publishing has two phases. The scheduler creates publication requests, then a worker sends queued requests one by one. `publish.workerIntervalMinutes` controls how often the worker checks the queue. `publish.requestTtlHours` controls how long a `created` or `running` request may wait before the worker marks it `failed`; the default is 12 hours. Sync and backfill are serialized in memory by one sync worker; overlapping sync/backfill requests are skipped.
+Publishing has two phases. The scheduler creates publication requests, then a worker sends queued requests one by one. `publish.workerIntervalMinutes` controls how often the worker checks the queue as a safety net; the default is 10 minutes. Publication creation also wakes the worker immediately, so this interval is mainly for catch-up if a wake-up was missed. `publish.requestTtlHours` controls how long a `created` or `running` request may wait before the worker marks it `failed`; the default is 12 hours. Sync and backfill are serialized in memory by one sync worker; overlapping sync/backfill requests are skipped.
 
 ## Userbot Login
 

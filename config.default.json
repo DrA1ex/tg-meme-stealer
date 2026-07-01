@@ -78,7 +78,7 @@
   "publish": {
     "dryRun": false,
     "requestTtlHours": 12,
-    "workerIntervalMinutes": 1,
+    "workerIntervalMinutes": 10,
     "selections": {
       "best": {
         "month": {

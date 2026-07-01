@@ -10,11 +10,13 @@ export class JobGate {
 
   run(key, fn) {
     if (this.keys.has(key)) {
-      this.logger.warn('Job skipped', {
-        key,
+      this.logger.warn('Job enqueue skipped', {
+        attemptKey: key,
         reason: 'duplicate_job',
-        runningKey: this.runningKey || '',
-        queued: this.queue.length
+        duplicateKey: key,
+        duplicateLocation: this.runningKey === key ? 'running' : 'queued',
+        currentRunningKey: this.runningKey || '',
+        queueSize: this.queue.length
       });
       return skippedJob(key, 'duplicate_job');
     }
@@ -33,11 +35,11 @@ export class JobGate {
 
   runIfIdle(key, fn) {
     if (this.runningKey || this.queue.length > 0) {
-      this.logger.warn('Job skipped', {
-        key,
+      this.logger.warn('Job enqueue skipped', {
+        attemptKey: key,
         reason: 'busy',
-        runningKey: this.runningKey || '',
-        queued: this.queue.length
+        currentRunningKey: this.runningKey || '',
+        queueSize: this.queue.length
       });
       return skippedJob(key, 'busy', 'busy');
     }

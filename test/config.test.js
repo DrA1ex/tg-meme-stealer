@@ -170,7 +170,7 @@ function validConfig() {
     publish: {
       dryRun: true,
       requestTtlHours: 12,
-      workerIntervalMinutes: 1,
+      workerIntervalMinutes: 10,
       selections: {
         best: {
           month: { enabled: true, time: '10:20', limit: 10, template: 'Month {{count}}' },
