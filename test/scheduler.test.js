@@ -190,6 +190,109 @@ test('Scheduler publishes with intended scheduled time instead of callback time'
   }]);
 });
 
+test('Scheduler chunks timeouts that exceed Node maximum delay', async () => {
+  const originalSetTimeout = globalThis.setTimeout;
+  const originalClearTimeout = globalThis.clearTimeout;
+  const scheduledTimers = [];
+  let executed = 0;
+
+  globalThis.setTimeout = (fn, delayMs) => {
+    const timer = { fn, delayMs, cleared: false };
+    scheduledTimers.push(timer);
+    return timer;
+  };
+  globalThis.clearTimeout = (timer) => {
+    timer.cleared = true;
+  };
+
+  try {
+    const scheduler = new Scheduler(
+      {
+        schedule: { enabled: true, timezone: 'UTC' },
+        sync: { runOnStart: false, intervalHours: 24 },
+        publish: { selections: {} },
+        logging: { logLevel: 'silent' }
+      },
+      {}
+    );
+
+    scheduler.scheduleTimeout(async () => {
+      executed += 1;
+    }, 2_147_483_647 + 1_000);
+
+    assert.equal(scheduledTimers.length, 1);
+    assert.equal(scheduledTimers[0].delayMs, 2_147_483_647);
+
+    await scheduledTimers[0].fn();
+
+    assert.equal(scheduledTimers.length, 2);
+    assert.equal(scheduledTimers[1].delayMs, 1_000);
+    assert.equal(executed, 0);
+
+    await scheduledTimers[1].fn();
+
+    assert.equal(executed, 1);
+  } finally {
+    globalThis.setTimeout = originalSetTimeout;
+    globalThis.clearTimeout = originalClearTimeout;
+  }
+});
+
+test('Scheduler chunks very long timeouts until the exact requested delay is reached', async () => {
+  const originalSetTimeout = globalThis.setTimeout;
+  const originalClearTimeout = globalThis.clearTimeout;
+  const maxTimeoutMs = 2_147_483_647;
+  const targetDelayMs = maxTimeoutMs * 10 + 100;
+  const scheduledTimers = [];
+  let executed = 0;
+
+  globalThis.setTimeout = (fn, delayMs) => {
+    const timer = { fn, delayMs, cleared: false };
+    scheduledTimers.push(timer);
+    return timer;
+  };
+  globalThis.clearTimeout = (timer) => {
+    timer.cleared = true;
+  };
+
+  try {
+    const scheduler = new Scheduler(
+      {
+        schedule: { enabled: true, timezone: 'UTC' },
+        sync: { runOnStart: false, intervalHours: 24 },
+        publish: { selections: {} },
+        logging: { logLevel: 'silent' }
+      },
+      {}
+    );
+
+    scheduler.scheduleTimeout(async () => {
+      executed += 1;
+    }, targetDelayMs);
+
+    let waitedMs = 0;
+    for (let index = 0; index < 10; index += 1) {
+      assert.equal(scheduledTimers[index].delayMs, maxTimeoutMs);
+      assert.equal(executed, 0);
+      waitedMs += scheduledTimers[index].delayMs;
+      await scheduledTimers[index].fn();
+    }
+
+    assert.equal(scheduledTimers.length, 11);
+    assert.equal(scheduledTimers[10].delayMs, 100);
+    assert.equal(executed, 0);
+
+    waitedMs += scheduledTimers[10].delayMs;
+    await scheduledTimers[10].fn();
+
+    assert.equal(waitedMs, targetDelayMs);
+    assert.equal(executed, 1);
+  } finally {
+    globalThis.setTimeout = originalSetTimeout;
+    globalThis.clearTimeout = originalClearTimeout;
+  }
+});
+
 test('Scheduler plans missed publications only after startup sync completes', async () => {
   let resolveSync;
   let resolveCatchup;

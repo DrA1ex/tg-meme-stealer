@@ -1,6 +1,8 @@
 import { getScheduledPublishEntries } from '../core/selection.js';
 import { getLogger } from '../core/logger.js';
 
+const MAX_TIMEOUT_MS = 2_147_483_647;
+
 export class Scheduler {
   constructor(config, handlers, logger = getLogger('scheduler')) {
     this.config = config;
@@ -139,17 +141,45 @@ export class Scheduler {
   }
 
   scheduleTimeout(fn, delayMs) {
-    const timer = setTimeout(async () => {
-      this.timers.delete(timer);
-      await fn();
-    }, delayMs);
-    this.timers.add(timer);
-    return timer;
+    const timeout = {
+      timer: null,
+      cancelled: false
+    };
+    const totalDelayMs = Math.max(0, Number(delayMs) || 0);
+
+    const scheduleChunk = (remainingMs) => {
+      if (timeout.cancelled) return;
+      const chunkMs = Math.min(remainingMs, MAX_TIMEOUT_MS);
+      if (remainingMs > MAX_TIMEOUT_MS) {
+        this.logger.debug('Long timeout chunk scheduled', {
+          delayMs: totalDelayMs,
+          chunkMs,
+          remainingMs
+        });
+      }
+
+      timeout.timer = setTimeout(async () => {
+        this.timers.delete(timeout);
+        const nextRemainingMs = remainingMs - chunkMs;
+        if (nextRemainingMs > 0) {
+          scheduleChunk(nextRemainingMs);
+          return;
+        }
+        await fn();
+      }, chunkMs);
+      this.timers.add(timeout);
+    };
+
+    scheduleChunk(totalDelayMs);
+    return timeout;
   }
 
   stop() {
     this.logger.debug('Scheduler stopping', { timers: this.timers.size });
-    for (const timer of this.timers) clearTimeout(timer);
+    for (const timeout of this.timers) {
+      timeout.cancelled = true;
+      clearTimeout(timeout.timer);
+    }
     this.timers.clear();
     this.logger.debug('Scheduler stopped');
   }
