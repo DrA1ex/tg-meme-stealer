@@ -10,7 +10,7 @@ export class JobGate {
 
   run(key, fn) {
     if (this.keys.has(key)) {
-      this.logger.info('Job skipped', {
+      this.logger.warn('Job skipped', {
         key,
         reason: 'duplicate_job',
         runningKey: this.runningKey || '',
@@ -33,7 +33,7 @@ export class JobGate {
 
   runIfIdle(key, fn) {
     if (this.runningKey || this.queue.length > 0) {
-      this.logger.info('Job skipped', {
+      this.logger.warn('Job skipped', {
         key,
         reason: 'busy',
         runningKey: this.runningKey || '',

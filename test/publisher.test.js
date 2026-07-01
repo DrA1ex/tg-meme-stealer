@@ -428,6 +428,44 @@ test('SelectionPublisher.runManualPublish replies when requested publication alr
   assert.match(replies[0], /No new publication request was created\. Worker was not started\./);
 });
 
+test('SelectionPublisher.runManualPublish does not create publication request when period has no posts', async () => {
+  const replies = [];
+  let insertAttempted = false;
+  const publisher = new SelectionPublisher({
+    repository: {
+      getPublicationByKey: async () => null,
+      getTopPosts: async () => [],
+      tryCreatePublicationRequest: async () => {
+        insertAttempted = true;
+        return 123;
+      }
+    },
+    mediaDownloader: {},
+    setupAssistant: null,
+    config: {
+      ...config(),
+      publish: {
+        dryRun: false,
+        selections: {
+          best: {
+            day: { enabled: true, limit: 5, template: 'Best day' }
+          }
+        }
+      }
+    }
+  });
+
+  await publisher.runManualPublish({
+    message: { text: '/publish day' },
+    reply: async (message) => replies.push(message)
+  });
+
+  assert.equal(insertAttempted, false);
+  assert.equal(replies.length, 1);
+  assert.match(replies[0], /best\.day: no matching posts, nothing was scheduled/);
+  assert.match(replies[0], /No new publication request was created\. Worker was not started\./);
+});
+
 test('SelectionPublisher.runManualPublish supports best and controversial wildcards', async () => {
   const topSpecs = [];
   const controversialSpecs = [];

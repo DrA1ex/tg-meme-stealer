@@ -103,7 +103,7 @@ export class SelectionPublisher {
   schedulePublicationRequestFromSchedule(key, scheduledAt = new Date()) {
     const specs = buildSelectionSpecs(this.config, scheduledAt, key);
     if (specs.length === 0) {
-      this.logger.info('Scheduled publication skipped', {
+      this.logger.warn('Scheduled publication skipped', {
         selectionKey: key,
         scheduledAt,
         reason: 'empty_selection'
@@ -123,7 +123,7 @@ export class SelectionPublisher {
     const gateKey = `publish-schedule:${getPublicationKeyFromSpec(specs[0], this.config)}`;
     const job = this.jobGate.run(gateKey, () => this.planPublicationRequests(scheduledAt, key, { source: 'schedule' }));
     if (job.status === 'skipped' || job.status === 'busy') {
-      this.logger.info('Scheduled publication enqueue skipped', {
+      this.logger.warn('Scheduled publication enqueue skipped', {
         selectionKey: key,
         publicationKey: gateKey.slice('publish-schedule:'.length),
         scheduledAt,
@@ -190,7 +190,12 @@ export class SelectionPublisher {
 
   async createPublicationRequest(selection, options = {}) {
     if (selection.posts.length === 0) {
-      this.logger.info('Publication request skipped: no posts', { selection: selection.key });
+      this.logger.warn('Publication request skipped: no posts found for period', {
+        selection: selection.key,
+        periodStart: selection.sinceIso,
+        periodEnd: selection.untilIso,
+        reason: 'empty_period'
+      });
       return { status: 'empty', requested: false, count: 0 };
     }
 
@@ -206,7 +211,7 @@ export class SelectionPublisher {
     });
     if (!publicationId) {
       const existing = await getBlockingPublication(this.repository, canonicalKey);
-      this.logger.info('Publication request skipped: another scheduler already created it', {
+      this.logger.warn('Publication request skipped: another scheduler already created it', {
         selection: selection.key,
         publicationKey: canonicalKey,
         status: existing?.status

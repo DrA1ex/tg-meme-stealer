@@ -29,9 +29,25 @@ test('formatScheduledPublishLog describes created and empty selections clearly',
 
   assert.deepEqual(fields, {
     outcome: 'created',
-    message: '1 publication request created; 1 skipped because there are no posts',
+    message: '1 publication request created; 1 skipped because no posts were found in the database for the publication period; no publication row was created and it can be retried after sync or backfill loads data',
     created: 'best.day',
     noPosts: 'controversial.day'
+  });
+});
+
+test('formatScheduledPublishLog describes empty periods as retryable skips', () => {
+  const fields = formatScheduledPublishLog({
+    selections: [{
+      key: 'best.day',
+      status: 'empty',
+      requested: false
+    }]
+  });
+
+  assert.deepEqual(fields, {
+    outcome: 'skipped',
+    message: '1 skipped because no posts were found in the database for the publication period; no publication row was created and it can be retried after sync or backfill loads data',
+    noPosts: 'best.day'
   });
 });
 

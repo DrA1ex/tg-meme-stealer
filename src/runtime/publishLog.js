@@ -36,7 +36,9 @@ function describeScheduledPublishSelections({ created, existing, empty, duplicat
   const parts = [];
   if (created.length > 0) parts.push(`${created.length} publication request${created.length === 1 ? '' : 's'} created`);
   if (existing.length > 0) parts.push(`${existing.length} already published or scheduled`);
-  if (empty.length > 0) parts.push(`${empty.length} skipped because there are no posts`);
+  if (empty.length > 0) {
+    parts.push(`${empty.length} skipped because no posts were found in the database for the publication period; no publication row was created and it can be retried after sync or backfill loads data`);
+  }
   if (duplicate.length > 0) parts.push(`${duplicate.length} skipped because another scheduler already created it`);
   if (other.length > 0) parts.push(`${other.length} returned another status`);
   return parts.join('; ') || 'No publication request was created.';

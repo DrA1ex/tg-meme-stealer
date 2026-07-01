@@ -69,7 +69,9 @@ if (command === 'session') {
         reason: job.reason || ''
       });
       const publish = await job.promise;
-      logger.info('Scheduled publish enqueue complete', formatScheduledPublishLog(publish));
+      const logFields = formatScheduledPublishLog(publish);
+      const log = isEmptyScheduledPublishResult(publish) ? logger.warn : logger.info;
+      log('Scheduled publish enqueue complete', logFields);
       return publish;
     },
     publishWorker: async () => {
@@ -117,4 +119,11 @@ if (command === 'session') {
 function isInterruptedLaunchError(error) {
   return ['ECONNRESET', 'ECONNABORTED', 'EPIPE'].includes(error?.code) ||
     String(error?.message || '').includes('Client network socket disconnected');
+}
+
+function isEmptyScheduledPublishResult(result = {}) {
+  const selections = result.selections || [];
+  if (selections.length === 0) return false;
+  const created = selections.some((selection) => selection.requested || selection.status === 'scheduled');
+  return !created && selections.some((selection) => selection.status === 'empty');
 }
