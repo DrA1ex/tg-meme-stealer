@@ -527,6 +527,47 @@ test('SelectionPublisher.runManualPublish force schedules an explicitly disabled
   assert.match(replies[0], /controversial\.week: publication request created \(1 posts\) forced/);
 });
 
+test('SelectionPublisher.runManualPublish explains when worker is already running', async () => {
+  const replies = [];
+  const publisher = new SelectionPublisher({
+    repository: {
+      getPublicationByKey: async () => null,
+      getControversialPosts: async () => [post(1, 'Alice')],
+      tryCreatePublicationRequest: async () => 123
+    },
+    mediaDownloader: {},
+    setupAssistant: null,
+    jobGate: {
+      run: () => ({
+        status: 'skipped',
+        key: 'publish-worker',
+        reason: 'duplicate_job',
+        promise: Promise.resolve({ skipped: true })
+      })
+    },
+    config: {
+      ...config(),
+      publish: {
+        dryRun: false,
+        selections: {
+          controversial: {
+            day: { enabled: false, limit: 3, threshold: 0.3, template: 'Controversial day' }
+          }
+        }
+      }
+    }
+  });
+
+  await publisher.runManualPublish({
+    message: { text: '/publish controversial.day -force' },
+    reply: async (message) => replies.push(message)
+  });
+
+  assert.match(replies[0], /controversial\.day: publication request created \(1 posts\) forced/);
+  assert.match(replies[0], /Worker is already running\. The created publication request will be processed by the active worker\./);
+  assert.doesNotMatch(replies[0], /Worker job status: skipped/);
+});
+
 test('SelectionPublisher.runManualPublish does not schedule disabled selection without force', async () => {
   const replies = [];
   let queried = false;

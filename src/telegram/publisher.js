@@ -613,11 +613,21 @@ function formatPublishResult(result, job = null) {
     return `${selection.key}: ${selection.status}`;
   });
   if (job) {
-    lines.push(`Worker job status: ${job.status}${job.reason ? ` (${job.reason})` : ''}`);
+    lines.push(formatPublishWorkerStatus(job, requested));
   } else if (!requested) {
     lines.push('No new publication request was created. Worker was not started.');
   }
   return lines.join('\n');
+}
+
+function formatPublishWorkerStatus(job, requestCreated) {
+  if (requestCreated && job.status === 'skipped' && job.reason === 'duplicate_job') {
+    return 'Worker is already running. The created publication request will be processed by the active worker.';
+  }
+  if (requestCreated && job.status === 'busy') {
+    return 'Worker is busy. The created publication request will be processed when the worker runs.';
+  }
+  return `Worker job status: ${job.status}${job.reason ? ` (${job.reason})` : ''}`;
 }
 
 function describePublicationStatus(status) {
