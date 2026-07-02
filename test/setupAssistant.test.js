@@ -112,3 +112,48 @@ test('SetupAssistant.test sends parsed table as HTML code block', async () => {
   assert.equal(replies[0][1].parse_mode, 'HTML');
   assert.match(replies[0][0], / # \| id \| author /);
 });
+
+test('SetupAssistant updates publish sources and templates in setup draft', async () => {
+  const replies = [];
+  const assistant = new SetupAssistant({
+    scanner: {},
+    mediaDownloader: {},
+    config: {
+      parsing: {},
+      publish: { sources: [], template: [] },
+      templates: {}
+    },
+    configLoader: () => ({
+      parsing: {},
+      publish: { sources: [], template: [] },
+      templates: {}
+    })
+  });
+  const ctx = {
+    from: { id: 1 },
+    reply: async (...args) => replies.push(args)
+  };
+
+  assistant.sessions.set(1, { parsing: {}, publish: { sources: [], template: [] }, templates: {} });
+  await assistant.setSource({
+    ...ctx,
+    message: { text: '/setsource {"key":"positive","where":"likes > dislikes"}' }
+  });
+  await assistant.setPublish({
+    ...ctx,
+    message: {
+      text: '/setpublish {"source":"positive","key":"daily_positive","enabled":false,"schedule":{"type":"daily","time":"12:00"},"windowHours":24,"posts":{"min":1,"target":3,"max":5},"reactions":{"strategy":"likes","min":0,"includeAbove":999999},"template":"Positive {{count}}"}'
+    }
+  });
+  await assistant.setTemplate({
+    ...ctx,
+    message: { text: '/settemplate publish.template.daily_positive.template Updated {{count}}' }
+  });
+
+  assert.deepEqual(assistant.sessions.get(1).publish.sources, [
+    { key: 'positive', where: 'likes > dislikes' }
+  ]);
+  assert.equal(assistant.sessions.get(1).publish.template[0].key, 'daily_positive');
+  assert.equal(assistant.sessions.get(1).publish.template[0].template, 'Updated {{count}}');
+  assert.equal(assistant.sessions.get(1).publish.selections, undefined);
+});

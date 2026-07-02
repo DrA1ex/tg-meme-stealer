@@ -330,9 +330,11 @@ Useful setup commands:
 /setauthor {"source":"message","path":"message","regex":"(?:^|\\n)By\\s+(.+?)(?:\\n|$)","group":1}
 /setlikes {"source":"message","path":"replyMarkup.rows[].buttons[].text","regex":"👍\\s*([\\d\\s,.]+[km]?)","group":1,"transform":"count","aggregate":"sum"}
 /setdislikes {"source":"message","path":"replyMarkup.rows[].buttons[].text","regex":"👎\\s*([\\d\\s,.]+[km]?)","group":1,"transform":"count","aggregate":"sum"}
-/settemplate postCaption {{position}}. By {{author}}\n👍 {{likes}}  👎 {{dislikes}}\nMedia: {{mediaSummary}}\n\n{{text}}
-/settemplate selection.best.weekly_best.template Weekly community picks ({{count}})
-/settemplate unknownAuthor anonymous
+/setsource {"key":"positive","where":"likes > dislikes"}
+/setpublish {"source":"positive","key":"daily_positive","enabled":false,"schedule":{"type":"daily","time":"12:00"},"windowHours":24,"posts":{"min":1,"target":3,"max":5},"reactions":{"strategy":"likes","min":0,"includeAbove":999999},"template":"Positive posts ({{count}})"}
+/settemplate templates.publish.postCaption {{position}}. By {{author}}\n👍 {{likes}}  👎 {{dislikes}}\nMedia: {{mediaSummary}}\n\n{{text}}
+/settemplate publish.template.weekly_best.template Weekly community picks ({{count}})
+/settemplate templates.publish.unknownAuthor anonymous
 ```
 
 `/test N` reads the latest `N` source messages, applies the draft parser, and does not write anything to the database. `/raw MESSAGE_ID` fetches the current source message directly from Telegram and sends the raw object as a JSON file, which helps choose parser paths. `/test_message MESSAGE_ID` also fetches the current source message directly from Telegram, applies the current draft parser to that message, and shows the extracted fields. `/debug MESSAGE_ID` fetches the current source message directly from Telegram and sends a JSON file with a step-by-step parser trace for filters, paths, regexes, transforms, fallback reactions, and final parsed output. These commands do not read from SQLite. `/preview P M` scans the latest `M` messages, selects up to `P` weekly top posts, and sends them as rich posts with media and captions. `/done` saves the draft into `config.json`. If `config.json` already exists, it is copied to `config.json.old` first.
@@ -564,26 +566,34 @@ Setup mode can edit templates with:
 
 Supported keys:
 
-- `postCaption`
-- `unknownAuthor`
-- `maxTextLength`
-- `selection.best.monthly_best.template`
-- `selection.best.weekly_best.template`
-- `selection.best.daily_best.template`
-- `selection.controversial.monthly_controversial.template`
-- `selection.controversial.weekly_controversial.template`
-- `selection.controversial.daily_controversial.template`
-- `stats.summary`
-- `stats.topPost`
+- `templates.publish.postCaption`
+- `templates.publish.unknownAuthor`
+- `templates.publish.maxTextLength`
+- `publish.template.monthly_best.template`
+- `publish.template.weekly_best.template`
+- `publish.template.daily_best.template`
+- `publish.template.monthly_controversial.template`
+- `publish.template.weekly_controversial.template`
+- `publish.template.daily_controversial.template`
+- `templates.stats.summary`
+- `templates.stats.topPost`
 
 Examples:
 
 ```text
-/settemplate postCaption #{{position}} {{author}} | 👍 {{likes}} 👎 {{dislikes}}\nMedia: {{mediaSummary}}\n\n{{text}}
-/settemplate selection.best.monthly_best.template Best posts for {{windowHours}}h ({{count}})
-/settemplate selection.controversial.weekly_controversial.template Controversial posts for {{windowHours}}h ({{count}})
-/settemplate maxTextLength 500
-/settemplate stats.topPost Top month post: #{{messageId}}, score {{score}}
+/settemplate templates.publish.postCaption #{{position}} {{author}} | 👍 {{likes}} 👎 {{dislikes}}\nMedia: {{mediaSummary}}\n\n{{text}}
+/settemplate publish.template.monthly_best.template Best posts for {{windowHours}}h ({{count}})
+/settemplate publish.template.weekly_controversial.template Controversial posts for {{windowHours}}h ({{count}})
+/settemplate templates.publish.maxTextLength 500
+/settemplate templates.stats.topPost Top month post: #{{messageId}}, score {{score}}
+```
+
+Setup mode can also edit the publication format directly:
+
+```text
+/setsources [{"key":"best","where":"true"},{"key":"controversial","where":"abs(likes - dislikes) < max(likes, dislikes) * 0.3"}]
+/setsource {"key":"positive","where":"likes > dislikes"}
+/setpublish {"source":"positive","key":"daily_positive","enabled":false,"schedule":{"type":"daily","time":"12:00"},"windowHours":24,"posts":{"min":1,"target":3,"max":5},"reactions":{"strategy":"likes","min":0,"includeAbove":999999},"template":"Positive posts ({{count}})"}
 ```
 
 Run `/preview P M` after changing templates to see the final rendered rich posts. Setup preview sends media content to the admin private chat, but does not publish anything to the target channel and does not write publication records.

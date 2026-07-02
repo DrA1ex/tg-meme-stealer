@@ -1,7 +1,7 @@
 import { formatPostCaption } from './format.js';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { deepMerge } from '../config/index.js';
+import { deepMerge, validateConfig } from '../config/index.js';
 
 const PARSING_KEYS = new Set(['filters', 'author', 'likes', 'dislikes']);
 
@@ -57,6 +57,11 @@ export async function saveDraftConfig(draft, configPath = 'config.json') {
 
   await fs.writeFile(resolvedPath, `${JSON.stringify(nextConfig, null, 2)}\n`);
   return { configPath: resolvedPath, backupPath };
+}
+
+export function validateSetupDraft(draft, baseConfig) {
+  validateConfig(deepMerge(baseConfig, buildDraftConfig(draft)), { pauseOnDuplicatePublishTemplates: false });
+  return draft;
 }
 
 export function summarizeParsedPosts({ posts, scanned }, options = {}) {
@@ -119,9 +124,9 @@ export function formatPreviewPost(post, templates = {}) {
 }
 
 export function setTemplateValue(draft, key, value) {
-  const selectionTemplate = parseSelectionTemplateKey(key);
-  if (selectionTemplate) {
-    setSelectionTemplateValue(draft, selectionTemplate, value);
+  const publishTemplate = parsePublishTemplateKey(key);
+  if (publishTemplate) {
+    setPublishTemplateField(draft, publishTemplate.key, publishTemplate.field, value);
     return draft;
   }
 
@@ -131,7 +136,44 @@ export function setTemplateValue(draft, key, value) {
     target[part] = target[part] || {};
     target = target[part];
   }
-  target[path[path.length - 1]] = key === 'maxTextLength' ? Number(value) : String(value);
+  target[path[path.length - 1]] = key === 'templates.publish.maxTextLength' ? Number(value) : String(value);
+  return draft;
+}
+
+export function setPublishSources(draft, sources) {
+  if (!Array.isArray(sources)) throw new Error('Publish sources must be a JSON array');
+  draft.publish = draft.publish || {};
+  draft.publish.sources = sources.map(assertPublishSource);
+  return draft;
+}
+
+export function upsertPublishSource(draft, source) {
+  const nextSource = assertPublishSource(source);
+  draft.publish = draft.publish || {};
+  draft.publish.sources = Array.isArray(draft.publish.sources) ? draft.publish.sources : [];
+  const index = draft.publish.sources.findIndex((item) => item.key === nextSource.key);
+  if (index >= 0) {
+    draft.publish.sources[index] = { ...draft.publish.sources[index], ...nextSource };
+  } else {
+    draft.publish.sources.push(nextSource);
+  }
+  return draft;
+}
+
+export function setPublishTemplate(draft, template) {
+  assertPlainObject(template, 'Publish template must be a JSON object');
+  if (!template.key || typeof template.key !== 'string') {
+    throw new Error('Publish template must have a string key');
+  }
+
+  draft.publish = draft.publish || {};
+  draft.publish.template = Array.isArray(draft.publish.template) ? draft.publish.template : [];
+  const index = draft.publish.template.findIndex((item) => item.key === template.key);
+  if (index >= 0) {
+    draft.publish.template[index] = deepMerge(draft.publish.template[index], template);
+  } else {
+    draft.publish.template.push(structuredClone(template));
+  }
   return draft;
 }
 
@@ -147,11 +189,11 @@ function assertParsingKey(key) {
 
 function templatePathForKey(key) {
   const paths = {
-    postCaption: ['publish', 'postCaption'],
-    unknownAuthor: ['publish', 'unknownAuthor'],
-    maxTextLength: ['publish', 'maxTextLength'],
-    'stats.summary': ['stats', 'summary'],
-    'stats.topPost': ['stats', 'topPost']
+    'templates.publish.postCaption': ['publish', 'postCaption'],
+    'templates.publish.unknownAuthor': ['publish', 'unknownAuthor'],
+    'templates.publish.maxTextLength': ['publish', 'maxTextLength'],
+    'templates.stats.summary': ['stats', 'summary'],
+    'templates.stats.topPost': ['stats', 'topPost']
   };
   if (!paths[key]) {
     throw new Error(`Unknown template key: ${key}`);
@@ -159,21 +201,34 @@ function templatePathForKey(key) {
   return paths[key];
 }
 
-function parseSelectionTemplateKey(key) {
-  const match = /^selection\.([^.]+)\.([^.]+)\.template$/.exec(key);
+function parsePublishTemplateKey(key) {
+  const match = /^publish\.template\.([^.]+)\.([^.]+)$/.exec(key);
   if (!match) return null;
-  return { source: match[1], key: match[2] };
+  return { key: match[1], field: match[2] };
 }
 
-function setSelectionTemplateValue(draft, selection, value) {
-  draft.publish = draft.publish || {};
-  draft.publish.template = Array.isArray(draft.publish.template) ? draft.publish.template : [];
-  let entry = draft.publish.template.find((item) => item.source === selection.source && item.key === selection.key);
-  if (!entry) {
-    entry = { source: selection.source, key: selection.key };
-    draft.publish.template.push(entry);
+function setPublishTemplateField(draft, key, field, value) {
+  if (field !== 'template') {
+    throw new Error(`Unknown publish template field: ${field}`);
   }
-  entry.template = String(value);
+  setPublishTemplate(draft, { key, template: String(value) });
+}
+
+function assertPublishSource(source) {
+  assertPlainObject(source, 'Publish source must be a JSON object');
+  if (!source.key || typeof source.key !== 'string') {
+    throw new Error('Publish source must have a string key');
+  }
+  if (source.where !== undefined && typeof source.where !== 'string') {
+    throw new Error('Publish source where must be a string');
+  }
+  return structuredClone(source);
+}
+
+function assertPlainObject(value, message) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error(message);
+  }
 }
 
 function formatCell(value, maxLength) {

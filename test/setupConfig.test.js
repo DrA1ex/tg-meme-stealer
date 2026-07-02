@@ -11,9 +11,13 @@ import {
   saveDraftConfig,
   selectWeekPreviewPost,
   selectWeekPreviewPosts,
+  setPublishSources,
+  setPublishTemplate,
+  upsertPublishSource,
   setParsingRules,
   setTemplateValue,
-  summarizeParsedPosts
+  summarizeParsedPosts,
+  validateSetupDraft
 } from '../src/core/setupConfig.js';
 
 test('setup draft keeps editable publish, parsing and template config', () => {
@@ -60,21 +64,82 @@ test('formatDraftConfig returns final config snippet', () => {
 test('setup helpers update publish templates', () => {
   const draft = createSetupDraft({ parsing: {}, templates: {} });
 
-  setTemplateValue(draft, 'postCaption', 'Post {{messageId}} by {{author}}');
-  setTemplateValue(draft, 'selection.best.week.template', 'Weekly best {{count}}');
-  setTemplateValue(draft, 'selection.controversial.week.template', 'Controversial {{count}}');
-  setTemplateValue(draft, 'unknownAuthor', 'anonymous');
-  setTemplateValue(draft, 'maxTextLength', '120');
-  setTemplateValue(draft, 'stats.summary', 'Stats {{totalCount}}');
+  setTemplateValue(draft, 'templates.publish.postCaption', 'Post {{messageId}} by {{author}}');
+  setTemplateValue(draft, 'publish.template.weekly_best.template', 'Weekly best {{count}}');
+  setTemplateValue(draft, 'publish.template.weekly_controversial.template', 'Controversial {{count}}');
+  setTemplateValue(draft, 'templates.publish.unknownAuthor', 'anonymous');
+  setTemplateValue(draft, 'templates.publish.maxTextLength', '120');
+  setTemplateValue(draft, 'templates.stats.summary', 'Stats {{totalCount}}');
 
   assert.equal(draft.templates.publish.postCaption, 'Post {{messageId}} by {{author}}');
   assert.deepEqual(draft.publish.template, [
-    { source: 'best', key: 'week', template: 'Weekly best {{count}}' },
-    { source: 'controversial', key: 'week', template: 'Controversial {{count}}' }
+    { key: 'weekly_best', template: 'Weekly best {{count}}' },
+    { key: 'weekly_controversial', template: 'Controversial {{count}}' }
   ]);
   assert.equal(draft.templates.publish.unknownAuthor, 'anonymous');
   assert.equal(draft.templates.publish.maxTextLength, 120);
   assert.equal(draft.templates.stats.summary, 'Stats {{totalCount}}');
+});
+
+test('setTemplateValue rejects non-config publish template paths', () => {
+  const draft = createSetupDraft({ parsing: {}, templates: {} });
+
+  assert.throws(
+    () => setTemplateValue(draft, 'publish.weekly_best.template', 'Weekly best {{count}}'),
+    /Unknown template key: publish\.weekly_best\.template/
+  );
+});
+
+test('setup helpers update publish sources and full publish template entries', () => {
+  const draft = createSetupDraft({
+    publish: {
+      sources: [{ key: 'best', where: 'true' }],
+      template: [
+        publishTemplate({ key: 'daily_best', source: 'best', template: 'Old {{count}}' })
+      ]
+    }
+  });
+
+  setPublishSources(draft, [
+    { key: 'best', where: 'likes >= 0' },
+    { key: 'controversial', where: 'abs(likes - dislikes) < max(likes, dislikes) * 0.3' }
+  ]);
+  upsertPublishSource(draft, { key: 'best', where: 'likes > dislikes' });
+  setPublishTemplate(draft, {
+    key: 'daily_best',
+    posts: { target: 3, max: 5 },
+    template: 'Fresh {{count}}'
+  });
+  setPublishTemplate(draft, publishTemplate({ key: 'daily_controversial', source: 'controversial', template: 'Controversial {{count}}' }));
+
+  assert.deepEqual(draft.publish.sources, [
+    { key: 'best', where: 'likes > dislikes' },
+    { key: 'controversial', where: 'abs(likes - dislikes) < max(likes, dislikes) * 0.3' }
+  ]);
+  assert.deepEqual(draft.publish.template, [
+    publishTemplate({
+      key: 'daily_best',
+      source: 'best',
+      posts: { min: 1, target: 3, max: 5 },
+      template: 'Fresh {{count}}'
+    }),
+    publishTemplate({ key: 'daily_controversial', source: 'controversial', template: 'Controversial {{count}}' })
+  ]);
+});
+
+test('validateSetupDraft validates the merged new-format config before save', () => {
+  const baseConfig = validSetupBaseConfig();
+  const draft = createSetupDraft(baseConfig);
+
+  setPublishTemplate(draft, {
+    key: 'daily_best',
+    schedule: { type: 'daily', time: '25:00' }
+  });
+
+  assert.throws(
+    () => validateSetupDraft(draft, baseConfig),
+    /publish\.template\.0\.schedule\.time: expected HH:mm/
+  );
 });
 
 test('summarizeParsedPosts and preview select best weekly post', () => {
@@ -145,5 +210,56 @@ function post({ messageId, likes, dislikes, daysAgo }) {
     dislikes,
     messageDate: new Date(now.getTime() - daysAgo * 24 * 60 * 60 * 1000).toISOString(),
     data: { media: [{ mediaKind: 'photo', messageId }] }
+  };
+}
+
+function publishTemplate(overrides = {}) {
+  return {
+    source: 'best',
+    key: 'daily_best',
+    enabled: true,
+    schedule: { type: 'daily', time: '10:00' },
+    windowHours: 24,
+    posts: { min: 1, target: 5, max: 5 },
+    reactions: { strategy: 'likes', min: 0, includeAbove: 999999 },
+    template: 'Daily {{count}}',
+    ...overrides,
+    posts: {
+      min: 1,
+      target: 5,
+      max: 5,
+      ...overrides.posts
+    },
+    reactions: {
+      strategy: 'likes',
+      min: 0,
+      includeAbove: 999999,
+      ...overrides.reactions
+    }
+  };
+}
+
+function validSetupBaseConfig() {
+  return {
+    telegram: {
+      apiId: 123,
+      apiHash: 'hash',
+      sessionFile: 'sessions/user.session',
+      sourceChatId: -1001,
+      adminId: 99,
+      publishChannelId: -1002,
+      botToken: 'token'
+    },
+    database: { path: 'data/posts.sqlite' },
+    parsing: { filters: [], author: [], likes: [], dislikes: [] },
+    publish: {
+      dryRun: true,
+      sources: [{ key: 'best', where: 'true' }],
+      template: [publishTemplate()]
+    },
+    templates: {
+      publish: { postCaption: '{{text}}', unknownAuthor: 'unknown', maxTextLength: 700 },
+      stats: { summary: 'Stats', topPost: 'Top' }
+    }
   };
 }

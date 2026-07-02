@@ -6,9 +6,13 @@ import {
   parseJsonArgument,
   saveDraftConfig,
   selectWeekPreviewPosts,
+  setPublishSources,
+  setPublishTemplate,
+  upsertPublishSource,
   setParsingRules,
   setTemplateValue,
-  summarizeParsedPosts
+  summarizeParsedPosts,
+  validateSetupDraft
 } from '../core/setupConfig.js';
 import { loadConfig } from '../config/index.js';
 import { sendRichPost } from './richPost.js';
@@ -20,6 +24,9 @@ const SETUP_HELP = [
   '/setauthor <json rule or array>',
   '/setlikes <json rule or array>',
   '/setdislikes <json rule or array>',
+  '/setsources <json array>',
+  '/setsource <json object>',
+  '/setpublish <json object>',
   '/settemplate <key> <value>',
   '/test [message_count]',
   '/raw <message_id>',
@@ -46,6 +53,9 @@ export class SetupAssistant {
     bot.command('setauthor', (ctx) => this.withSession(ctx, () => this.setRules(ctx, 'author')));
     bot.command('setlikes', (ctx) => this.withSession(ctx, () => this.setRules(ctx, 'likes')));
     bot.command('setdislikes', (ctx) => this.withSession(ctx, () => this.setRules(ctx, 'dislikes')));
+    bot.command('setsources', (ctx) => this.withSession(ctx, () => this.setSources(ctx)));
+    bot.command('setsource', (ctx) => this.withSession(ctx, () => this.setSource(ctx)));
+    bot.command('setpublish', (ctx) => this.withSession(ctx, () => this.setPublish(ctx)));
     bot.command('settemplate', (ctx) => this.withSession(ctx, () => this.setTemplate(ctx)));
     bot.command('test', (ctx) => this.withSession(ctx, () => this.test(ctx)));
     bot.command('raw', (ctx) => this.withSession(ctx, () => this.raw(ctx)));
@@ -80,6 +90,24 @@ export class SetupAssistant {
     if (!key || !value) throw new Error('Usage: /settemplate <key> <value>');
     setTemplateValue(this.getDraft(ctx), key, value);
     await ctx.reply(`${key} template updated. Run /preview 30 to check.`);
+  }
+
+  async setSources(ctx) {
+    const sources = parseJsonArgument(ctx.message.text);
+    setPublishSources(this.getDraft(ctx), sources);
+    await ctx.reply('publish.sources replaced. Run /done to validate and save.');
+  }
+
+  async setSource(ctx) {
+    const source = parseJsonArgument(ctx.message.text);
+    upsertPublishSource(this.getDraft(ctx), source);
+    await ctx.reply(`publish.sources.${source.key} updated. Run /done to validate and save.`);
+  }
+
+  async setPublish(ctx) {
+    const template = parseJsonArgument(ctx.message.text);
+    setPublishTemplate(this.getDraft(ctx), template);
+    await ctx.reply(`publish.template.${template.key} updated. Run /done to validate and save.`);
   }
 
   async test(ctx) {
@@ -149,6 +177,7 @@ export class SetupAssistant {
 
   async done(ctx) {
     const draft = this.getDraft(ctx);
+    validateSetupDraft(draft, this.config);
     const result = await saveDraftConfig(draft);
     this.reloadConfig();
     await ctx.reply([
