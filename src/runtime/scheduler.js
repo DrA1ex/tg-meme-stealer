@@ -2,6 +2,7 @@ import { getScheduledPublishEntries } from '../core/selection.js';
 import { getLogger } from '../core/logger.js';
 
 const MAX_TIMEOUT_MS = 2_147_483_647;
+const TIMER_INFO_THRESHOLD_MS = 3 * 60 * 60 * 1000;
 
 export class Scheduler {
   constructor(config, handlers, logger = getLogger('scheduler')) {
@@ -40,7 +41,7 @@ export class Scheduler {
   scheduleSync() {
     const intervalMs = this.config.sync.intervalHours * 60 * 60 * 1000;
     const nextRunAt = new Date(Date.now() + intervalMs);
-    this.logger.info('Timer scheduled', {
+    this.logTimerScheduled({
       timer: 'sync',
       intervalHours: intervalMs / 60 / 60 / 1000,
       delayMs: intervalMs,
@@ -55,7 +56,7 @@ export class Scheduler {
   scheduleRetention({ initial = false } = {}) {
     if (!this.handlers.retention) return;
     const delayMs = getRetentionDelayMs(this.config, initial);
-    this.logger.info('Timer scheduled', {
+    this.logTimerScheduled({
       timer: 'retention',
       initial,
       delayMs,
@@ -82,7 +83,7 @@ export class Scheduler {
       period
     });
     const delayMs = nextRunAt.getTime() - now.getTime();
-    this.logger.info('Timer scheduled', {
+    this.logTimerScheduled({
       timer: 'publication',
       key,
       period,
@@ -147,7 +148,7 @@ export class Scheduler {
 
   schedulePublicationWorker() {
     const intervalMs = Math.max(1, Number(this.config.publish?.workerIntervalMinutes ?? 10)) * 60 * 1000;
-    this.logger.info('Timer scheduled', {
+    this.logTimerScheduled({
       timer: 'publication_worker',
       intervalMinutes: intervalMs / 60 / 1000,
       delayMs: intervalMs,
@@ -157,6 +158,13 @@ export class Scheduler {
       await this.handlers.publishWorker();
       this.schedulePublicationWorker();
     }, intervalMs);
+  }
+
+  logTimerScheduled(fields) {
+    const log = Number(fields.delayMs || 0) > TIMER_INFO_THRESHOLD_MS
+      ? this.logger.info
+      : this.logger.debug;
+    log('Timer scheduled', fields);
   }
 
   scheduleTimeout(fn, delayMs) {
