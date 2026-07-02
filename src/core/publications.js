@@ -1,8 +1,9 @@
+import { htmlPre } from './html.js';
 import { formatTable } from './table.js';
 
 export function formatPublications(publications) {
   const rows = publications || [];
-  if (rows.length === 0) return 'Publications\nNo publications.';
+  if (rows.length === 0) return htmlPre('Publications\nNo publications.');
 
   const tableRows = rows.map((row) => ({
     id: String(row.id),
@@ -11,16 +12,15 @@ export function formatPublications(publications) {
     progress: formatProgress(row)
   }));
 
-  return [
+  return htmlPre([
     'Publications',
-    '```',
-    formatTable(tableRows, ['id', 'key', 'status', 'progress']),
-    '```'
-  ].join('\n');
+    '',
+    formatTable(tableRows, ['id', 'key', 'status', 'progress'])
+  ].join('\n'));
 }
 
 export function formatPublicationPosts(publication, posts) {
-  if (!publication) return 'Publication not found.';
+  if (!publication) return htmlPre('Publication not found.');
 
   const rows = posts || [];
   const lines = [
@@ -35,7 +35,7 @@ export function formatPublicationPosts(publication, posts) {
   if (publication.finishedAt) lines.push(`Finished: ${formatDate(publication.finishedAt)}`);
   if (!publication.finishedAt && publication.updatedAt) lines.push(`Updated: ${formatDate(publication.updatedAt)}`);
   if (publication.lastError) lines.push(`Last error: ${trim(publication.lastError, 160)}`);
-  if (rows.length === 0) return [...lines, '', 'No posts.'].join('\n');
+  if (rows.length === 0) return htmlPre([...lines, '', 'No posts.'].join('\n'));
 
   const tableRows = rows.map((row) => ({
     pos: String(row.position),
@@ -47,13 +47,11 @@ export function formatPublicationPosts(publication, posts) {
     author: trim(row.author || '', 28)
   }));
 
-  return [
+  return htmlPre([
     ...lines,
     '',
-    '```',
-    formatTable(tableRows, ['pos', 'message', 'likes', 'dislikes', 'sent', 'bot', 'author']),
-    '```'
-  ].join('\n');
+    formatTable(tableRows, ['pos', 'message', 'likes', 'dislikes', 'sent', 'bot', 'author'])
+  ].join('\n'));
 }
 
 function formatProgress(row) {

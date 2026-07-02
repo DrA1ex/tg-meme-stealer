@@ -1,3 +1,4 @@
+import { htmlPre } from './html.js';
 import { formatTable } from './table.js';
 
 export function formatJobs(jobs) {
@@ -8,7 +9,7 @@ export function formatJobs(jobs) {
   sections.push(formatJobSection('Active', active));
   sections.push(formatJobSection('Recent finished', finished));
 
-  return sections.join('\n\n');
+  return htmlPre(sections.join('\n\n'));
 }
 
 function formatJobSection(title, rows) {
@@ -25,9 +26,7 @@ function formatJobSection(title, rows) {
 
   return [
     title,
-    '```',
-    formatTable(tableRows, ['id', 'status', 'selection', 'progress', 'updated', 'error']),
-    '```'
+    formatTable(tableRows, ['id', 'status', 'selection', 'progress', 'updated', 'error'])
   ].join('\n');
 }
 

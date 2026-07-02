@@ -833,11 +833,11 @@ test('SelectionPublisher.replyJobs returns admin jobs table', async () => {
           finished: [{
             id: 1,
             status: 'failed',
-            selectionKey: 'best.day',
+            selectionKey: 'best.day_[x]',
             sentCount: 0,
             expectedCount: 5,
             updatedAt: '2026-06-29T11:00:00.000Z',
-            lastError: 'network failed'
+            lastError: 'network <failed> & retry'
           }]
         };
       }
@@ -854,8 +854,9 @@ test('SelectionPublisher.replyJobs returns admin jobs table', async () => {
   assert.equal(replies.length, 1);
   assert.match(replies[0].message, /Publication jobs/);
   assert.match(replies[0].message, /running/);
-  assert.match(replies[0].message, /network failed/);
-  assert.deepEqual(replies[0].options, { parse_mode: 'Markdown' });
+  assert.match(replies[0].message, /best\.day_\[x\]/);
+  assert.match(replies[0].message, /network &lt;failed&gt; &amp; retry/);
+  assert.deepEqual(replies[0].options, { parse_mode: 'HTML' });
 });
 
 test('SelectionPublisher.replyPublications returns recent publications table', async () => {
@@ -866,7 +867,7 @@ test('SelectionPublisher.replyPublications returns recent publications table', a
         assert.deepEqual(options, { limit: 10 });
         return [{
           id: 7,
-          key: 'publish:best:week:2026-06-29T00-00',
+          key: 'publish:best:week_[x]:2026-06-29T00-00<bad>&',
           status: 'published',
           selectionKey: 'best.week',
           title: 'Best week',
@@ -887,12 +888,12 @@ test('SelectionPublisher.replyPublications returns recent publications table', a
 
   assert.equal(replies.length, 1);
   assert.match(replies[0].message, /Publications/);
-  assert.match(replies[0].message, /publish:best:week:2026-06-29T00-00/);
+  assert.match(replies[0].message, /publish:best:week_\[x\]:2026-06-29T00-00&lt;bad&gt;&amp;/);
   assert.match(replies[0].message, /10\/10/);
   assert.doesNotMatch(replies[0].message, /updated/i);
   assert.doesNotMatch(replies[0].message, /\bselection\b/i);
   assert.doesNotMatch(replies[0].message, /\btitle\b/i);
-  assert.deepEqual(replies[0].options, { parse_mode: 'Markdown' });
+  assert.deepEqual(replies[0].options, { parse_mode: 'HTML' });
 });
 
 test('SelectionPublisher.replyPublication returns publication posts table', async () => {
@@ -904,11 +905,12 @@ test('SelectionPublisher.replyPublication returns publication posts table', asyn
         return {
           id: 7,
           status: 'published',
-          selectionKey: 'best.week',
-          title: 'Best week',
+          selectionKey: 'best.week_[x]',
+          title: 'Best _week_ <bad> & ok',
           createdAt: '2026-06-29T10:00:00.000Z',
           updatedAt: '2026-06-29T11:00:00.000Z',
-          finishedAt: '2026-06-29T12:00:00.000Z'
+          finishedAt: '2026-06-29T12:00:00.000Z',
+          lastError: 'telegram <failed> & retry _later_'
         };
       },
       listPublicationPostsDetailed: async (id) => {
@@ -920,7 +922,7 @@ test('SelectionPublisher.replyPublication returns publication posts table', asyn
           dislikes: 2,
           sentAt: '2026-06-29T12:00:00.000Z',
           botMessageId: 456,
-          author: 'Alice'
+          author: 'Alice_[x] <bad>'
         }];
       }
     },
@@ -936,12 +938,15 @@ test('SelectionPublisher.replyPublication returns publication posts table', asyn
 
   assert.equal(replies.length, 1);
   assert.match(replies[0].message, /Publication #7/);
+  assert.match(replies[0].message, /Selection: best\.week_\[x\]/);
+  assert.match(replies[0].message, /Title: Best _week_ &lt;bad&gt; &amp; ok/);
+  assert.match(replies[0].message, /Last error: telegram &lt;failed&gt; &amp; retry _later_/);
   assert.match(replies[0].message, /Created: 2026-06-29 10:00:00Z/);
   assert.match(replies[0].message, /Finished: 2026-06-29 12:00:00Z/);
   assert.doesNotMatch(replies[0].message, /Updated:/);
   assert.match(replies[0].message, /123/);
-  assert.match(replies[0].message, /Alice/);
-  assert.deepEqual(replies[0].options, { parse_mode: 'Markdown' });
+  assert.match(replies[0].message, /Alice_\[x\] &lt;bad&gt;/);
+  assert.deepEqual(replies[0].options, { parse_mode: 'HTML' });
 });
 
 test('SelectionPublisher.processPublicationQueue marks successful request as published', async () => {

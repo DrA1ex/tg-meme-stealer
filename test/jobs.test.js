@@ -19,7 +19,7 @@ test('formatJobs renders active and finished jobs with last errors', () => {
       sentCount: 0,
       expectedCount: 5,
       updatedAt: '2026-06-29T11:00:00.000Z',
-      lastError: 'network failed'
+      lastError: 'network <failed> & retry'
     }]
   });
 
@@ -28,7 +28,7 @@ test('formatJobs renders active and finished jobs with last errors', () => {
   assert.match(text, /running/);
   assert.match(text, /1\/2/);
   assert.match(text, /Recent finished/);
-  assert.match(text, /network failed/);
+  assert.match(text, /network &lt;failed&gt; &amp; retry/);
 });
 
 test('formatJobs renders empty sections', () => {

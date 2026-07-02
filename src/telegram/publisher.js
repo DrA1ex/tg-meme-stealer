@@ -369,12 +369,12 @@ export class SelectionPublisher {
 
   async replyJobs(ctx) {
     const jobs = await this.repository.listPublicationJobs({ finishedLimit: 5 });
-    await ctx.reply(formatJobs(jobs), { parse_mode: 'Markdown' });
+    await ctx.reply(formatJobs(jobs), { parse_mode: 'HTML' });
   }
 
   async replyPublications(ctx) {
     const publications = await this.repository.listRecentPublications({ limit: 10 });
-    await ctx.reply(formatPublications(publications), { parse_mode: 'Markdown' });
+    await ctx.reply(formatPublications(publications), { parse_mode: 'HTML' });
   }
 
   async replyPublication(ctx) {
@@ -385,7 +385,7 @@ export class SelectionPublisher {
       return;
     }
     const posts = await this.repository.listPublicationPostsDetailed(publicationId);
-    await ctx.reply(formatPublicationPosts(publication, posts), { parse_mode: 'Markdown' });
+    await ctx.reply(formatPublicationPosts(publication, posts), { parse_mode: 'HTML' });
   }
 
   async runManualSync(ctx) {
