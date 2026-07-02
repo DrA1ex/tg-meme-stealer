@@ -81,7 +81,7 @@ test('SelectionPublisher skips Telegram calls when publication request already e
   let insertAttempts = 0;
   const publisher = new SelectionPublisher({
     repository: {
-      getTopPosts: async () => {
+      getSelectionPosts: async () => {
         postQueries += 1;
         return [post(1, 'Alice')];
       },
@@ -172,7 +172,7 @@ test('SelectionPublisher scheduled enqueue skips existing publication before sel
   const publisher = new SelectionPublisher({
     repository: {
       getPublicationByKey: async () => ({ id: 20, status: 'published', data: { count: 3 } }),
-      getTopPosts: async () => {
+      getSelectionPosts: async () => {
         postQueries += 1;
         return [post(1, 'Alice')];
       },
@@ -225,7 +225,7 @@ test('SelectionPublisher scheduled enqueue skips same canonical key but queues d
         }
         return null;
       },
-      getTopPosts: async ({ period }) => {
+      getSelectionPosts: async ({ period }) => {
         events.push(`posts:${period}`);
         return [post(period === 'week' ? 1 : 2, 'Alice')];
       },
@@ -354,7 +354,7 @@ test('SelectionPublisher.runManualPublish plans selections and replies with job 
   const publisher = new SelectionPublisher({
     repository: {
       getPublicationByKey: async () => null,
-      getTopPosts: async () => [post(1, 'Alice')],
+      getSelectionPosts: async () => [post(1, 'Alice')],
       tryCreatePublicationRequest: async () => 123,
       getNextPublicationRequest: async () => null
     },
@@ -387,7 +387,7 @@ test('SelectionPublisher.runManualPublish replies when requested publication alr
   const publisher = new SelectionPublisher({
     repository: {
       getPublicationByKey: async () => ({ id: 10, status: 'published', data: { count: 5 } }),
-      getTopPosts: async () => {
+      getSelectionPosts: async () => {
         loadedPosts = true;
         return [post(1, 'Alice')];
       }
@@ -422,7 +422,7 @@ test('SelectionPublisher.runManualPublish does not create publication request wh
   const publisher = new SelectionPublisher({
     repository: {
       getPublicationByKey: async () => null,
-      getTopPosts: async () => [],
+      getSelectionPosts: async () => [],
       tryCreatePublicationRequest: async () => {
         insertAttempted = true;
         return 123;
@@ -460,13 +460,13 @@ test('SelectionPublisher.runManualPublish supports best and controversial wildca
   const publisher = new SelectionPublisher({
     repository: {
       getPublicationByKey: async () => null,
-      getTopPosts: async (spec) => {
+      getSelectionPosts: async (spec) => {
+        if (spec.source === 'controversial') {
+          controversialSpecs.push(spec.key);
+          return [post(10 + controversialSpecs.length, 'Bob')];
+        }
         topSpecs.push(spec.key);
         return [post(topSpecs.length, 'Alice')];
-      },
-      getControversialPosts: async (spec) => {
-        controversialSpecs.push(spec.key);
-        return [post(10 + controversialSpecs.length, 'Bob')];
       },
       tryCreatePublicationRequest: async ({ key }) => {
         insertedKeys.push(key);
@@ -511,7 +511,7 @@ test('SelectionPublisher.runManualPublish force schedules an explicitly disabled
   const publisher = new SelectionPublisher({
     repository: {
       getPublicationByKey: async () => null,
-      getControversialPosts: async (spec) => {
+      getSelectionPosts: async (spec) => {
         queried.push(spec.key);
         return [post(1, 'Alice')];
       },
@@ -550,7 +550,7 @@ test('SelectionPublisher.runManualPublish explains when worker is already runnin
   const publisher = new SelectionPublisher({
     repository: {
       getPublicationByKey: async () => null,
-      getControversialPosts: async () => [post(1, 'Alice')],
+      getSelectionPosts: async () => [post(1, 'Alice')],
       tryCreatePublicationRequest: async () => 123
     },
     mediaDownloader: {},
@@ -589,7 +589,7 @@ test('SelectionPublisher.runManualPublish explains when follow-up worker is queu
   const publisher = new SelectionPublisher({
     repository: {
       getPublicationByKey: async () => null,
-      getControversialPosts: async () => [post(1, 'Alice')],
+      getSelectionPosts: async () => [post(1, 'Alice')],
       tryCreatePublicationRequest: async () => 123
     },
     mediaDownloader: {},
@@ -626,7 +626,7 @@ test('SelectionPublisher.runManualPublish does not schedule disabled selection w
   let queried = false;
   const publisher = new SelectionPublisher({
     repository: {
-      getControversialPosts: async () => {
+      getSelectionPosts: async () => {
         queried = true;
         return [post(1, 'Alice')];
       }
@@ -658,7 +658,7 @@ test('SelectionPublisher.runManualPublish shows help without selection arguments
   let loadedPosts = false;
   const publisher = new SelectionPublisher({
     repository: {
-      getTopPosts: async () => {
+      getSelectionPosts: async () => {
         loadedPosts = true;
         return [post(1, 'Alice')];
       }
@@ -702,7 +702,7 @@ test('SelectionPublisher.runManualPublish supports force scheduling', async () =
   const publisher = new SelectionPublisher({
     repository: {
       getPublicationByKey: async () => null,
-      getTopPosts: async () => [post(1, 'Alice')],
+      getSelectionPosts: async () => [post(1, 'Alice')],
       tryCreatePublicationRequest: async ({ key }) => {
         keys.push(key);
         return 123;
@@ -738,7 +738,7 @@ test('SelectionPublisher.runManualPublish supports single-dash force scheduling'
   const publisher = new SelectionPublisher({
     repository: {
       getPublicationByKey: async () => null,
-      getTopPosts: async () => [post(1, 'Alice')],
+      getSelectionPosts: async () => [post(1, 'Alice')],
       tryCreatePublicationRequest: async ({ key }) => {
         keys.push(key);
         return 123;

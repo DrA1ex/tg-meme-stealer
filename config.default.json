@@ -80,6 +80,16 @@
     "dryRun": false,
     "requestTtlHours": 12,
     "workerIntervalMinutes": 10,
+    "sources": [
+      {
+        "key": "best",
+        "where": "true"
+      },
+      {
+        "key": "controversial",
+        "where": "abs(likes - dislikes) < max(likes, dislikes) * 0.3"
+      }
+    ],
     "template": [
       {
         "source": "best",

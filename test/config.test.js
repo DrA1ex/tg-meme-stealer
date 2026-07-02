@@ -218,7 +218,39 @@ test('validateConfig rejects invalid publish template settings', () => {
         ]
       }
     }),
-    /publish\.template\.0\.source: expected best or controversial[\s\S]*publish\.template\.0\.windowHours: expected number greater than 0[\s\S]*publish\.template\.0\.posts: expected min <= target <= max[\s\S]*publish\.template\.0\.reactions\.strategy: expected likes, dislikes, sum, or max[\s\S]*publish\.template\.0\.schedule\.time: expected HH:mm[\s\S]*publish\.template\.0\.schedule\.dayOfMonth: expected integer from 1 to 28/
+    /publish\.template\.0\.source: unknown publish source[\s\S]*publish\.template\.0\.windowHours: expected number greater than 0[\s\S]*publish\.template\.0\.posts: expected min <= target <= max[\s\S]*publish\.template\.0\.reactions\.strategy: expected likes, dislikes, sum, or max[\s\S]*publish\.template\.0\.schedule\.time: expected HH:mm[\s\S]*publish\.template\.0\.schedule\.dayOfMonth: expected integer from 1 to 28/
+  );
+});
+
+test('validateConfig allows custom publish sources and rejects unsafe source expressions', () => {
+  const withCustomSource = {
+    ...validConfig(),
+    publish: {
+      ...validConfig().publish,
+      sources: [
+        { key: 'positive', where: 'likes > dislikes and abs(likes - dislikes) >= 3' }
+      ],
+      template: [
+        template('positive_daily', 'positive', { type: 'daily', time: '12:00' }, 24, 'Positive {{count}}')
+      ]
+    }
+  };
+
+  assert.doesNotThrow(() => validateConfig(withCustomSource));
+  assert.throws(
+    () => validateConfig({
+      ...validConfig(),
+      publish: {
+        ...validConfig().publish,
+        sources: [
+          { key: 'unsafe', where: 'json_extract(data, "$.x") = 1' }
+        ],
+        template: [
+          template('unsafe_daily', 'unsafe', { type: 'daily', time: '12:00' }, 24, 'Unsafe {{count}}')
+        ]
+      }
+    }),
+    /publish\.sources\.0\.where: invalid expression/
   );
 });
 

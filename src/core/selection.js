@@ -1,7 +1,6 @@
 import { subtractHours } from './date.js';
 import { renderTemplate } from './format.js';
-
-const SOURCES = ['best', 'controversial'];
+import { compileReactionScore, compileSourceWhere, getSourceDefinition, getSourceDefinitions } from './sourceExpression.js';
 
 export function buildSelectionSpecs(config, now = new Date(), keys = null, options = {}) {
   const chatId = config.telegram.sourceChatId;
@@ -17,6 +16,7 @@ export function buildSelectionSpecs(config, now = new Date(), keys = null, optio
 
     const posts = normalizePosts(entry.posts, entry.limit);
     const reactions = normalizeReactions(entry.reactions);
+    const sourceDefinition = getSourceDefinition(config, entry.source);
     const windowHours = Number(entry.windowHours ?? 24);
     const until = new Date(now);
     const since = subtractHours(until, windowHours);
@@ -35,6 +35,8 @@ export function buildSelectionSpecs(config, now = new Date(), keys = null, optio
       limit: posts.max,
       posts,
       reactions,
+      sourceWhereSql: compileSourceWhere(sourceDefinition?.where || 'true'),
+      reactionScoreSql: compileReactionScore(reactions.strategy),
       template: entry.template
     });
   }
@@ -76,53 +78,12 @@ export async function loadSelections(repository, config, now = new Date(), keys 
 }
 
 export async function loadSelection(repository, spec) {
-  const candidates = spec.type === 'controversial'
-    ? await repository.getControversialPosts(spec)
-    : await repository.getTopPosts(spec);
-  const posts = selectPosts(candidates, spec);
+  const posts = await repository.getSelectionPosts(spec);
   return {
     ...spec,
     title: renderSelectionTemplate(spec, posts),
     posts
   };
-}
-
-export function selectPosts(candidates, spec) {
-  const posts = Array.isArray(candidates) ? candidates : [];
-  const max = Math.max(0, Number(spec.posts?.max ?? spec.limit ?? posts.length));
-  const target = Math.min(max, Math.max(0, Number(spec.posts?.target ?? max)));
-  const min = Math.min(max, Math.max(0, Number(spec.posts?.min ?? target)));
-  const reactionMin = Number(spec.reactions?.min ?? 0);
-  const includeAbove = Number(spec.reactions?.includeAbove ?? Number.POSITIVE_INFINITY);
-  const scored = posts.map((post) => ({
-    post,
-    score: getReactionScore(post, spec.reactions?.strategy || 'likes')
-  }));
-
-  const passing = scored.filter((item) => item.score >= reactionMin);
-  let count = Math.min(max, target);
-
-  const includeCount = passing.filter((item) => item.score >= includeAbove).length;
-  count = Math.min(max, Math.max(count, includeCount));
-
-  const selected = [];
-  const seen = new Set();
-  for (const item of passing.slice(0, count)) {
-    selected.push(item.post);
-    seen.add(getPostIdentity(item.post));
-  }
-
-  if (selected.length < min) {
-    for (const item of scored) {
-      if (selected.length >= min) break;
-      const identity = getPostIdentity(item.post);
-      if (seen.has(identity)) continue;
-      selected.push(item.post);
-      seen.add(identity);
-    }
-  }
-
-  return selected.slice(0, max);
 }
 
 function normalizeSelectionKey(key, config) {
@@ -132,25 +93,29 @@ function normalizeSelectionKey(key, config) {
 
   if (value === 'fresh') return normalizeSelectionKey('day', config);
 
-  if (SOURCES.map((source) => `${source}.*`).includes(value)) {
+  const sources = getSourceDefinitions(config || {});
+  const sourceNames = new Set(sources.map((source) => source.key));
+
+  if (value.endsWith('.*') && sourceNames.has(value.slice(0, -2))) {
     const source = value.slice(0, -2);
     return templates
       .filter((template) => template.source === source)
       .map((template) => getSelectionKey(template));
   }
 
-  if (SOURCES.includes(value)) return normalizeSelectionKey(`${value}.*`, config);
+  if (sourceNames.has(value)) return normalizeSelectionKey(`${value}.*`, config);
 
-  if (/^(best|controversial)\.[^.]+$/.test(value)) {
+  const sourceKeyMatch = /^([^.]+)\.([^.]+)$/.exec(value);
+  if (sourceKeyMatch && sourceNames.has(sourceKeyMatch[1])) {
     if (!config) return [value];
-    const [source, key] = value.split('.');
+    const [, source, key] = sourceKeyMatch;
     if (templates.some((template) => template.source === source && template.key === key)) return [value];
   }
 
   const exact = templates.find((template) => template.key === value);
   if (exact) return [getSelectionKey(exact)];
 
-  throw new Error(`Unknown publish selection: ${value}. Expected a template key, source.key, best.*, or controversial.*.`);
+  throw new Error(`Unknown publish selection: ${value}. Expected a template key, source.key, or source.*.`);
 }
 
 function getPublishTemplates(config) {
@@ -174,19 +139,6 @@ function normalizeReactions(reactions = {}) {
     min: Number(reactions.min ?? 0),
     includeAbove: Number(reactions.includeAbove ?? Number.POSITIVE_INFINITY)
   };
-}
-
-function getReactionScore(post, strategy) {
-  const likes = Number(post.likes || 0);
-  const dislikes = Number(post.dislikes || 0);
-  if (strategy === 'dislikes') return dislikes;
-  if (strategy === 'sum') return likes + dislikes;
-  if (strategy === 'max') return Math.max(likes, dislikes);
-  return likes;
-}
-
-function getPostIdentity(post) {
-  return `${post.chatId || ''}:${post.messageId || ''}`;
 }
 
 export function renderSelectionTemplate(spec, posts) {

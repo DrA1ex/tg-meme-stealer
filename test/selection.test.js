@@ -4,8 +4,7 @@ import {
   buildSelectionSpecs,
   getScheduledPublishEntries,
   loadSelections,
-  normalizeSelectionKeys,
-  selectPosts
+  normalizeSelectionKeys
 } from '../src/core/selection.js';
 
 test('buildSelectionSpecs builds rolling windows from configured templates', () => {
@@ -65,13 +64,14 @@ test('buildSelectionSpecs supports separate monthly rolling windows', () => {
 test('normalizeSelectionKeys expands configured aliases and rejects unknown keys', () => {
   assert.deepEqual(normalizeSelectionKeys('daily_morning', config()), ['best.daily_morning']);
   assert.deepEqual(normalizeSelectionKeys('best.daily_morning', config()), ['best.daily_morning']);
+  assert.deepEqual(normalizeSelectionKeys('positive.*', config()), ['positive.daily_positive']);
   assert.deepEqual(normalizeSelectionKeys('best.*', config()), [
     'best.daily_morning',
     'best.daily_evening',
     'best.monthly_hidden'
   ]);
   assert.deepEqual(normalizeSelectionKeys('controversial', config()), ['controversial.weekly_hot']);
-  assert.throws(() => normalizeSelectionKeys('year', config()), /Expected a template key, source\.key, best\.\*, or controversial\.\*/);
+  assert.throws(() => normalizeSelectionKeys('year', config()), /Expected a template key, source\.key, or source\.\*/);
 });
 
 test('getScheduledPublishEntries reads enabled schedule objects', () => {
@@ -105,8 +105,10 @@ test('getScheduledPublishEntries reads enabled schedule objects', () => {
 
 test('loadSelections renders templates with count and windowHours', async () => {
   const repository = {
-    getTopPosts: async () => [post(1, 20), post(2, 15)],
-    getControversialPosts: async () => [post(3, 20)]
+    getSelectionPosts: async (spec) => {
+      if (spec.source === 'controversial') return [post(3, 20)];
+      return [post(1, 20), post(2, 15)];
+    }
   };
 
   const selections = await loadSelections(repository, config(), new Date('2026-06-29T10:00:00.000Z'), [
@@ -120,30 +122,19 @@ test('loadSelections renders templates with count and windowHours', async () => 
   ]);
 });
 
-test('selectPosts filters by reaction min, backfills to minimum, expands includeAbove, and caps at max', () => {
-  const candidates = [
-    post(1, 100),
-    post(2, 50),
-    post(3, 20),
-    post(4, 5),
-    post(5, 1)
-  ];
-
-  assert.deepEqual(selectPosts(candidates, spec({ min: 3, target: 3, max: 5 }, { min: 10, includeAbove: 80 })).map((item) => item.messageId), [1, 2, 3]);
-  assert.deepEqual(selectPosts(candidates, spec({ min: 4, target: 2, max: 5 }, { min: 10, includeAbove: 999 })).map((item) => item.messageId), [1, 2, 3, 4]);
-  assert.deepEqual(selectPosts(candidates, spec({ min: 1, target: 2, max: 4 }, { min: 10, includeAbove: 15 })).map((item) => item.messageId), [1, 2, 3]);
-  assert.deepEqual(selectPosts(candidates, spec({ min: 1, target: 2, max: 2 }, { min: 0, includeAbove: 1 })).map((item) => item.messageId), [1, 2]);
-});
-
 function config() {
   return {
     telegram: { sourceChatId: -1001 },
     publish: {
+      sources: [
+        { key: 'positive', where: 'likes > dislikes' }
+      ],
       template: [
         template({ source: 'best', key: 'daily_morning', schedule: { type: 'daily', time: '10:00' }, windowHours: 24, template: 'Best morning {{windowHours}}h ({{count}})' }),
         template({ source: 'best', key: 'daily_evening', schedule: { type: 'daily', time: '18:00' }, windowHours: 24, template: 'Best evening {{windowHours}}h ({{count}})' }),
         template({ source: 'best', key: 'monthly_hidden', enabled: false, schedule: { type: 'monthly', dayOfMonth: 15, time: '10:00' }, windowHours: 720 }),
-        template({ source: 'controversial', key: 'weekly_hot', schedule: { type: 'weekly', weekday: 1, time: '11:10' }, windowHours: 168, reactions: { strategy: 'sum', min: 10, includeAbove: 30 }, template: 'Controversial {{windowHours}}h ({{count}})' })
+        template({ source: 'controversial', key: 'weekly_hot', schedule: { type: 'weekly', weekday: 1, time: '11:10' }, windowHours: 168, reactions: { strategy: 'sum', min: 10, includeAbove: 30 }, template: 'Controversial {{windowHours}}h ({{count}})' }),
+        template({ source: 'positive', key: 'daily_positive', enabled: false, schedule: { type: 'daily', time: '12:00' }, windowHours: 24, template: 'Positive {{windowHours}}h ({{count}})' })
       ]
     }
   };
@@ -161,10 +152,6 @@ function template(overrides) {
     template: '{{key}} {{count}}',
     ...overrides
   };
-}
-
-function spec(posts, reactions) {
-  return { posts, reactions: { strategy: 'likes', ...reactions } };
 }
 
 function post(messageId, likes, dislikes = 0) {

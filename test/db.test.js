@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { PostRepository } from '../src/database/postRepository.js';
+import { compileReactionScore, compileSourceWhere } from '../src/core/sourceExpression.js';
 
 test('PostRepository upserts and orders top posts', async () => {
   const dbPath = path.join('/private/tmp', `tg-memes-${process.pid}-${Date.now()}-posts.sqlite`);
@@ -326,6 +327,54 @@ test('PostRepository selection windows are half-open at the boundary', async () 
 
   assert.deepEqual(previous.map((row) => row.messageId), [1]);
   assert.deepEqual(next.map((row) => row.messageId), [2]);
+
+  await repository.close();
+  await fs.rm(dbPath, { force: true });
+});
+
+test('PostRepository applies custom source expressions and reaction selection in SQL', async () => {
+  const dbPath = path.join('/private/tmp', `tg-memes-${process.pid}-${Date.now()}-selection-sql.sqlite`);
+  await fs.rm(dbPath, { force: true });
+  const repository = new PostRepository(dbPath);
+  await repository.init();
+
+  await repository.upsertPost(post({ messageId: 1, likes: 100, dislikes: 0 }));
+  await repository.upsertPost(post({ messageId: 2, likes: 50, dislikes: 0 }));
+  await repository.upsertPost(post({ messageId: 3, likes: 20, dislikes: 0 }));
+  await repository.upsertPost(post({ messageId: 4, likes: 5, dislikes: 0 }));
+  await repository.upsertPost(post({ messageId: 5, likes: 1, dislikes: 0 }));
+
+  const filtered = await repository.getSelectionPosts({
+    chatId: -1001,
+    sinceIso: '2026-06-01T00:00:00.000Z',
+    untilIso: '2026-07-01T00:00:00.000Z',
+    sourceWhereSql: compileSourceWhere('likes >= 5 and dislikes = 0'),
+    reactionScoreSql: compileReactionScore('likes'),
+    posts: { min: 1, target: 2, max: 4 },
+    reactions: { min: 10, includeAbove: 15 }
+  });
+  const backfilled = await repository.getSelectionPosts({
+    chatId: -1001,
+    sinceIso: '2026-06-01T00:00:00.000Z',
+    untilIso: '2026-07-01T00:00:00.000Z',
+    sourceWhereSql: compileSourceWhere('true'),
+    reactionScoreSql: compileReactionScore('likes'),
+    posts: { min: 4, target: 2, max: 5 },
+    reactions: { min: 10, includeAbove: 999 }
+  });
+  const capped = await repository.getSelectionPosts({
+    chatId: -1001,
+    sinceIso: '2026-06-01T00:00:00.000Z',
+    untilIso: '2026-07-01T00:00:00.000Z',
+    sourceWhereSql: compileSourceWhere('true'),
+    reactionScoreSql: compileReactionScore('likes'),
+    posts: { min: 1, target: 2, max: 2 },
+    reactions: { min: 0, includeAbove: 1 }
+  });
+
+  assert.deepEqual(filtered.map((row) => row.messageId), [1, 2, 3]);
+  assert.deepEqual(backfilled.map((row) => row.messageId), [1, 2, 3, 4]);
+  assert.deepEqual(capped.map((row) => row.messageId), [1, 2]);
 
   await repository.close();
   await fs.rm(dbPath, { force: true });

@@ -182,6 +182,20 @@ Common options:
     "dryRun": false,
     "requestTtlHours": 12,
     "workerIntervalMinutes": 10,
+    "sources": [
+      {
+        "key": "best",
+        "where": "true"
+      },
+      {
+        "key": "controversial",
+        "where": "max(likes, dislikes) > 0"
+      },
+      {
+        "key": "positive",
+        "where": "likes > dislikes and likes >= 10"
+      }
+    ],
     "template": [
       {
         "source": "best",
@@ -226,6 +240,27 @@ Common options:
           "includeAbove": 30
         },
         "template": "Most controversial posts for the last {{windowHours}}h ({{count}})"
+      },
+      {
+        "source": "positive",
+        "key": "daily_positive",
+        "enabled": true,
+        "schedule": {
+          "type": "daily",
+          "time": "12:00"
+        },
+        "windowHours": 24,
+        "posts": {
+          "target": 5,
+          "min": 2,
+          "max": 10
+        },
+        "reactions": {
+          "strategy": "likes",
+          "min": 10,
+          "includeAbove": 50
+        },
+        "template": "Positive posts for the last {{windowHours}}h ({{count}})"
       }
     ]
   },
@@ -238,9 +273,11 @@ Common options:
 
 `logging.logLevel` can be `DEBUG`, `INFO`, `WARN`, `ERROR`, or `SILENT` and is case-insensitive. `logging.color` can be `auto`, `always`, or `never`; `auto` uses colors only for interactive terminals. Log levels are colored, scopes are highlighted, and high-signal fields such as `status`, `key`, `publicationId`, `messageId`, `reason`, and `error` get distinct colors. Sync logs include the scan window, each Telegram history request, fetched message counts, matched post counts, saved rows, skipped old posts, and deleted-post cleanup. `sync.runOnStart` controls whether the daemon runs one sync immediately after startup. `sync.intervalHours` controls the recurring sync interval. `sync.retentionDays` controls how long source post rows stay in `posts`; the default is 60 days. Retention starts after `sync.retentionInitialDelayMinutes` and then repeats every `sync.retentionIntervalHours`; it uses the same in-memory job gate as sync and publishing. Set `sync.runOnStart` to `false` to disable the initial startup sync.
 
-Publication schedules use `schedule.timezone`. Each item under `publish.template` has a globally unique `key`, `source`, explicit `schedule`, `windowHours`, `posts`, `reactions`, and header `template`. `source` can be `best` or `controversial`. Schedules can be daily (`{"type":"daily","time":"10:00"}`), weekly (`{"type":"weekly","weekday":1,"time":"10:00"}` with Monday as `1`), or monthly (`{"type":"monthly","dayOfMonth":15,"time":"10:00"}`; use days `1..28`). Selections use the rolling window `[scheduledAt - windowHours, scheduledAt)`.
+Publication schedules use `schedule.timezone`. Each item under `publish.template` has a globally unique `key`, `source`, explicit `schedule`, `windowHours`, `posts`, `reactions`, and header `template`. `source` names an entry from `publish.sources`; `best` and `controversial` are the defaults, and you can add your own. Schedules can be daily (`{"type":"daily","time":"10:00"}`), weekly (`{"type":"weekly","weekday":1,"time":"10:00"}` with Monday as `1`), or monthly (`{"type":"monthly","dayOfMonth":15,"time":"10:00"}`; use days `1..28`). Selections use the rolling window `[scheduledAt - windowHours, scheduledAt)`.
 
-`posts.min <= posts.target <= posts.max`. The app fetches up to `posts.max` sorted candidates, filters by `reactions.min`, backfills to `posts.min` if needed, starts from `posts.target`, and expands up to `posts.max` when more posts meet `reactions.includeAbove`. Reaction strategies are `likes`, `dislikes`, `sum`, and `max`.
+Each `publish.sources[]` item has a unique `key` and a safe SQL-like `where` expression. Expressions can only use `likes`, `dislikes`, numeric literals, arithmetic/comparison/boolean operators, and `abs(...)`, `min(...)`, `max(...)`. They cannot access text, author, JSON data, message dates, or arbitrary SQL functions.
+
+`posts.min <= posts.target <= posts.max`. Selection filtering and ordering happen inside SQLite. The DB applies the source `where`, computes the reaction score from `reactions.strategy`, filters by `reactions.min`, backfills to `posts.min` if too few posts pass, starts from `posts.target`, and expands up to `posts.max` when more posts meet `reactions.includeAbove`. Reaction strategies are `likes`, `dislikes`, `sum`, and `max`.
 
 Publishing has two phases. The scheduler creates publication requests, then a worker sends queued requests one by one. `publish.workerIntervalMinutes` controls how often the worker checks the queue as a safety net; the default is 10 minutes. Publication creation also wakes the worker immediately, so this interval is mainly for catch-up if a wake-up was missed. `publish.requestTtlHours` controls how long a `created` or `running` request may wait before the worker marks it `failed`; the default is 12 hours. Sync and backfill are serialized in memory by one sync worker; overlapping sync/backfill requests are skipped.
 
@@ -599,12 +636,13 @@ Publish only one best selection:
 /publish daily_best
 ```
 
-Because template keys are globally unique, `/publish weekly_best` is equivalent to `/publish best.weekly_best`. Publish controversial selections with explicit keys:
+Because template keys are globally unique, `/publish weekly_best` is equivalent to `/publish best.weekly_best`. Any configured source can also be addressed as `source.key`:
 
 ```text
 /publish controversial.monthly_controversial
 /publish controversial.weekly_controversial
 /publish controversial.daily_controversial
+/publish positive.daily_positive
 ```
 
 Multiple selection types can be passed in one command:
@@ -613,6 +651,7 @@ Multiple selection types can be passed in one command:
 /publish best.weekly_best controversial.weekly_controversial
 /publish best.*
 /publish controversial.*
+/publish positive.*
 ```
 
 If a selection for the same period already exists, the command replies with the existing status and does not fail. To schedule another copy anyway, add `--force` or `-force`; the app will create a unique forced publication key:

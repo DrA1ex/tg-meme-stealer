@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import dotenv from 'dotenv';
+import { compileSourceWhere, getSourceDefinitions } from '../core/sourceExpression.js';
 
 dotenv.config();
 
@@ -52,6 +53,11 @@ const SELECTION_SCHEMA = {
   template: STRING
 };
 
+const SOURCE_SCHEMA = {
+  key: STRING,
+  where: STRING
+};
+
 const CONFIG_SCHEMA = {
   telegram: {
     apiId: NUMBER,
@@ -97,6 +103,7 @@ const CONFIG_SCHEMA = {
     dryRun: BOOLEAN,
     requestTtlHours: NUMBER,
     workerIntervalMinutes: NUMBER,
+    sources: { type: 'array', items: SOURCE_SCHEMA },
     template: { type: 'array', items: SELECTION_SCHEMA }
   },
   templates: {
@@ -176,6 +183,10 @@ export function deepMerge(base, override, pathParts = []) {
       result[key] = mergePublishTemplates(base[key], value);
       continue;
     }
+    if (isPublishSourcesPath(pathParts, key) && Array.isArray(value) && Array.isArray(base?.[key])) {
+      result[key] = mergeKeyedObjects(base[key], value);
+      continue;
+    }
     if (isPlainObject(value) && isPlainObject(base?.[key])) {
       result[key] = deepMerge(base[key], value, [...pathParts, key]);
     } else {
@@ -189,12 +200,20 @@ function isPublishTemplatePath(pathParts, key) {
   return pathParts.length === 1 && pathParts[0] === 'publish' && key === 'template';
 }
 
+function isPublishSourcesPath(pathParts, key) {
+  return pathParts.length === 1 && pathParts[0] === 'publish' && key === 'sources';
+}
+
 function mergePublishTemplates(baseTemplates, overrideTemplates) {
-  const result = baseTemplates.map((template) => ({ ...template }));
-  const indexByKey = new Map(result.map((template, index) => [getPublishTemplateIdentity(template), index]));
+  return mergeKeyedObjects(baseTemplates, overrideTemplates);
+}
+
+function mergeKeyedObjects(baseItems, overrideItems) {
+  const result = baseItems.map((item) => ({ ...item }));
+  const indexByKey = new Map(result.map((item, index) => [getPublishTemplateIdentity(item), index]));
   const overrideKeys = new Set();
 
-  for (const override of overrideTemplates) {
+  for (const override of overrideItems) {
     const key = getPublishTemplateIdentity(override);
     if (overrideKeys.has(key)) {
       result.push({ ...override });
@@ -253,6 +272,7 @@ export function validateConfig(config, options = {}) {
   }
 
   validatePublishTemplateDuplicates(config, options);
+  validatePublishSourceDefinitions(config);
   validatePublishTemplates(config);
 }
 
@@ -277,17 +297,45 @@ function getPublishTemplateIdentity(template) {
   return `${template?.key || ''}`;
 }
 
+function validatePublishSourceDefinitions(config) {
+  const sources = config?.publish?.sources || [];
+  const issues = [];
+  const counts = new Map();
+
+  for (const [index, source] of sources.entries()) {
+    const pathPrefix = `publish.sources.${index}`;
+    if (!source.key) {
+      issues.push(`${pathPrefix}.key: expected non-empty string`);
+    }
+    counts.set(source.key || '', (counts.get(source.key || '') || 0) + 1);
+    try {
+      compileSourceWhere(source.where || 'true');
+    } catch (error) {
+      issues.push(`${pathPrefix}.where: invalid expression (${error.message})`);
+    }
+  }
+
+  for (const [key, count] of counts.entries()) {
+    if (key && count > 1) issues.push(`publish.sources: duplicate source key ${key} (${count})`);
+  }
+
+  if (issues.length > 0) {
+    throw new Error(`Invalid config:\n${issues.map((issue) => `- ${issue}`).join('\n')}`);
+  }
+}
+
 function validatePublishTemplates(config) {
   const templates = config?.publish?.template || [];
   const issues = [];
+  const sourceKeys = new Set(getSourceDefinitions(config).map((source) => source.key));
 
   for (const [index, template] of templates.entries()) {
     const pathPrefix = `publish.template.${index}`;
     if (!template.key) {
       issues.push(`${pathPrefix}.key: expected non-empty string`);
     }
-    if (!['best', 'controversial'].includes(template.source)) {
-      issues.push(`${pathPrefix}.source: expected best or controversial`);
+    if (!sourceKeys.has(template.source)) {
+      issues.push(`${pathPrefix}.source: unknown publish source`);
     }
 
     if (!isPositiveNumber(template.windowHours)) {

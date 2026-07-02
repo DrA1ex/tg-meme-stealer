@@ -178,6 +178,101 @@ export class PostRepository {
     }));
   }
 
+  async getSelectionPosts({
+    chatId,
+    sinceIso,
+    untilIso,
+    sourceWhereSql = '1',
+    reactionScoreSql = 'likes',
+    posts = {},
+    reactions = {}
+  }) {
+    const max = Math.max(0, Number(posts.max ?? 10));
+    const target = Math.min(max, Math.max(0, Number(posts.target ?? max)));
+    const min = Math.min(max, Math.max(0, Number(posts.min ?? target)));
+    const reactionMin = Number(reactions.min ?? 0);
+    const includeAbove = Number.isFinite(Number(reactions.includeAbove))
+      ? Number(reactions.includeAbove)
+      : Number.MAX_SAFE_INTEGER;
+    if (max <= 0) return [];
+
+    const params = [String(chatId), sinceIso];
+    let untilClause = '';
+    if (untilIso) {
+      untilClause = 'AND message_date < ?';
+      params.push(untilIso);
+    }
+    params.push(
+      reactionMin,
+      includeAbove,
+      min,
+      reactionMin,
+      target,
+      max,
+      max,
+      target,
+      min,
+      min,
+      max
+    );
+
+    const rows = await this.all(
+      `
+        WITH candidates AS (
+          SELECT chat_id AS chatId,
+                 message_id AS messageId,
+                 author,
+                 text,
+                 likes,
+                 dislikes,
+                 data,
+                 message_date AS messageDate,
+                 (${reactionScoreSql}) AS reactionScore
+          FROM posts
+          WHERE chat_id = ?
+            AND message_date >= ?
+            ${untilClause}
+            AND (${sourceWhereSql})
+        ),
+        stats AS (
+          SELECT COALESCE(SUM(CASE WHEN reactionScore >= ? THEN 1 ELSE 0 END), 0) AS passCount,
+                 COALESCE(SUM(CASE WHEN reactionScore >= ? THEN 1 ELSE 0 END), 0) AS aboveCount
+          FROM candidates
+        ),
+        ranked AS (
+          SELECT *,
+                 ROW_NUMBER() OVER (
+                   ORDER BY reactionScore DESC, messageDate DESC, messageId DESC
+                 ) AS rowNumber
+          FROM candidates
+        )
+        SELECT chatId, messageId, author, text, likes, dislikes, data, messageDate
+        FROM ranked
+        CROSS JOIN stats
+        WHERE (
+            passCount >= ?
+            AND reactionScore >= ?
+            AND rowNumber <= CASE
+              WHEN max(?, aboveCount) > ? THEN ?
+              ELSE max(?, aboveCount)
+            END
+          )
+          OR (
+            passCount < ?
+            AND rowNumber <= ?
+          )
+        ORDER BY rowNumber
+        LIMIT ?
+      `,
+      params
+    );
+
+    return rows.map((row) => ({
+      ...row,
+      data: JSON.parse(row.data || '{}')
+    }));
+  }
+
   async createPublication({ selectionKey, title, periodStart, periodEnd, status, posts, data = {} }) {
     const now = new Date().toISOString();
 
