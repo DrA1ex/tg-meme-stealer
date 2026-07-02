@@ -210,7 +210,7 @@ test('Scheduler publishes with intended scheduled time instead of callback time'
       },
       publish: {
         template: [
-          { source: 'best', key: 'day', enabled: true, time: '10:00' }
+          { source: 'best', key: 'daily_best', enabled: true, schedule: { type: 'daily', time: '10:00' } }
         ]
       },
       logging: { logLevel: 'silent' }
@@ -225,11 +225,11 @@ test('Scheduler publishes with intended scheduled time instead of callback time'
     return { fake: true };
   };
 
-  scheduler.schedulePublication('best.day', '10:00', new Date('2026-06-29T09:59:00.000Z'));
+  scheduler.schedulePublication('best.daily_best', { type: 'daily', time: '10:00' }, new Date('2026-06-29T09:59:00.000Z'));
   await scheduler.scheduledCallback();
 
   assert.deepEqual(published, [{
-    key: 'best.day',
+    key: 'best.daily_best',
     scheduledAt: '2026-06-29T10:00:00.000Z'
   }]);
 });
@@ -358,7 +358,7 @@ test('Scheduler plans missed publications only after startup sync completes', as
       publish: {
         requestTtlHours: 12,
         template: [
-          { source: 'best', key: 'day', enabled: true, time: '10:00' }
+          { source: 'best', key: 'daily_best', enabled: true, schedule: { type: 'daily', time: '10:00' } }
         ]
       },
       logging: { logLevel: 'silent' }
@@ -415,8 +415,8 @@ test('Scheduler plans missed publications inside request TTL without waking work
       publish: {
         requestTtlHours: 12,
         template: [
-          { source: 'best', key: 'week', enabled: true, time: '10:10' },
-          { source: 'best', key: 'day', enabled: true, time: '10:00' }
+          { source: 'best', key: 'weekly_best', enabled: true, schedule: { type: 'weekly', weekday: 1, time: '10:10' } },
+          { source: 'best', key: 'daily_best', enabled: true, schedule: { type: 'daily', time: '10:00' } }
         ]
       },
       logging: { logLevel: 'silent' }
@@ -432,8 +432,8 @@ test('Scheduler plans missed publications inside request TTL without waking work
   const plannedCount = await scheduler.planMissedPublications(new Date('2026-06-29T08:00:00.000Z'));
 
   assert.deepEqual(planned, [
-    { key: 'best.week', scheduledAt: '2026-06-29T05:10:00.000Z' },
-    { key: 'best.day', scheduledAt: '2026-06-29T05:00:00.000Z' }
+    { key: 'best.weekly_best', scheduledAt: '2026-06-29T05:10:00.000Z' },
+    { key: 'best.daily_best', scheduledAt: '2026-06-29T05:00:00.000Z' }
   ]);
   assert.equal(plannedCount, 2);
   assert.equal(workerRuns, 0);
@@ -451,7 +451,7 @@ test('Scheduler plans catch-up checks without waking worker when request already
       publish: {
         requestTtlHours: 12,
         template: [
-          { source: 'best', key: 'day', enabled: true, time: '10:00' }
+          { source: 'best', key: 'daily_best', enabled: true, schedule: { type: 'daily', time: '10:00' } }
         ]
       },
       logging: { logLevel: 'silent' }
@@ -476,7 +476,7 @@ test('Scheduler plans catch-up checks without waking worker when request already
   await scheduler.planMissedPublications(new Date('2026-06-29T08:00:00.000Z'));
 
   assert.deepEqual(planned, [
-    { key: 'best.day', scheduledAt: '2026-06-29T05:00:00.000Z' }
+    { key: 'best.daily_best', scheduledAt: '2026-06-29T05:00:00.000Z' }
   ]);
   assert.equal(workerRuns, 0);
 });
@@ -493,8 +493,8 @@ test('Scheduler skips missed publications older than request TTL', async () => {
       publish: {
         requestTtlHours: 12,
         template: [
-          { source: 'best', key: 'week', enabled: true, time: '10:10' },
-          { source: 'best', key: 'day', enabled: true, time: '10:00' }
+          { source: 'best', key: 'weekly_best', enabled: true, schedule: { type: 'weekly', weekday: 1, time: '10:10' } },
+          { source: 'best', key: 'daily_best', enabled: true, schedule: { type: 'daily', time: '10:00' } }
         ]
       },
       logging: { logLevel: 'silent' }

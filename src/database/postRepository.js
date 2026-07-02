@@ -149,14 +149,14 @@ export class PostRepository {
     }));
   }
 
-  async getControversialPosts({ chatId, sinceIso, untilIso, limit, threshold }) {
+  async getControversialPosts({ chatId, sinceIso, untilIso, limit }) {
     const params = [String(chatId), sinceIso];
     let untilClause = '';
     if (untilIso) {
       untilClause = 'AND message_date < ?';
       params.push(untilIso);
     }
-    params.push(threshold, limit);
+    params.push(limit);
 
     const rows = await this.all(
       `
@@ -166,8 +166,7 @@ export class PostRepository {
           AND message_date >= ?
           ${untilClause}
           AND (CASE WHEN likes > dislikes THEN likes ELSE dislikes END) > 0
-          AND ABS(likes - dislikes) <= (CASE WHEN likes > dislikes THEN likes ELSE dislikes END) * ?
-        ORDER BY (CASE WHEN likes > dislikes THEN likes ELSE dislikes END) DESC, message_date DESC
+        ORDER BY (likes + dislikes) DESC, ABS(likes - dislikes) ASC, message_date DESC
         LIMIT ?
       `,
       params

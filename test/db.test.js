@@ -35,7 +35,7 @@ test('PostRepository upserts and orders top posts', async () => {
     threshold: 0.3
   });
 
-  assert.deepEqual(controversial.map((row) => row.messageId), [3]);
+  assert.deepEqual(controversial.map((row) => row.messageId), [4, 1]);
 
   const publicationId = await repository.createPublication({
     selectionKey: 'best.week',

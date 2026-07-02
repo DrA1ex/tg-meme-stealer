@@ -32,10 +32,23 @@ const SELECTION_SCHEMA = {
   source: STRING,
   key: STRING,
   enabled: BOOLEAN,
-  time: STRING,
-  limit: NUMBER,
+  schedule: {
+    type: STRING,
+    time: STRING,
+    weekday: NUMBER,
+    dayOfMonth: NUMBER
+  },
   windowHours: NUMBER,
-  threshold: NUMBER,
+  posts: {
+    target: NUMBER,
+    min: NUMBER,
+    max: NUMBER
+  },
+  reactions: {
+    strategy: STRING,
+    min: NUMBER,
+    includeAbove: NUMBER
+  },
   template: STRING
 };
 
@@ -112,22 +125,11 @@ export function loadConfig() {
   const userConfigPath = path.resolve('config.json');
   const defaultConfig = JSON.parse(fs.readFileSync(defaultPath, 'utf8'));
   const userConfig = fs.existsSync(userConfigPath)
-    ? migrateUserConfigIfNeeded(userConfigPath)
+    ? JSON.parse(fs.readFileSync(userConfigPath, 'utf8'))
     : {};
   const config = applyEnv(deepMerge(defaultConfig, userConfig), process.env);
   validateConfig(config, { pauseOnDuplicatePublishTemplates: true });
   return config;
-}
-
-function migrateUserConfigIfNeeded(configPath) {
-  const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-  const migrated = migrateOldPublishSelections(config);
-  if (migrated === config) return config;
-
-  const backupPath = `${configPath}.old`;
-  fs.copyFileSync(configPath, backupPath);
-  fs.writeFileSync(configPath, `${JSON.stringify(migrated, null, 2)}\n`);
-  return migrated;
 }
 
 export function migrateOldPublishSelections(config) {
@@ -251,13 +253,14 @@ export function validateConfig(config, options = {}) {
   }
 
   validatePublishTemplateDuplicates(config, options);
+  validatePublishTemplates(config);
 }
 
 function validatePublishTemplateDuplicates(config, options = {}) {
   const templates = config?.publish?.template || [];
   const counts = new Map();
   for (const template of templates) {
-    const key = getPublishTemplateIdentity(template);
+    const key = template?.key || '';
     counts.set(key, (counts.get(key) || 0) + 1);
   }
 
@@ -271,7 +274,95 @@ function validatePublishTemplateDuplicates(config, options = {}) {
 }
 
 function getPublishTemplateIdentity(template) {
-  return `${template?.source || ''}.${template?.key || ''}`;
+  return `${template?.key || ''}`;
+}
+
+function validatePublishTemplates(config) {
+  const templates = config?.publish?.template || [];
+  const issues = [];
+
+  for (const [index, template] of templates.entries()) {
+    const pathPrefix = `publish.template.${index}`;
+    if (!template.key) {
+      issues.push(`${pathPrefix}.key: expected non-empty string`);
+    }
+    if (!['best', 'controversial'].includes(template.source)) {
+      issues.push(`${pathPrefix}.source: expected best or controversial`);
+    }
+
+    if (!isPositiveNumber(template.windowHours)) {
+      issues.push(`${pathPrefix}.windowHours: expected number greater than 0`);
+    }
+
+    const posts = template.posts || {};
+    if (!isFiniteNumber(posts.min)) {
+      issues.push(`${pathPrefix}.posts.min: expected number`);
+    }
+    if (!isFiniteNumber(posts.target)) {
+      issues.push(`${pathPrefix}.posts.target: expected number`);
+    }
+    if (!isFiniteNumber(posts.max)) {
+      issues.push(`${pathPrefix}.posts.max: expected number`);
+    }
+    if (isFiniteNumber(posts.min) && isFiniteNumber(posts.target) && isFiniteNumber(posts.max) && (posts.min > posts.target || posts.target > posts.max)) {
+      issues.push(`${pathPrefix}.posts: expected min <= target <= max`);
+    }
+
+    const strategy = template.reactions?.strategy;
+    if (strategy !== undefined && !['likes', 'dislikes', 'sum', 'max'].includes(strategy)) {
+      issues.push(`${pathPrefix}.reactions.strategy: expected likes, dislikes, sum, or max`);
+    }
+    if (!isFiniteNumber(template.reactions?.min)) {
+      issues.push(`${pathPrefix}.reactions.min: expected number`);
+    }
+    if (!isFiniteNumber(template.reactions?.includeAbove)) {
+      issues.push(`${pathPrefix}.reactions.includeAbove: expected number`);
+    }
+
+    if (template.enabled) {
+      issues.push(...validateSchedule(template.schedule, `${pathPrefix}.schedule`));
+    }
+  }
+
+  if (issues.length > 0) {
+    throw new Error(`Invalid config:\n${issues.map((issue) => `- ${issue}`).join('\n')}`);
+  }
+}
+
+function validateSchedule(schedule, pathPrefix) {
+  const issues = [];
+  if (!schedule || typeof schedule !== 'object' || Array.isArray(schedule)) {
+    return [`${pathPrefix}: expected object`];
+  }
+  if (!['daily', 'weekly', 'monthly'].includes(schedule.type)) {
+    issues.push(`${pathPrefix}.type: expected daily, weekly, or monthly`);
+  }
+  if (!isValidTime(schedule.time)) {
+    issues.push(`${pathPrefix}.time: expected HH:mm`);
+  }
+  if (schedule.type === 'weekly' && (!Number.isInteger(schedule.weekday) || schedule.weekday < 1 || schedule.weekday > 7)) {
+    issues.push(`${pathPrefix}.weekday: expected integer from 1 to 7`);
+  }
+  if (schedule.type === 'monthly' && (!Number.isInteger(schedule.dayOfMonth) || schedule.dayOfMonth < 1 || schedule.dayOfMonth > 28)) {
+    issues.push(`${pathPrefix}.dayOfMonth: expected integer from 1 to 28`);
+  }
+  return issues;
+}
+
+function isValidTime(time) {
+  const match = String(time || '').match(/^(\d{1,2}):(\d{2})$/);
+  if (!match) return false;
+  const hour = Number(match[1]);
+  const minute = Number(match[2]);
+  return hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59;
+}
+
+function isFiniteNumber(value) {
+  return typeof value === 'number' && Number.isFinite(value);
+}
+
+function isPositiveNumber(value) {
+  return isFiniteNumber(value) && value > 0;
 }
 
 function sleepSync(ms) {
@@ -303,7 +394,9 @@ function collectConfigIssues(value, schema, pathParts = []) {
 }
 
 function isTypeSchema(schema) {
-  return isPlainObject(schema) && Object.prototype.hasOwnProperty.call(schema, 'type');
+  return isPlainObject(schema)
+    && Object.prototype.hasOwnProperty.call(schema, 'type')
+    && (typeof schema.type === 'string' || Array.isArray(schema.type));
 }
 
 function collectTypeIssues(value, schema, pathParts) {

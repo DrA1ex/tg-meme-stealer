@@ -122,7 +122,7 @@ test('SelectionPublisher skips Telegram calls when publication request already e
     requested: false,
     publicationId: 10,
     publicationStatus: 'published',
-    publicationKey: 'publish:best.week:2026-W27'
+    publicationKey: 'publish:best:week:2026-06-29T00-00'
   }]);
 });
 
@@ -160,7 +160,7 @@ test('SelectionPublisher handles concurrent publication scheduling collision wit
   const rows = await repository.all('SELECT key, status FROM publications ORDER BY id');
 
   assert.deepEqual(statuses, ['exists', 'scheduled']);
-  assert.deepEqual(rows, [{ key: 'publish:best.week:2026-W27', status: 'created' }]);
+  assert.deepEqual(rows, [{ key: 'publish:best:week:2026-06-29T00-00', status: 'created' }]);
 
   await repository.close();
   await fs.rm(dbPath, { force: true });
@@ -207,7 +207,7 @@ test('SelectionPublisher scheduled enqueue skips existing publication before sel
     count: 3,
     publicationId: 20,
     publicationStatus: 'published',
-    publicationKey: 'publish:best.week:2026-W27'
+    publicationKey: 'publish:best:week:2026-06-29T00-00'
   }]);
 });
 
@@ -218,7 +218,7 @@ test('SelectionPublisher scheduled enqueue skips same canonical key but queues d
     repository: {
       getPublicationByKey: async (key) => {
         events.push(`exists:${key}`);
-        if (key === 'publish:best.week:2026-W27') {
+        if (key === 'publish:best:week:2026-06-29T00-00') {
           await new Promise((resolve) => {
             releaseFirst = resolve;
           });
@@ -231,7 +231,7 @@ test('SelectionPublisher scheduled enqueue skips same canonical key but queues d
       },
       tryCreatePublicationRequest: async ({ key }) => {
         events.push(`insert:${key}`);
-        return key.endsWith('2026-W27') ? 101 : 102;
+        return key.includes(':week:') ? 101 : 102;
       }
     },
     mediaDownloader: {},
@@ -258,7 +258,7 @@ test('SelectionPublisher scheduled enqueue skips same canonical key but queues d
   assert.equal(different.status, 'scheduled');
 
   await Promise.resolve();
-  assert.deepEqual(events, ['exists:publish:best.week:2026-W27']);
+  assert.deepEqual(events, ['exists:publish:best:week:2026-06-29T00-00']);
 
   releaseFirst();
   const firstResult = await first.promise;
@@ -267,12 +267,12 @@ test('SelectionPublisher scheduled enqueue skips same canonical key but queues d
   assert.equal(firstResult.selections[0].status, 'scheduled');
   assert.equal(differentResult.selections[0].status, 'scheduled');
   assert.deepEqual(events, [
-    'exists:publish:best.week:2026-W27',
+    'exists:publish:best:week:2026-06-29T00-00',
     'posts:week',
-    'insert:publish:best.week:2026-W27',
-    'exists:publish:best.day:2026-06-29',
+    'insert:publish:best:week:2026-06-29T00-00',
+    'exists:publish:best:day:2026-06-29T00-00',
     'posts:day',
-    'insert:publish:best.day:2026-06-29'
+    'insert:publish:best:day:2026-06-29T00-00'
   ]);
 });
 
@@ -541,7 +541,7 @@ test('SelectionPublisher.runManualPublish force schedules an explicitly disabled
 
   assert.deepEqual(queried, ['controversial.week']);
   assert.equal(insertedKeys.length, 1);
-  assert.match(insertedKeys[0], /^publish:force:[a-z0-9]{6}:controversial\.week:2026-W27$/);
+  assert.match(insertedKeys[0], /^publish:force:[a-z0-9]{6}:controversial:week:\d{4}-\d{2}-\d{2}T\d{2}-\d{2}$/);
   assert.match(replies[0], /controversial\.week: publication request created \(1 posts\) forced/);
 });
 
@@ -728,7 +728,7 @@ test('SelectionPublisher.runManualPublish supports force scheduling', async () =
   });
 
   assert.equal(keys.length, 1);
-  assert.match(keys[0], /^publish:force:[a-z0-9]{6}:best\.week:2026-W27$/);
+  assert.match(keys[0], /^publish:force:[a-z0-9]{6}:best:week:\d{4}-\d{2}-\d{2}T\d{2}-\d{2}$/);
   assert.match(replies[0], /best\.week: publication request created \(1 posts\) forced/);
 });
 
@@ -764,7 +764,7 @@ test('SelectionPublisher.runManualPublish supports single-dash force scheduling'
   });
 
   assert.equal(keys.length, 1);
-  assert.match(keys[0], /^publish:force:[a-z0-9]{6}:best\.week:2026-W27$/);
+  assert.match(keys[0], /^publish:force:[a-z0-9]{6}:best:week:\d{4}-\d{2}-\d{2}T\d{2}-\d{2}$/);
   assert.match(replies[0], /best\.week: publication request created \(1 posts\) forced/);
 });
 
@@ -866,7 +866,7 @@ test('SelectionPublisher.replyPublications returns recent publications table', a
         assert.deepEqual(options, { limit: 10 });
         return [{
           id: 7,
-          key: 'publish:best.week:2026-W27',
+          key: 'publish:best:week:2026-06-29T00-00',
           status: 'published',
           selectionKey: 'best.week',
           title: 'Best week',
@@ -887,7 +887,7 @@ test('SelectionPublisher.replyPublications returns recent publications table', a
 
   assert.equal(replies.length, 1);
   assert.match(replies[0].message, /Publications/);
-  assert.match(replies[0].message, /publish:best\.week:2026-W27/);
+  assert.match(replies[0].message, /publish:best:week:2026-06-29T00-00/);
   assert.match(replies[0].message, /10\/10/);
   assert.doesNotMatch(replies[0].message, /updated/i);
   assert.doesNotMatch(replies[0].message, /\bselection\b/i);
@@ -1038,7 +1038,7 @@ function selection() {
 function request(overrides = {}) {
   return {
     id: overrides.id || 1,
-    key: 'publish:best.week:2026-W27',
+    key: 'publish:best:week:2026-06-29T00-00',
     selectionKey: 'best.week',
     title: 'Best week',
     periodStart: '2026-06-22T00:00:00.000Z',

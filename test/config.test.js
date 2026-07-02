@@ -147,7 +147,7 @@ test('validateConfig rejects all schema issues at once', () => {
           {
             source: 'best',
             key: 'custom',
-            limit: '10'
+            posts: { max: '10' }
           }
         ]
       }
@@ -172,10 +172,10 @@ test('validateConfig rejects all schema issues at once', () => {
   assert.match(error.message, /- parsing\.likes\.0\.group: expected number, got string/);
   assert.match(error.message, /- parsing\.likes\.0\.typo: unsupported option/);
   assert.match(error.message, /- publish\.selections: unsupported option/);
-  assert.match(error.message, /- publish\.template\.6\.limit: expected number, got string/);
+  assert.match(error.message, /- publish\.template\.6\.posts\.max: expected number, got string/);
 });
 
-test('validateConfig rejects duplicate publish templates', () => {
+test('validateConfig rejects duplicate publish template keys globally', () => {
   assert.throws(
     () => validateConfig({
       ...validConfig(),
@@ -183,11 +183,42 @@ test('validateConfig rejects duplicate publish templates', () => {
         ...validConfig().publish,
         template: [
           ...validConfig().publish.template,
-          { source: 'best', key: 'week', enabled: true, time: '12:00', limit: 3 }
+          {
+            source: 'controversial',
+            key: 'weekly_best',
+            enabled: true,
+            schedule: { type: 'daily', time: '12:00' },
+            windowHours: 24,
+            posts: { min: 1, target: 1, max: 3 },
+            reactions: { strategy: 'sum', min: 0, includeAbove: 999 }
+          }
         ]
       }
     }),
-    /Duplicate publish templates:\n- best\.week \(2\)/
+    /Duplicate publish templates:\n- weekly_best \(2\)/
+  );
+});
+
+test('validateConfig rejects invalid publish template settings', () => {
+  assert.throws(
+    () => validateConfig({
+      ...validConfig(),
+      publish: {
+        ...validConfig().publish,
+        template: [
+          {
+            source: 'custom',
+            key: 'bad',
+            enabled: true,
+            schedule: { type: 'monthly', dayOfMonth: 31, time: '25:00' },
+            windowHours: 0,
+            posts: { min: 5, target: 3, max: 4 },
+            reactions: { strategy: 'median', min: 0, includeAbove: 10 }
+          }
+        ]
+      }
+    }),
+    /publish\.template\.0\.source: expected best or controversial[\s\S]*publish\.template\.0\.windowHours: expected number greater than 0[\s\S]*publish\.template\.0\.posts: expected min <= target <= max[\s\S]*publish\.template\.0\.reactions\.strategy: expected likes, dislikes, sum, or max[\s\S]*publish\.template\.0\.schedule\.time: expected HH:mm[\s\S]*publish\.template\.0\.schedule\.dayOfMonth: expected integer from 1 to 28/
   );
 });
 
@@ -233,12 +264,12 @@ function validConfig() {
       requestTtlHours: 12,
       workerIntervalMinutes: 10,
       template: [
-        { source: 'best', key: 'month', enabled: true, time: '10:20', limit: 10, template: 'Month {{count}}' },
-        { source: 'best', key: 'week', enabled: true, time: '10:10', limit: 10, template: 'Week {{count}}' },
-        { source: 'best', key: 'day', enabled: true, time: '10:00', limit: 5, windowHours: 24, template: 'Day {{count}}' },
-        { source: 'controversial', key: 'month', enabled: false, time: '11:20', limit: 10, threshold: 0.3, template: 'Month {{count}}' },
-        { source: 'controversial', key: 'week', enabled: false, time: '11:10', limit: 10, threshold: 0.3, template: 'Week {{count}}' },
-        { source: 'controversial', key: 'day', enabled: false, time: '11:00', limit: 5, windowHours: 24, threshold: 0.3, template: 'Day {{count}}' }
+        template('monthly_best', 'best', { type: 'monthly', dayOfMonth: 1, time: '10:20' }, 720, 'Month {{count}}'),
+        template('weekly_best', 'best', { type: 'weekly', weekday: 1, time: '10:10' }, 168, 'Week {{count}}'),
+        template('daily_best', 'best', { type: 'daily', time: '10:00' }, 24, 'Day {{count}}'),
+        template('monthly_controversial', 'controversial', { type: 'monthly', dayOfMonth: 1, time: '11:20' }, 720, 'Month {{count}}', false, 'sum'),
+        template('weekly_controversial', 'controversial', { type: 'weekly', weekday: 1, time: '11:10' }, 168, 'Week {{count}}', false, 'sum'),
+        template('daily_controversial', 'controversial', { type: 'daily', time: '11:00' }, 24, 'Day {{count}}', false, 'sum')
       ]
     },
     templates: {
@@ -256,5 +287,18 @@ function validConfig() {
       enabled: true,
       timezone: 'Europe/Moscow'
     }
+  };
+}
+
+function template(key, source, schedule, windowHours, header, enabled = true, strategy = 'likes') {
+  return {
+    source,
+    key,
+    enabled,
+    schedule,
+    windowHours,
+    posts: { min: 1, target: 5, max: 10 },
+    reactions: { strategy, min: 0, includeAbove: 999999 },
+    template: header
   };
 }

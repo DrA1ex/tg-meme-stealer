@@ -14,11 +14,8 @@ It supports text posts, photos, videos, albums, configurable parsing rules, QR l
 - Handles text posts, photos, videos, and albums.
 - Refreshes recent posts because like/dislike counters can change.
 - Removes recently deleted source posts from the local database.
-- Publishes top selections to a target Telegram channel:
-  - best posts from the last month;
-  - best posts from the last week;
-  - best fresh posts from the last 24 hours.
-- Publishes controversial selections where likes and dislikes are close by a configurable threshold.
+- Publishes configurable top selections to a target Telegram channel.
+- Publishes configurable controversial selections from rolling time windows.
 - Keeps a publication log in SQLite.
 - Provides admin-only bot commands for stats and parser setup.
 - Uses templates for published captions and admin stats.
@@ -126,25 +123,25 @@ npm start
 9. Publish once manually from the admin bot:
 
 ```text
-/publish week
+/publish weekly_best
 ```
 
 To publish only one selection:
 
 ```text
-/publish month
-/publish week
-/publish day
+/publish monthly_best
+/publish weekly_best
+/publish daily_best
 ```
 
 If the same period was already scheduled or published, `/publish` reports that existing request instead of creating a duplicate. To intentionally publish the same selection again, use `--force` or `-force`:
 
 ```text
-/publish week --force
-/publish week -force
+/publish weekly_best --force
+/publish weekly_best -force
 ```
 
-For later maintenance, usually run only `npm start`. Use admin `/sync` for one refresh pass, `/backfill 90` to fill a larger historical window, `/publish week` to manually publish one selection, and `npm run setup` when parser or template rules need to be changed.
+For later maintenance, usually run only `npm start`. Use admin `/sync` for one refresh pass, `/backfill 90` to fill a larger historical window, `/publish weekly_best` to manually publish one selection, and `npm run setup` when parser or template rules need to be changed.
 
 ## Configuration
 
@@ -188,20 +185,47 @@ Common options:
     "template": [
       {
         "source": "best",
-        "key": "week",
+        "key": "weekly_best",
         "enabled": true,
-        "time": "10:10",
-        "limit": 10,
-        "template": "Best posts from the last week ({{count}})"
+        "schedule": {
+          "type": "weekly",
+          "weekday": 1,
+          "time": "10:10"
+        },
+        "windowHours": 168,
+        "posts": {
+          "target": 10,
+          "min": 5,
+          "max": 20
+        },
+        "reactions": {
+          "strategy": "likes",
+          "min": 10,
+          "includeAbove": 30
+        },
+        "template": "Best posts for the last {{windowHours}}h ({{count}})"
       },
       {
         "source": "controversial",
-        "key": "week",
+        "key": "weekly_controversial",
         "enabled": true,
-        "time": "11:10",
-        "limit": 10,
-        "threshold": 0.3,
-        "template": "Most controversial posts from the last week ({{count}})"
+        "schedule": {
+          "type": "weekly",
+          "weekday": 1,
+          "time": "11:10"
+        },
+        "windowHours": 168,
+        "posts": {
+          "target": 10,
+          "min": 5,
+          "max": 20
+        },
+        "reactions": {
+          "strategy": "sum",
+          "min": 10,
+          "includeAbove": 30
+        },
+        "template": "Most controversial posts for the last {{windowHours}}h ({{count}})"
       }
     ]
   },
@@ -214,7 +238,9 @@ Common options:
 
 `logging.logLevel` can be `DEBUG`, `INFO`, `WARN`, `ERROR`, or `SILENT` and is case-insensitive. `logging.color` can be `auto`, `always`, or `never`; `auto` uses colors only for interactive terminals. Log levels are colored, scopes are highlighted, and high-signal fields such as `status`, `key`, `publicationId`, `messageId`, `reason`, and `error` get distinct colors. Sync logs include the scan window, each Telegram history request, fetched message counts, matched post counts, saved rows, skipped old posts, and deleted-post cleanup. `sync.runOnStart` controls whether the daemon runs one sync immediately after startup. `sync.intervalHours` controls the recurring sync interval. `sync.retentionDays` controls how long source post rows stay in `posts`; the default is 60 days. Retention starts after `sync.retentionInitialDelayMinutes` and then repeats every `sync.retentionIntervalHours`; it uses the same in-memory job gate as sync and publishing. Set `sync.runOnStart` to `false` to disable the initial startup sync.
 
-Publication schedules use `schedule.timezone`. Each enabled item under `publish.template` has `source`, `key`, local `time`, `limit`, and header `template`. `source` is usually `best` or `controversial`; `key` is usually `day`, `week`, or `month`. Each `source.key` pair must be unique. Daily selections run once per day, weekly selections run once per week, and monthly selections run once per month. The `day` period uses `windowHours`; controversial selections also use `threshold`. A threshold of `0.3` means likes and dislikes may differ by at most 30% of the larger reaction count.
+Publication schedules use `schedule.timezone`. Each item under `publish.template` has a globally unique `key`, `source`, explicit `schedule`, `windowHours`, `posts`, `reactions`, and header `template`. `source` can be `best` or `controversial`. Schedules can be daily (`{"type":"daily","time":"10:00"}`), weekly (`{"type":"weekly","weekday":1,"time":"10:00"}` with Monday as `1`), or monthly (`{"type":"monthly","dayOfMonth":15,"time":"10:00"}`; use days `1..28`). Selections use the rolling window `[scheduledAt - windowHours, scheduledAt)`.
+
+`posts.min <= posts.target <= posts.max`. The app fetches up to `posts.max` sorted candidates, filters by `reactions.min`, backfills to `posts.min` if needed, starts from `posts.target`, and expands up to `posts.max` when more posts meet `reactions.includeAbove`. Reaction strategies are `likes`, `dislikes`, `sum`, and `max`.
 
 Publishing has two phases. The scheduler creates publication requests, then a worker sends queued requests one by one. `publish.workerIntervalMinutes` controls how often the worker checks the queue as a safety net; the default is 10 minutes. Publication creation also wakes the worker immediately, so this interval is mainly for catch-up if a wake-up was missed. `publish.requestTtlHours` controls how long a `created` or `running` request may wait before the worker marks it `failed`; the default is 12 hours. Sync and backfill are serialized in memory by one sync worker; overlapping sync/backfill requests are skipped.
 
@@ -268,7 +294,7 @@ Useful setup commands:
 /setlikes {"source":"message","path":"replyMarkup.rows[].buttons[].text","regex":"👍\\s*([\\d\\s,.]+[km]?)","group":1,"transform":"count","aggregate":"sum"}
 /setdislikes {"source":"message","path":"replyMarkup.rows[].buttons[].text","regex":"👎\\s*([\\d\\s,.]+[km]?)","group":1,"transform":"count","aggregate":"sum"}
 /settemplate postCaption {{position}}. By {{author}}\n👍 {{likes}}  👎 {{dislikes}}\nMedia: {{mediaSummary}}\n\n{{text}}
-/settemplate selection.best.week.template Weekly community picks ({{count}})
+/settemplate selection.best.weekly_best.template Weekly community picks ({{count}})
 /settemplate unknownAuthor anonymous
 ```
 
@@ -466,13 +492,13 @@ Example:
     "template": [
       {
         "source": "best",
-        "key": "week",
-        "template": "Best posts from the last week ({{count}})"
+        "key": "weekly_best",
+        "template": "Best posts for the last {{windowHours}}h ({{count}})"
       },
       {
         "source": "controversial",
-        "key": "week",
-        "template": "Most controversial posts from the last week ({{count}})"
+        "key": "weekly_controversial",
+        "template": "Most controversial posts for the last {{windowHours}}h ({{count}})"
       }
     ]
   }
@@ -504,12 +530,12 @@ Supported keys:
 - `postCaption`
 - `unknownAuthor`
 - `maxTextLength`
-- `selection.best.month.template`
-- `selection.best.week.template`
-- `selection.best.day.template`
-- `selection.controversial.month.template`
-- `selection.controversial.week.template`
-- `selection.controversial.day.template`
+- `selection.best.monthly_best.template`
+- `selection.best.weekly_best.template`
+- `selection.best.daily_best.template`
+- `selection.controversial.monthly_controversial.template`
+- `selection.controversial.weekly_controversial.template`
+- `selection.controversial.daily_controversial.template`
 - `stats.summary`
 - `stats.topPost`
 
@@ -517,8 +543,8 @@ Examples:
 
 ```text
 /settemplate postCaption #{{position}} {{author}} | 👍 {{likes}} 👎 {{dislikes}}\nMedia: {{mediaSummary}}\n\n{{text}}
-/settemplate selection.best.month.template Best posts this month ({{count}})
-/settemplate selection.controversial.week.template Controversial posts this week ({{count}})
+/settemplate selection.best.monthly_best.template Best posts for {{windowHours}}h ({{count}})
+/settemplate selection.controversial.weekly_controversial.template Controversial posts for {{windowHours}}h ({{count}})
 /settemplate maxTextLength 500
 /settemplate stats.topPost Top month post: #{{messageId}}, score {{score}}
 ```
@@ -562,36 +588,38 @@ Backfill adds missing posts from the requested period. Existing posts are update
 Run one publish cycle from the admin bot without running sync first. A selection argument is required; `/publish` without arguments prints command help and does not schedule anything.
 
 ```text
-/publish week
+/publish weekly_best
 ```
 
 Publish only one best selection:
 
 ```text
-/publish month
-/publish week
-/publish day
+/publish monthly_best
+/publish weekly_best
+/publish daily_best
 ```
 
-These short aliases map to `best.month`, `best.week`, and `best.day`. Publish controversial selections with explicit keys:
+Because template keys are globally unique, `/publish weekly_best` is equivalent to `/publish best.weekly_best`. Publish controversial selections with explicit keys:
 
 ```text
-/publish controversial.month
-/publish controversial.week
-/publish controversial.day
+/publish controversial.monthly_controversial
+/publish controversial.weekly_controversial
+/publish controversial.daily_controversial
 ```
 
 Multiple selection types can be passed in one command:
 
 ```text
-/publish best.week controversial.week
+/publish best.weekly_best controversial.weekly_controversial
+/publish best.*
+/publish controversial.*
 ```
 
 If a selection for the same period already exists, the command replies with the existing status and does not fail. To schedule another copy anyway, add `--force` or `-force`; the app will create a unique forced publication key:
 
 ```text
-/publish best.week --force
-/publish best.week -force
+/publish best.weekly_best --force
+/publish best.weekly_best -force
 ```
 
 Run the daemon for normal operation:

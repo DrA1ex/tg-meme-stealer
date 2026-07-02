@@ -6,6 +6,7 @@ import { getLogger } from '../core/logger.js';
 import { buildSelectionSpecs, loadSelection } from '../core/selection.js';
 import { buildStats, formatStats } from '../core/stats.js';
 import { JobGate } from '../runtime/jobGate.js';
+import { getLocalTimestampBucket } from '../runtime/scheduler.js';
 import { withBotApiRetry } from './retry.js';
 import { sendRichPost } from './richPost.js';
 
@@ -483,8 +484,9 @@ function getCommandName(ctx) {
 function getPublicationKey(selection, config) {
   return [
     'publish',
-    selection.key,
-    getPublicationBucket(selection.period, new Date(selection.untilIso), config.schedule?.timezone || 'UTC')
+    selection.source,
+    selection.templateKey || String(selection.key).split('.')[1],
+    getLocalTimestampBucket(new Date(selection.untilIso), config.schedule?.timezone || 'UTC')
   ].join(':');
 }
 
@@ -512,43 +514,10 @@ function getForcedPublicationKey(selection, config) {
     'publish',
     'force',
     randomCode(),
-    selection.key,
-    getPublicationBucket(selection.period, new Date(selection.untilIso), config.schedule?.timezone || 'UTC')
+    selection.source,
+    selection.templateKey || String(selection.key).split('.')[1],
+    getLocalTimestampBucket(new Date(selection.untilIso), config.schedule?.timezone || 'UTC')
   ].join(':');
-}
-
-function getPublicationBucket(period, date, timezone) {
-  const parts = getLocalDateParts(date, timezone);
-  if (period === 'month') return `${parts.year}-${pad2(parts.month)}`;
-  if (period === 'week') return `${parts.year}-W${pad2(getIsoWeek(parts))}`;
-  return `${parts.year}-${pad2(parts.month)}-${pad2(parts.day)}`;
-}
-
-function getLocalDateParts(date, timezone) {
-  const formatter = new Intl.DateTimeFormat('en-CA', {
-    timeZone: timezone,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit'
-  });
-  const parts = Object.fromEntries(formatter.formatToParts(date).map((part) => [part.type, part.value]));
-  return {
-    year: Number(parts.year),
-    month: Number(parts.month),
-    day: Number(parts.day)
-  };
-}
-
-function getIsoWeek(parts) {
-  const date = new Date(Date.UTC(parts.year, parts.month - 1, parts.day));
-  const day = date.getUTCDay() || 7;
-  date.setUTCDate(date.getUTCDate() + 4 - day);
-  const yearStart = new Date(Date.UTC(date.getUTCFullYear(), 0, 1));
-  return Math.ceil(((date - yearStart) / 86400000 + 1) / 7);
-}
-
-function pad2(value) {
-  return String(value).padStart(2, '0');
 }
 
 function randomCode() {
@@ -650,13 +619,13 @@ function formatPublishHelp() {
     'Usage: /publish <selection...> [--force]',
     '',
     'Examples:',
-    '/publish week',
+    '/publish daily_best',
     '/publish best.*',
     '/publish controversial.*',
-    '/publish best.week controversial.week',
-    '/publish best.week --force',
+    '/publish best.daily_best controversial.daily_controversial',
+    '/publish best.daily_best --force',
     '',
-    'Selections: month, week, day, best.*, controversial.*, best.month, best.week, best.day, controversial.month, controversial.week, controversial.day.'
+    'Selections: template key, source.key, best.*, or controversial.*.'
   ].join('\n');
 }
 

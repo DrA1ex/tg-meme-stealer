@@ -83,56 +83,133 @@
     "template": [
       {
         "source": "best",
-        "key": "month",
+        "key": "monthly_best",
         "enabled": true,
-        "time": "10:20",
-        "limit": 10,
-        "template": "Best posts from the last month ({{count}})"
+        "schedule": {
+          "type": "monthly",
+          "dayOfMonth": 1,
+          "time": "10:20"
+        },
+        "windowHours": 720,
+        "posts": {
+          "target": 10,
+          "min": 1,
+          "max": 10
+        },
+        "reactions": {
+          "strategy": "likes",
+          "min": 0,
+          "includeAbove": 999999
+        },
+        "template": "Best posts for the last {{windowHours}}h ({{count}})"
       },
       {
         "source": "best",
-        "key": "week",
+        "key": "weekly_best",
         "enabled": true,
-        "time": "10:10",
-        "limit": 10,
-        "template": "Best posts from the last week ({{count}})"
+        "schedule": {
+          "type": "weekly",
+          "weekday": 1,
+          "time": "10:10"
+        },
+        "windowHours": 168,
+        "posts": {
+          "target": 10,
+          "min": 1,
+          "max": 10
+        },
+        "reactions": {
+          "strategy": "likes",
+          "min": 0,
+          "includeAbove": 999999
+        },
+        "template": "Best posts for the last {{windowHours}}h ({{count}})"
       },
       {
         "source": "best",
-        "key": "day",
+        "key": "daily_best",
         "enabled": true,
-        "time": "10:00",
-        "limit": 5,
+        "schedule": {
+          "type": "daily",
+          "time": "10:00"
+        },
         "windowHours": 24,
-        "template": "Best fresh posts ({{count}})"
+        "posts": {
+          "target": 5,
+          "min": 1,
+          "max": 5
+        },
+        "reactions": {
+          "strategy": "likes",
+          "min": 0,
+          "includeAbove": 999999
+        },
+        "template": "Best fresh posts for the last {{windowHours}}h ({{count}})"
       },
       {
         "source": "controversial",
-        "key": "month",
+        "key": "monthly_controversial",
         "enabled": true,
-        "time": "11:20",
-        "limit": 10,
-        "threshold": 0.3,
-        "template": "Most controversial posts from the last month ({{count}})"
+        "schedule": {
+          "type": "monthly",
+          "dayOfMonth": 1,
+          "time": "11:20"
+        },
+        "windowHours": 720,
+        "posts": {
+          "target": 10,
+          "min": 1,
+          "max": 10
+        },
+        "reactions": {
+          "strategy": "sum",
+          "min": 0,
+          "includeAbove": 999999
+        },
+        "template": "Most controversial posts for the last {{windowHours}}h ({{count}})"
       },
       {
         "source": "controversial",
-        "key": "week",
+        "key": "weekly_controversial",
         "enabled": false,
-        "time": "11:10",
-        "limit": 10,
-        "threshold": 0.3,
-        "template": "Most controversial posts from the last week ({{count}})"
+        "schedule": {
+          "type": "weekly",
+          "weekday": 1,
+          "time": "11:10"
+        },
+        "windowHours": 168,
+        "posts": {
+          "target": 10,
+          "min": 1,
+          "max": 10
+        },
+        "reactions": {
+          "strategy": "sum",
+          "min": 0,
+          "includeAbove": 999999
+        },
+        "template": "Most controversial posts for the last {{windowHours}}h ({{count}})"
       },
       {
         "source": "controversial",
-        "key": "day",
+        "key": "daily_controversial",
         "enabled": false,
-        "time": "11:00",
-        "limit": 5,
+        "schedule": {
+          "type": "daily",
+          "time": "11:00"
+        },
         "windowHours": 24,
-        "threshold": 0.3,
-        "template": "Most controversial fresh posts ({{count}})"
+        "posts": {
+          "target": 5,
+          "min": 1,
+          "max": 5
+        },
+        "reactions": {
+          "strategy": "sum",
+          "min": 0,
+          "includeAbove": 999999
+        },
+        "template": "Most controversial fresh posts for the last {{windowHours}}h ({{count}})"
       }
     ]
   },

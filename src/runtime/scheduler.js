@@ -70,24 +70,22 @@ export class Scheduler {
 
   schedulePublications(now = new Date()) {
     for (const entry of getScheduledPublishEntries(this.config)) {
-      this.schedulePublication(entry.key, entry.time, now);
+      this.schedulePublication(entry.key, entry.schedule, now);
     }
   }
 
-  schedulePublication(key, time, now = new Date()) {
-    const period = getPeriodFromSelectionKey(key);
+  schedulePublication(key, schedule, now = new Date()) {
     const nextRunAt = getNextScheduledRunAsDate({
       now,
-      time,
-      timezone: this.config.schedule.timezone,
-      period
+      schedule,
+      timezone: this.config.schedule.timezone
     });
     const delayMs = nextRunAt.getTime() - now.getTime();
     this.logTimerScheduled({
       timer: 'publication',
       key,
-      period,
-      time,
+      scheduleType: schedule.type,
+      time: schedule.time,
       timezone: this.config.schedule.timezone,
       delayMs,
       nextRunAt
@@ -97,7 +95,7 @@ export class Scheduler {
       if (hasScheduledPublicationRequest(result)) {
         await this.handlers.publishWorker();
       }
-      this.schedulePublication(key, time);
+      this.schedulePublication(key, schedule);
     }, delayMs);
   }
 
@@ -108,9 +106,8 @@ export class Scheduler {
     for (const entry of getScheduledPublishEntries(this.config)) {
       const scheduledAt = getPreviousScheduledRunAsDate({
         now,
-        time: entry.time,
-        timezone: this.config.schedule.timezone,
-        period: entry.period
+        schedule: entry.schedule,
+        timezone: this.config.schedule.timezone
       });
       const ageMs = now.getTime() - scheduledAt.getTime();
       if (ageMs < 0 || ageMs > requestTtlMs) {
@@ -247,16 +244,25 @@ export function getDelayUntilLocalTime({ now = new Date(), time, timezone }) {
   return target.getTime() - now.getTime();
 }
 
-export function getNextScheduledRunAsDate({ now = new Date(), time, timezone, period = 'day' }) {
-  if (period === 'month') return getNextMonthlyRunAsDate({ now, time, timezone });
-  if (period === 'week') return getNextWeeklyRunAsDate({ now, time, timezone });
-  return getNextLocalTimeAsDate({ now, time, timezone });
+export function getNextScheduledRunAsDate({ now = new Date(), time, timezone, period = 'day', schedule: configuredSchedule = null }) {
+  const schedule = normalizeScheduleArgument({ time, period, schedule: configuredSchedule });
+  if (schedule.type === 'monthly') return getNextMonthlyRunAsDate({ now, schedule, timezone });
+  if (schedule.type === 'weekly') return getNextWeeklyRunAsDate({ now, schedule, timezone });
+  return getNextLocalTimeAsDate({ now, time: schedule.time, timezone });
 }
 
-export function getPreviousScheduledRunAsDate({ now = new Date(), time, timezone, period = 'day' }) {
-  if (period === 'month') return getPreviousMonthlyRunAsDate({ now, time, timezone });
-  if (period === 'week') return getPreviousWeeklyRunAsDate({ now, time, timezone });
-  return getPreviousLocalTimeAsDate({ now, time, timezone });
+export function getPreviousScheduledRunAsDate({ now = new Date(), time, timezone, period = 'day', schedule: configuredSchedule = null }) {
+  const schedule = normalizeScheduleArgument({ time, period, schedule: configuredSchedule });
+  if (schedule.type === 'monthly') return getPreviousMonthlyRunAsDate({ now, schedule, timezone });
+  if (schedule.type === 'weekly') return getPreviousWeeklyRunAsDate({ now, schedule, timezone });
+  return getPreviousLocalTimeAsDate({ now, time: schedule.time, timezone });
+}
+
+function normalizeScheduleArgument({ schedule, time, period }) {
+  if (schedule) return schedule;
+  if (period === 'month') return { type: 'monthly', dayOfMonth: 1, time };
+  if (period === 'week') return { type: 'weekly', weekday: 1, time };
+  return { type: 'daily', time };
 }
 
 export function getNextLocalTimeAsDate({ now = new Date(), time, timezone }) {
@@ -326,16 +332,16 @@ function getTimezoneOffsetMs(date, timezone) {
   return asUtc - date.getTime();
 }
 
-function getNextWeeklyRunAsDate({ now, time, timezone }) {
+function getNextWeeklyRunAsDate({ now, schedule, timezone }) {
   const local = getLocalParts(now, timezone);
   const currentWeekday = getCalendarWeekday(local);
-  const targetWeekday = 1;
+  const targetWeekday = schedule.weekday;
   let daysToAdd = (targetWeekday - currentWeekday + 7) % 7;
   let target = getLocalDateTimeAsDate({
     year: local.year,
     month: local.month,
     day: local.day + daysToAdd,
-    time,
+    time: schedule.time,
     timezone
   });
   if (target <= now) {
@@ -344,44 +350,44 @@ function getNextWeeklyRunAsDate({ now, time, timezone }) {
       year: local.year,
       month: local.month,
       day: local.day + daysToAdd,
-      time,
+      time: schedule.time,
       timezone
     });
   }
   return target;
 }
 
-function getNextMonthlyRunAsDate({ now, time, timezone }) {
+function getNextMonthlyRunAsDate({ now, schedule, timezone }) {
   const local = getLocalParts(now, timezone);
   let target = getLocalDateTimeAsDate({
     year: local.year,
     month: local.month,
-    day: 1,
-    time,
+    day: schedule.dayOfMonth,
+    time: schedule.time,
     timezone
   });
   if (target <= now) {
     target = getLocalDateTimeAsDate({
       year: local.year,
       month: local.month + 1,
-      day: 1,
-      time,
+      day: schedule.dayOfMonth,
+      time: schedule.time,
       timezone
     });
   }
   return target;
 }
 
-function getPreviousWeeklyRunAsDate({ now, time, timezone }) {
+function getPreviousWeeklyRunAsDate({ now, schedule, timezone }) {
   const local = getLocalParts(now, timezone);
   const currentWeekday = getCalendarWeekday(local);
-  const targetWeekday = 1;
+  const targetWeekday = schedule.weekday;
   let daysToAdd = -((currentWeekday - targetWeekday + 7) % 7);
   let target = getLocalDateTimeAsDate({
     year: local.year,
     month: local.month,
     day: local.day + daysToAdd,
-    time,
+    time: schedule.time,
     timezone
   });
   if (target > now) {
@@ -390,28 +396,28 @@ function getPreviousWeeklyRunAsDate({ now, time, timezone }) {
       year: local.year,
       month: local.month,
       day: local.day + daysToAdd,
-      time,
+      time: schedule.time,
       timezone
     });
   }
   return target;
 }
 
-function getPreviousMonthlyRunAsDate({ now, time, timezone }) {
+function getPreviousMonthlyRunAsDate({ now, schedule, timezone }) {
   const local = getLocalParts(now, timezone);
   let target = getLocalDateTimeAsDate({
     year: local.year,
     month: local.month,
-    day: 1,
-    time,
+    day: schedule.dayOfMonth,
+    time: schedule.time,
     timezone
   });
   if (target > now) {
     target = getLocalDateTimeAsDate({
       year: local.year,
       month: local.month - 1,
-      day: 1,
-      time,
+      day: schedule.dayOfMonth,
+      time: schedule.time,
       timezone
     });
   }
@@ -428,9 +434,14 @@ function getLocalDateTimeAsDate({ year, month, day, time, timezone }) {
 }
 
 function getCalendarWeekday(local) {
-  return new Date(Date.UTC(local.year, local.month - 1, local.day)).getUTCDay();
+  return new Date(Date.UTC(local.year, local.month - 1, local.day)).getUTCDay() || 7;
 }
 
-function getPeriodFromSelectionKey(key) {
-  return String(key).split('.')[1] || 'day';
+export function getLocalTimestampBucket(date, timezone) {
+  const local = getLocalParts(date, timezone);
+  return `${local.year}-${pad2(local.month)}-${pad2(local.day)}T${pad2(local.hour)}-${pad2(local.minute)}`;
+}
+
+function pad2(value) {
+  return String(value).padStart(2, '0');
 }
