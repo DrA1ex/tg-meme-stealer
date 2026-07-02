@@ -14,7 +14,7 @@
     "refreshRecentDays": 7,
     "pageSize": 100,
     "mediaDir": "tmp/media",
-    "intervalHours": 24,
+    "intervalHours": 6,
     "runOnStart": true,
     "retentionDays": 60,
     "retentionInitialDelayMinutes": 15,
