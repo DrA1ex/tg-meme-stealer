@@ -185,25 +185,25 @@ Common options:
     "dryRun": false,
     "requestTtlHours": 12,
     "workerIntervalMinutes": 10,
-    "selections": {
-      "best": {
-        "week": {
-          "enabled": true,
-          "time": "10:10",
-          "limit": 10,
-          "template": "Best posts from the last week ({{count}})"
-        }
+    "template": [
+      {
+        "source": "best",
+        "key": "week",
+        "enabled": true,
+        "time": "10:10",
+        "limit": 10,
+        "template": "Best posts from the last week ({{count}})"
       },
-      "controversial": {
-        "week": {
-          "enabled": true,
-          "time": "11:10",
-          "limit": 10,
-          "threshold": 0.3,
-          "template": "Most controversial posts from the last week ({{count}})"
-        }
+      {
+        "source": "controversial",
+        "key": "week",
+        "enabled": true,
+        "time": "11:10",
+        "limit": 10,
+        "threshold": 0.3,
+        "template": "Most controversial posts from the last week ({{count}})"
       }
-    }
+    ]
   },
   "schedule": {
     "enabled": true,
@@ -214,7 +214,7 @@ Common options:
 
 `logging.logLevel` can be `DEBUG`, `INFO`, `WARN`, `ERROR`, or `SILENT` and is case-insensitive. `logging.color` can be `auto`, `always`, or `never`; `auto` uses colors only for interactive terminals. Log levels are colored, scopes are highlighted, and high-signal fields such as `status`, `key`, `publicationId`, `messageId`, `reason`, and `error` get distinct colors. Sync logs include the scan window, each Telegram history request, fetched message counts, matched post counts, saved rows, skipped old posts, and deleted-post cleanup. `sync.runOnStart` controls whether the daemon runs one sync immediately after startup. `sync.intervalHours` controls the recurring sync interval. `sync.retentionDays` controls how long source post rows stay in `posts`; the default is 60 days. Retention starts after `sync.retentionInitialDelayMinutes` and then repeats every `sync.retentionIntervalHours`; it uses the same in-memory job gate as sync and publishing. Set `sync.runOnStart` to `false` to disable the initial startup sync.
 
-Publication schedules use `schedule.timezone`. Each enabled selection under `publish.selections` has its own local `time`, `limit`, and header `template`. Daily selections run once per day, weekly selections run once per week, and monthly selections run once per month. The `day` period uses `windowHours`; controversial selections also use `threshold`. A threshold of `0.3` means likes and dislikes may differ by at most 30% of the larger reaction count.
+Publication schedules use `schedule.timezone`. Each enabled item under `publish.template` has `source`, `key`, local `time`, `limit`, and header `template`. `source` is usually `best` or `controversial`; `key` is usually `day`, `week`, or `month`. Each `source.key` pair must be unique. Daily selections run once per day, weekly selections run once per week, and monthly selections run once per month. The `day` period uses `windowHours`; controversial selections also use `threshold`. A threshold of `0.3` means likes and dislikes may differ by at most 30% of the larger reaction count.
 
 Publishing has two phases. The scheduler creates publication requests, then a worker sends queued requests one by one. `publish.workerIntervalMinutes` controls how often the worker checks the queue as a safety net; the default is 10 minutes. Publication creation also wakes the worker immediately, so this interval is mainly for catch-up if a wake-up was missed. `publish.requestTtlHours` controls how long a `created` or `running` request may wait before the worker marks it `failed`; the default is 12 hours. Sync and backfill are serialized in memory by one sync worker; overlapping sync/backfill requests are skipped.
 
@@ -449,7 +449,7 @@ If a path does not match anything, run `/test 30` with a broader filter and adju
 
 ## Templates
 
-Published captions and admin stats can be customized in `templates`. Selection headers are configured in `publish.selections.*.*.template`.
+Published captions and admin stats can be customized in `templates`. Selection headers are configured in the matching item inside `publish.template`.
 
 Example:
 
@@ -463,18 +463,18 @@ Example:
     }
   },
   "publish": {
-    "selections": {
-      "best": {
-        "week": {
-          "template": "Best posts from the last week ({{count}})"
-        }
+    "template": [
+      {
+        "source": "best",
+        "key": "week",
+        "template": "Best posts from the last week ({{count}})"
       },
-      "controversial": {
-        "week": {
-          "template": "Most controversial posts from the last week ({{count}})"
-        }
+      {
+        "source": "controversial",
+        "key": "week",
+        "template": "Most controversial posts from the last week ({{count}})"
       }
-    }
+    ]
   }
 }
 ```

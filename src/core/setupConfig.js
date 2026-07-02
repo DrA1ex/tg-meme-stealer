@@ -119,8 +119,14 @@ export function formatPreviewPost(post, templates = {}) {
 }
 
 export function setTemplateValue(draft, key, value) {
+  const selectionTemplate = parseSelectionTemplateKey(key);
+  if (selectionTemplate) {
+    setSelectionTemplateValue(draft, selectionTemplate, value);
+    return draft;
+  }
+
   const path = templatePathForKey(key);
-  let target = key.startsWith('selection.') ? draft : draft.templates;
+  let target = draft.templates;
   for (const part of path.slice(0, -1)) {
     target[part] = target[part] || {};
     target = target[part];
@@ -144,12 +150,6 @@ function templatePathForKey(key) {
     postCaption: ['publish', 'postCaption'],
     unknownAuthor: ['publish', 'unknownAuthor'],
     maxTextLength: ['publish', 'maxTextLength'],
-    'selection.best.month.template': ['publish', 'selections', 'best', 'month', 'template'],
-    'selection.best.week.template': ['publish', 'selections', 'best', 'week', 'template'],
-    'selection.best.day.template': ['publish', 'selections', 'best', 'day', 'template'],
-    'selection.controversial.month.template': ['publish', 'selections', 'controversial', 'month', 'template'],
-    'selection.controversial.week.template': ['publish', 'selections', 'controversial', 'week', 'template'],
-    'selection.controversial.day.template': ['publish', 'selections', 'controversial', 'day', 'template'],
     'stats.summary': ['stats', 'summary'],
     'stats.topPost': ['stats', 'topPost']
   };
@@ -157,6 +157,23 @@ function templatePathForKey(key) {
     throw new Error(`Unknown template key: ${key}`);
   }
   return paths[key];
+}
+
+function parseSelectionTemplateKey(key) {
+  const match = /^selection\.([^.]+)\.([^.]+)\.template$/.exec(key);
+  if (!match) return null;
+  return { source: match[1], key: match[2] };
+}
+
+function setSelectionTemplateValue(draft, selection, value) {
+  draft.publish = draft.publish || {};
+  draft.publish.template = Array.isArray(draft.publish.template) ? draft.publish.template : [];
+  let entry = draft.publish.template.find((item) => item.source === selection.source && item.key === selection.key);
+  if (!entry) {
+    entry = { source: selection.source, key: selection.key };
+    draft.publish.template.push(entry);
+  }
+  entry.template = String(value);
 }
 
 function formatCell(value, maxLength) {

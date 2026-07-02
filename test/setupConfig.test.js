@@ -19,13 +19,13 @@ import {
 test('setup draft keeps editable publish, parsing and template config', () => {
   const draft = createSetupDraft({
     sync: { pageSize: 100 },
-    publish: { dryRun: false, selections: { best: { week: { template: 'Best week' } } } },
+    publish: { dryRun: false, template: [{ source: 'best', key: 'week', template: 'Best week' }] },
     parsing: { filters: [{ transform: 'hasContent' }] },
     telegram: { botToken: 'secret' }
   });
 
   assert.equal(draft.sync, undefined);
-  assert.deepEqual(draft.publish, { dryRun: false, selections: { best: { week: { template: 'Best week' } } } });
+  assert.deepEqual(draft.publish, { dryRun: false, template: [{ source: 'best', key: 'week', template: 'Best week' }] });
   assert.deepEqual(draft.parsing, { filters: [{ transform: 'hasContent' }] });
   assert.deepEqual(draft.templates, {});
 });
@@ -68,8 +68,10 @@ test('setup helpers update publish templates', () => {
   setTemplateValue(draft, 'stats.summary', 'Stats {{totalCount}}');
 
   assert.equal(draft.templates.publish.postCaption, 'Post {{messageId}} by {{author}}');
-  assert.equal(draft.publish.selections.best.week.template, 'Weekly best {{count}}');
-  assert.equal(draft.publish.selections.controversial.week.template, 'Controversial {{count}}');
+  assert.deepEqual(draft.publish.template, [
+    { source: 'best', key: 'week', template: 'Weekly best {{count}}' },
+    { source: 'controversial', key: 'week', template: 'Controversial {{count}}' }
+  ]);
   assert.equal(draft.templates.publish.unknownAuthor, 'anonymous');
   assert.equal(draft.templates.publish.maxTextLength, 120);
   assert.equal(draft.templates.stats.summary, 'Stats {{totalCount}}');

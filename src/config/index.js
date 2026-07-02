@@ -29,6 +29,8 @@ const RULE_SCHEMA = {
 };
 
 const SELECTION_SCHEMA = {
+  source: STRING,
+  key: STRING,
   enabled: BOOLEAN,
   time: STRING,
   limit: NUMBER,
@@ -82,18 +84,7 @@ const CONFIG_SCHEMA = {
     dryRun: BOOLEAN,
     requestTtlHours: NUMBER,
     workerIntervalMinutes: NUMBER,
-    selections: {
-      best: {
-        month: SELECTION_SCHEMA,
-        week: SELECTION_SCHEMA,
-        day: SELECTION_SCHEMA
-      },
-      controversial: {
-        month: SELECTION_SCHEMA,
-        week: SELECTION_SCHEMA,
-        day: SELECTION_SCHEMA
-      }
-    }
+    template: { type: 'array', items: SELECTION_SCHEMA }
   },
   templates: {
     publish: {
@@ -121,11 +112,46 @@ export function loadConfig() {
   const userConfigPath = path.resolve('config.json');
   const defaultConfig = JSON.parse(fs.readFileSync(defaultPath, 'utf8'));
   const userConfig = fs.existsSync(userConfigPath)
-    ? JSON.parse(fs.readFileSync(userConfigPath, 'utf8'))
+    ? migrateUserConfigIfNeeded(userConfigPath)
     : {};
   const config = applyEnv(deepMerge(defaultConfig, userConfig), process.env);
-  validateConfig(config);
+  validateConfig(config, { pauseOnDuplicatePublishTemplates: true });
   return config;
+}
+
+function migrateUserConfigIfNeeded(configPath) {
+  const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+  const migrated = migrateOldPublishSelections(config);
+  if (migrated === config) return config;
+
+  const backupPath = `${configPath}.old`;
+  fs.copyFileSync(configPath, backupPath);
+  fs.writeFileSync(configPath, `${JSON.stringify(migrated, null, 2)}\n`);
+  return migrated;
+}
+
+export function migrateOldPublishSelections(config) {
+  if (!config?.publish?.selections) return config;
+
+  const migrated = structuredClone(config);
+  const oldSelections = migrated.publish.selections;
+  const currentTemplates = Array.isArray(migrated.publish.template) ? migrated.publish.template : [];
+  migrated.publish.template = [
+    ...currentTemplates,
+    ...flattenPublishSelections(oldSelections)
+  ];
+  delete migrated.publish.selections;
+  return migrated;
+}
+
+function flattenPublishSelections(selections) {
+  const templates = [];
+  for (const [source, sourceSelections] of Object.entries(selections || {})) {
+    for (const [key, selection] of Object.entries(sourceSelections || {})) {
+      templates.push({ source, key, ...selection });
+    }
+  }
+  return templates;
 }
 
 export function applyEnv(config, env) {
@@ -141,15 +167,48 @@ export function applyEnv(config, env) {
   });
 }
 
-export function deepMerge(base, override) {
+export function deepMerge(base, override, pathParts = []) {
   const result = { ...base };
   for (const [key, value] of Object.entries(override || {})) {
+    if (isPublishTemplatePath(pathParts, key) && Array.isArray(value) && Array.isArray(base?.[key])) {
+      result[key] = mergePublishTemplates(base[key], value);
+      continue;
+    }
     if (isPlainObject(value) && isPlainObject(base?.[key])) {
-      result[key] = deepMerge(base[key], value);
+      result[key] = deepMerge(base[key], value, [...pathParts, key]);
     } else {
       result[key] = value;
     }
   }
+  return result;
+}
+
+function isPublishTemplatePath(pathParts, key) {
+  return pathParts.length === 1 && pathParts[0] === 'publish' && key === 'template';
+}
+
+function mergePublishTemplates(baseTemplates, overrideTemplates) {
+  const result = baseTemplates.map((template) => ({ ...template }));
+  const indexByKey = new Map(result.map((template, index) => [getPublishTemplateIdentity(template), index]));
+  const overrideKeys = new Set();
+
+  for (const override of overrideTemplates) {
+    const key = getPublishTemplateIdentity(override);
+    if (overrideKeys.has(key)) {
+      result.push({ ...override });
+      continue;
+    }
+    overrideKeys.add(key);
+
+    if (indexByKey.has(key)) {
+      const index = indexByKey.get(key);
+      result[index] = deepMerge(result[index], override);
+      continue;
+    }
+    indexByKey.set(key, result.length);
+    result.push({ ...override });
+  }
+
   return result;
 }
 
@@ -164,7 +223,7 @@ function numberFromEnv(value) {
   return parsed;
 }
 
-export function validateConfig(config) {
+export function validateConfig(config, options = {}) {
   const schemaIssues = collectConfigIssues(config, CONFIG_SCHEMA);
   if (schemaIssues.length > 0) {
     throw new Error(`Invalid config:\n${schemaIssues.map((issue) => `- ${issue}`).join('\n')}`);
@@ -190,6 +249,35 @@ export function validateConfig(config) {
   if (String(config.telegram.sourceChatId) === String(config.telegram.publishChannelId)) {
     throw new Error('telegram.sourceChatId and telegram.publishChannelId must be different');
   }
+
+  validatePublishTemplateDuplicates(config, options);
+}
+
+function validatePublishTemplateDuplicates(config, options = {}) {
+  const templates = config?.publish?.template || [];
+  const counts = new Map();
+  for (const template of templates) {
+    const key = getPublishTemplateIdentity(template);
+    counts.set(key, (counts.get(key) || 0) + 1);
+  }
+
+  const duplicates = [...counts.entries()]
+    .filter(([, count]) => count > 1)
+    .map(([key, count]) => `${key} (${count})`);
+  if (duplicates.length === 0) return;
+
+  if (options.pauseOnDuplicatePublishTemplates) sleepSync(5000);
+  throw new Error(`Duplicate publish templates:\n${duplicates.map((duplicate) => `- ${duplicate}`).join('\n')}`);
+}
+
+function getPublishTemplateIdentity(template) {
+  return `${template?.source || ''}.${template?.key || ''}`;
+}
+
+function sleepSync(ms) {
+  const buffer = new SharedArrayBuffer(4);
+  const view = new Int32Array(buffer);
+  Atomics.wait(view, 0, 0, ms);
 }
 
 function collectConfigIssues(value, schema, pathParts = []) {

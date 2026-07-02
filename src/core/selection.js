@@ -9,26 +9,24 @@ export function buildSelectionSpecs(config, now = new Date(), keys = null, optio
   const requestedKeys = keys ? new Set(normalizeSelectionKeys(keys)) : null;
   const specs = [];
 
-  for (const type of TYPES) {
-    for (const period of PERIODS) {
-      const entry = config.publish?.selections?.[type]?.[period];
-      if (!entry?.enabled && !options.includeDisabled) continue;
+  for (const entry of getPublishTemplates(config)) {
+    if (!entry?.enabled && !options.includeDisabled) continue;
 
-      const key = `${type}.${period}`;
-      if (requestedKeys && !requestedKeys.has(key)) continue;
+    const key = getSelectionKey(entry);
+    if (requestedKeys && !requestedKeys.has(key)) continue;
 
-      specs.push({
-        key,
-        type,
-        period,
-        chatId,
-        sinceIso: getPeriodStart(period, entry, now).toISOString(),
-        untilIso: now.toISOString(),
-        limit: entry.limit,
-        template: entry.template,
-        threshold: entry.threshold
-      });
-    }
+    specs.push({
+      key,
+      type: entry.source,
+      source: entry.source,
+      period: entry.key,
+      chatId,
+      sinceIso: getPeriodStart(entry.key, entry, now).toISOString(),
+      untilIso: now.toISOString(),
+      limit: entry.limit,
+      template: entry.template,
+      threshold: entry.threshold
+    });
   }
 
   return specs;
@@ -36,12 +34,15 @@ export function buildSelectionSpecs(config, now = new Date(), keys = null, optio
 
 export function getScheduledPublishEntries(config) {
   const entries = [];
-  for (const type of TYPES) {
-    for (const period of PERIODS) {
-      const entry = config.publish?.selections?.[type]?.[period];
-      if (entry?.enabled && entry.time) {
-        entries.push({ key: `${type}.${period}`, type, period, time: entry.time });
-      }
+  for (const entry of getPublishTemplates(config)) {
+    if (entry?.enabled && entry.time) {
+      entries.push({
+        key: getSelectionKey(entry),
+        type: entry.source,
+        source: entry.source,
+        period: entry.key,
+        time: entry.time
+      });
     }
   }
   return entries;
@@ -88,6 +89,14 @@ function getPeriodStart(period, entry, now) {
   if (period === 'month') return subtractMonths(now, 1);
   if (period === 'week') return subtractDays(now, 7);
   return subtractHours(now, entry.windowHours || 24);
+}
+
+function getPublishTemplates(config) {
+  return Array.isArray(config.publish?.template) ? config.publish.template : [];
+}
+
+function getSelectionKey(entry) {
+  return `${entry.source}.${entry.key}`;
 }
 
 export function renderSelectionTemplate(spec, posts) {

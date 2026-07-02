@@ -80,53 +80,61 @@
     "dryRun": false,
     "requestTtlHours": 12,
     "workerIntervalMinutes": 10,
-    "selections": {
-      "best": {
-        "month": {
-          "enabled": true,
-          "time": "10:20",
-          "limit": 10,
-          "template": "Best posts from the last month ({{count}})"
-        },
-        "week": {
-          "enabled": true,
-          "time": "10:10",
-          "limit": 10,
-          "template": "Best posts from the last week ({{count}})"
-        },
-        "day": {
-          "enabled": true,
-          "time": "10:00",
-          "limit": 5,
-          "windowHours": 24,
-          "template": "Best fresh posts ({{count}})"
-        }
+    "template": [
+      {
+        "source": "best",
+        "key": "month",
+        "enabled": true,
+        "time": "10:20",
+        "limit": 10,
+        "template": "Best posts from the last month ({{count}})"
       },
-      "controversial": {
-        "month": {
-          "enabled": true,
-          "time": "11:20",
-          "limit": 10,
-          "threshold": 0.3,
-          "template": "Most controversial posts from the last month ({{count}})"
-        },
-        "week": {
-          "enabled": false,
-          "time": "11:10",
-          "limit": 10,
-          "threshold": 0.3,
-          "template": "Most controversial posts from the last week ({{count}})"
-        },
-        "day": {
-          "enabled": false,
-          "time": "11:00",
-          "limit": 5,
-          "windowHours": 24,
-          "threshold": 0.3,
-          "template": "Most controversial fresh posts ({{count}})"
-        }
+      {
+        "source": "best",
+        "key": "week",
+        "enabled": true,
+        "time": "10:10",
+        "limit": 10,
+        "template": "Best posts from the last week ({{count}})"
+      },
+      {
+        "source": "best",
+        "key": "day",
+        "enabled": true,
+        "time": "10:00",
+        "limit": 5,
+        "windowHours": 24,
+        "template": "Best fresh posts ({{count}})"
+      },
+      {
+        "source": "controversial",
+        "key": "month",
+        "enabled": true,
+        "time": "11:20",
+        "limit": 10,
+        "threshold": 0.3,
+        "template": "Most controversial posts from the last month ({{count}})"
+      },
+      {
+        "source": "controversial",
+        "key": "week",
+        "enabled": false,
+        "time": "11:10",
+        "limit": 10,
+        "threshold": 0.3,
+        "template": "Most controversial posts from the last week ({{count}})"
+      },
+      {
+        "source": "controversial",
+        "key": "day",
+        "enabled": false,
+        "time": "11:00",
+        "limit": 5,
+        "windowHours": 24,
+        "threshold": 0.3,
+        "template": "Most controversial fresh posts ({{count}})"
       }
-    }
+    ]
   },
   "templates": {
     "publish": {

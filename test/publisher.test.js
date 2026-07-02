@@ -98,11 +98,9 @@ test('SelectionPublisher skips Telegram calls when publication request already e
       ...config(),
       publish: {
         dryRun: false,
-        selections: {
-          best: {
-            week: { enabled: true, limit: 1, template: 'Best week' }
-          }
-        }
+        template: [
+          { source: 'best', key: 'week', enabled: true, limit: 1, template: 'Best week' }
+        ]
       }
     }
   });
@@ -147,11 +145,9 @@ test('SelectionPublisher handles concurrent publication scheduling collision wit
       ...config(),
       publish: {
         dryRun: false,
-        selections: {
-          best: {
-            week: { enabled: true, limit: 1, template: 'Best week' }
-          }
-        }
+        template: [
+          { source: 'best', key: 'week', enabled: true, limit: 1, template: 'Best week' }
+        ]
       }
     }
   });
@@ -191,11 +187,9 @@ test('SelectionPublisher scheduled enqueue skips existing publication before sel
       ...config(),
       publish: {
         dryRun: false,
-        selections: {
-          best: {
-            week: { enabled: true, limit: 10, template: 'Best week' }
-          }
-        }
+        template: [
+          { source: 'best', key: 'week', enabled: true, limit: 10, template: 'Best week' }
+        ]
       }
     }
   });
@@ -246,12 +240,10 @@ test('SelectionPublisher scheduled enqueue skips same canonical key but queues d
       ...config(),
       publish: {
         dryRun: false,
-        selections: {
-          best: {
-            week: { enabled: true, limit: 1, template: 'Best week' },
-            day: { enabled: true, limit: 1, template: 'Best day' }
-          }
-        }
+        template: [
+          { source: 'best', key: 'week', enabled: true, limit: 1, template: 'Best week' },
+          { source: 'best', key: 'day', enabled: true, limit: 1, template: 'Best day' }
+        ]
       }
     }
   });
@@ -372,11 +364,9 @@ test('SelectionPublisher.runManualPublish plans selections and replies with job 
       ...config(),
       publish: {
         dryRun: false,
-        selections: {
-          best: {
-            week: { enabled: true, limit: 1, template: 'Best week' }
-          }
-        }
+        template: [
+          { source: 'best', key: 'week', enabled: true, limit: 1, template: 'Best week' }
+        ]
       }
     }
   });
@@ -408,11 +398,9 @@ test('SelectionPublisher.runManualPublish replies when requested publication alr
       ...config(),
       publish: {
         dryRun: false,
-        selections: {
-          best: {
-            day: { enabled: true, limit: 5, template: 'Best day' }
-          }
-        }
+        template: [
+          { source: 'best', key: 'day', enabled: true, limit: 5, template: 'Best day' }
+        ]
       }
     }
   });
@@ -446,11 +434,9 @@ test('SelectionPublisher.runManualPublish does not create publication request wh
       ...config(),
       publish: {
         dryRun: false,
-        selections: {
-          best: {
-            day: { enabled: true, limit: 5, template: 'Best day' }
-          }
-        }
+        template: [
+          { source: 'best', key: 'day', enabled: true, limit: 5, template: 'Best day' }
+        ]
       }
     }
   });
@@ -494,18 +480,14 @@ test('SelectionPublisher.runManualPublish supports best and controversial wildca
       ...config(),
       publish: {
         dryRun: false,
-        selections: {
-          best: {
-            month: { enabled: true, limit: 1, template: 'Best month' },
-            week: { enabled: true, limit: 1, template: 'Best week' },
-            day: { enabled: true, limit: 1, template: 'Best day' }
-          },
-          controversial: {
-            month: { enabled: true, limit: 1, threshold: 0.3, template: 'Controversial month' },
-            week: { enabled: true, limit: 1, threshold: 0.3, template: 'Controversial week' },
-            day: { enabled: true, limit: 1, threshold: 0.3, template: 'Controversial day' }
-          }
-        }
+        template: [
+          { source: 'best', key: 'month', enabled: true, limit: 1, template: 'Best month' },
+          { source: 'best', key: 'week', enabled: true, limit: 1, template: 'Best week' },
+          { source: 'best', key: 'day', enabled: true, limit: 1, template: 'Best day' },
+          { source: 'controversial', key: 'month', enabled: true, limit: 1, threshold: 0.3, template: 'Controversial month' },
+          { source: 'controversial', key: 'week', enabled: true, limit: 1, threshold: 0.3, template: 'Controversial week' },
+          { source: 'controversial', key: 'day', enabled: true, limit: 1, threshold: 0.3, template: 'Controversial day' }
+        ]
       }
     }
   });
@@ -545,11 +527,9 @@ test('SelectionPublisher.runManualPublish force schedules an explicitly disabled
       ...config(),
       publish: {
         dryRun: false,
-        selections: {
-          controversial: {
-            week: { enabled: false, limit: 1, threshold: 0.3, template: 'Controversial week' }
-          }
-        }
+        template: [
+          { source: 'controversial', key: 'week', enabled: false, limit: 1, threshold: 0.3, template: 'Controversial week' }
+        ]
       }
     }
   });
@@ -587,11 +567,9 @@ test('SelectionPublisher.runManualPublish explains when worker is already runnin
       ...config(),
       publish: {
         dryRun: false,
-        selections: {
-          controversial: {
-            day: { enabled: false, limit: 3, threshold: 0.3, template: 'Controversial day' }
-          }
-        }
+        template: [
+          { source: 'controversial', key: 'day', enabled: false, limit: 3, threshold: 0.3, template: 'Controversial day' }
+        ]
       }
     }
   });
@@ -627,11 +605,9 @@ test('SelectionPublisher.runManualPublish explains when follow-up worker is queu
       ...config(),
       publish: {
         dryRun: false,
-        selections: {
-          controversial: {
-            day: { enabled: false, limit: 3, threshold: 0.3, template: 'Controversial day' }
-          }
-        }
+        template: [
+          { source: 'controversial', key: 'day', enabled: false, limit: 3, threshold: 0.3, template: 'Controversial day' }
+        ]
       }
     }
   });
@@ -661,11 +637,9 @@ test('SelectionPublisher.runManualPublish does not schedule disabled selection w
       ...config(),
       publish: {
         dryRun: false,
-        selections: {
-          controversial: {
-            week: { enabled: false, limit: 1, threshold: 0.3, template: 'Controversial week' }
-          }
-        }
+        template: [
+          { source: 'controversial', key: 'week', enabled: false, limit: 1, threshold: 0.3, template: 'Controversial week' }
+        ]
       }
     }
   });
@@ -741,11 +715,9 @@ test('SelectionPublisher.runManualPublish supports force scheduling', async () =
       ...config(),
       publish: {
         dryRun: false,
-        selections: {
-          best: {
-            week: { enabled: true, limit: 1, template: 'Best week' }
-          }
-        }
+        template: [
+          { source: 'best', key: 'week', enabled: true, limit: 1, template: 'Best week' }
+        ]
       }
     }
   });
@@ -779,11 +751,9 @@ test('SelectionPublisher.runManualPublish supports single-dash force scheduling'
       ...config(),
       publish: {
         dryRun: false,
-        selections: {
-          best: {
-            week: { enabled: true, limit: 1, template: 'Best week' }
-          }
-        }
+        template: [
+          { source: 'best', key: 'week', enabled: true, limit: 1, template: 'Best week' }
+        ]
       }
     }
   });

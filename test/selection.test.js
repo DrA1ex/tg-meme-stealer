@@ -60,10 +60,10 @@ test('normalizeSelectionKeys expands type aliases and rejects unknown keys', () 
 
 test('getScheduledPublishEntries reads enabled selection times', () => {
   assert.deepEqual(getScheduledPublishEntries(config()), [
-    { key: 'best.month', type: 'best', period: 'month', time: '10:20' },
-    { key: 'best.week', type: 'best', period: 'week', time: '10:10' },
-    { key: 'best.day', type: 'best', period: 'day', time: '10:00' },
-    { key: 'controversial.week', type: 'controversial', period: 'week', time: '11:10' }
+    { key: 'best.month', type: 'best', source: 'best', period: 'month', time: '10:20' },
+    { key: 'best.week', type: 'best', source: 'best', period: 'week', time: '10:10' },
+    { key: 'best.day', type: 'best', source: 'best', period: 'day', time: '10:00' },
+    { key: 'controversial.week', type: 'controversial', source: 'controversial', period: 'week', time: '11:10' }
   ]);
 });
 
@@ -85,18 +85,14 @@ function config() {
   return {
     telegram: { sourceChatId: -1001 },
     publish: {
-      selections: {
-        best: {
-          month: { enabled: true, time: '10:20', limit: 10, template: 'Best month ({{count}})' },
-          week: { enabled: true, time: '10:10', limit: 7, template: 'Best week ({{count}})' },
-          day: { enabled: true, time: '10:00', limit: 5, windowHours: 24, template: 'Best day ({{count}})' }
-        },
-        controversial: {
-          month: { enabled: false, time: '11:20', limit: 10, threshold: 0.3, template: 'Controversial month ({{count}})' },
-          week: { enabled: true, time: '11:10', limit: 7, threshold: 0.3, template: 'Controversial week ({{count}})' },
-          day: { enabled: false, time: '11:00', limit: 5, windowHours: 24, threshold: 0.3, template: 'Controversial day ({{count}})' }
-        }
-      }
+      template: [
+        { source: 'best', key: 'month', enabled: true, time: '10:20', limit: 10, template: 'Best month ({{count}})' },
+        { source: 'best', key: 'week', enabled: true, time: '10:10', limit: 7, template: 'Best week ({{count}})' },
+        { source: 'best', key: 'day', enabled: true, time: '10:00', limit: 5, windowHours: 24, template: 'Best day ({{count}})' },
+        { source: 'controversial', key: 'month', enabled: false, time: '11:20', limit: 10, threshold: 0.3, template: 'Controversial month ({{count}})' },
+        { source: 'controversial', key: 'week', enabled: true, time: '11:10', limit: 7, threshold: 0.3, template: 'Controversial week ({{count}})' },
+        { source: 'controversial', key: 'day', enabled: false, time: '11:00', limit: 5, windowHours: 24, threshold: 0.3, template: 'Controversial day ({{count}})' }
+      ]
     }
   };
 }

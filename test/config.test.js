@@ -1,22 +1,67 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { applyEnv, deepMerge, validateConfig } from '../src/config/index.js';
+import { applyEnv, deepMerge, migrateOldPublishSelections, validateConfig } from '../src/config/index.js';
 
 test('deepMerge preserves defaults and overrides nested values', () => {
   const result = deepMerge(
     {
       telegram: { apiId: 1, apiHash: 'default' },
-      publish: { dryRun: false, selections: { best: { week: { limit: 10 } } } }
+      publish: {
+        dryRun: false,
+        template: [
+          { source: 'best', key: 'week', enabled: true, limit: 10 },
+          { source: 'best', key: 'day', enabled: true, limit: 5 }
+        ]
+      }
     },
     {
       telegram: { apiHash: 'custom' },
-      publish: { dryRun: true }
+      publish: {
+        dryRun: true,
+        template: [
+          { source: 'best', key: 'week', limit: 20 },
+          { source: 'custom', key: 'night', enabled: false, limit: 3 }
+        ]
+      }
     }
   );
 
   assert.deepEqual(result, {
     telegram: { apiId: 1, apiHash: 'custom' },
-    publish: { dryRun: true, selections: { best: { week: { limit: 10 } } } }
+    publish: {
+      dryRun: true,
+      template: [
+        { source: 'best', key: 'week', enabled: true, limit: 20 },
+        { source: 'best', key: 'day', enabled: true, limit: 5 },
+        { source: 'custom', key: 'night', enabled: false, limit: 3 }
+      ]
+    }
+  });
+});
+
+test('migrateOldPublishSelections converts nested selections to publish templates', () => {
+  const migrated = migrateOldPublishSelections({
+    publish: {
+      dryRun: false,
+      selections: {
+        best: {
+          week: { enabled: true, time: '10:10', limit: 10, template: 'Best week' }
+        },
+        controversial: {
+          day: { enabled: false, time: '11:00', limit: 5, threshold: 0.3 }
+        }
+      }
+    }
+  });
+
+  assert.deepEqual(migrated, {
+    publish: {
+      dryRun: false,
+      template: [
+        { source: 'best', key: 'week', enabled: true, time: '10:10', limit: 10, template: 'Best week' },
+        { source: 'controversial', key: 'day', enabled: false, time: '11:00', limit: 5, threshold: 0.3 }
+      ]
+    }
   });
 });
 
@@ -96,16 +141,15 @@ test('validateConfig rejects all schema issues at once', () => {
       },
       publish: {
         ...validConfig().publish,
-        selections: {
-          ...validConfig().publish.selections,
-          best: {
-            ...validConfig().publish.selections.best,
-            week: {
-              ...validConfig().publish.selections.best.week,
-              limit: '10'
-            }
+        selections: { best: { week: { limit: 10 } } },
+        template: [
+          ...validConfig().publish.template,
+          {
+            source: 'best',
+            key: 'custom',
+            limit: '10'
           }
-        }
+        ]
       }
     });
   } catch (caught) {
@@ -127,7 +171,24 @@ test('validateConfig rejects all schema issues at once', () => {
   assert.match(error.message, /- parsing\.filters: expected array, got string/);
   assert.match(error.message, /- parsing\.likes\.0\.group: expected number, got string/);
   assert.match(error.message, /- parsing\.likes\.0\.typo: unsupported option/);
-  assert.match(error.message, /- publish\.selections\.best\.week\.limit: expected number, got string/);
+  assert.match(error.message, /- publish\.selections: unsupported option/);
+  assert.match(error.message, /- publish\.template\.6\.limit: expected number, got string/);
+});
+
+test('validateConfig rejects duplicate publish templates', () => {
+  assert.throws(
+    () => validateConfig({
+      ...validConfig(),
+      publish: {
+        ...validConfig().publish,
+        template: [
+          ...validConfig().publish.template,
+          { source: 'best', key: 'week', enabled: true, time: '12:00', limit: 3 }
+        ]
+      }
+    }),
+    /Duplicate publish templates:\n- best\.week \(2\)/
+  );
 });
 
 function validConfig() {
@@ -171,18 +232,14 @@ function validConfig() {
       dryRun: true,
       requestTtlHours: 12,
       workerIntervalMinutes: 10,
-      selections: {
-        best: {
-          month: { enabled: true, time: '10:20', limit: 10, template: 'Month {{count}}' },
-          week: { enabled: true, time: '10:10', limit: 10, template: 'Week {{count}}' },
-          day: { enabled: true, time: '10:00', limit: 5, windowHours: 24, template: 'Day {{count}}' }
-        },
-        controversial: {
-          month: { enabled: false, time: '11:20', limit: 10, threshold: 0.3, template: 'Month {{count}}' },
-          week: { enabled: false, time: '11:10', limit: 10, threshold: 0.3, template: 'Week {{count}}' },
-          day: { enabled: false, time: '11:00', limit: 5, windowHours: 24, threshold: 0.3, template: 'Day {{count}}' }
-        }
-      }
+      template: [
+        { source: 'best', key: 'month', enabled: true, time: '10:20', limit: 10, template: 'Month {{count}}' },
+        { source: 'best', key: 'week', enabled: true, time: '10:10', limit: 10, template: 'Week {{count}}' },
+        { source: 'best', key: 'day', enabled: true, time: '10:00', limit: 5, windowHours: 24, template: 'Day {{count}}' },
+        { source: 'controversial', key: 'month', enabled: false, time: '11:20', limit: 10, threshold: 0.3, template: 'Month {{count}}' },
+        { source: 'controversial', key: 'week', enabled: false, time: '11:10', limit: 10, threshold: 0.3, template: 'Week {{count}}' },
+        { source: 'controversial', key: 'day', enabled: false, time: '11:00', limit: 5, windowHours: 24, threshold: 0.3, template: 'Day {{count}}' }
+      ]
     },
     templates: {
       publish: {

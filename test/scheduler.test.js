@@ -22,7 +22,7 @@ test('Scheduler.start does not wait for startup sync before returning', async ()
         timezone: 'Asia/Yekaterinburg'
       },
       sync: { runOnStart: true, intervalHours: 24 },
-      publish: { selections: {} },
+      publish: { template: [] },
       logging: { logLevel: 'silent' }
     },
     {
@@ -63,7 +63,7 @@ test('Scheduler skips timer sync while startup sync is still running', async () 
         timezone: 'Asia/Yekaterinburg'
       },
       sync: { runOnStart: true, intervalHours: 24 },
-      publish: { selections: {} },
+      publish: { template: [] },
       logging: { logLevel: 'silent' }
     },
     {
@@ -117,7 +117,7 @@ test('Scheduler runs retention after initial delay and then schedules interval',
         retentionInitialDelayMinutes: 15,
         retentionIntervalHours: 24
       },
-      publish: { selections: {} },
+      publish: { template: [] },
       logging: { logLevel: 'silent' }
     },
     {
@@ -162,7 +162,7 @@ test('Scheduler wakes publication worker on startup but not on interval reschedu
       sync: { runOnStart: false, intervalHours: 24 },
       publish: {
         workerIntervalMinutes: 10,
-        selections: {}
+        template: []
       },
       logging: { logLevel: 'silent' }
     },
@@ -209,11 +209,9 @@ test('Scheduler publishes with intended scheduled time instead of callback time'
         intervalHours: 24
       },
       publish: {
-        selections: {
-          best: {
-            day: { enabled: true, time: '10:00' }
-          }
-        }
+        template: [
+          { source: 'best', key: 'day', enabled: true, time: '10:00' }
+        ]
       },
       logging: { logLevel: 'silent' }
     },
@@ -256,7 +254,7 @@ test('Scheduler chunks timeouts that exceed Node maximum delay', async () => {
       {
         schedule: { enabled: true, timezone: 'UTC' },
         sync: { runOnStart: false, intervalHours: 24 },
-        publish: { selections: {} },
+        publish: { template: [] },
         logging: { logLevel: 'silent' }
       },
       {}
@@ -306,7 +304,7 @@ test('Scheduler chunks very long timeouts until the exact requested delay is rea
       {
         schedule: { enabled: true, timezone: 'UTC' },
         sync: { runOnStart: false, intervalHours: 24 },
-        publish: { selections: {} },
+        publish: { template: [] },
         logging: { logLevel: 'silent' }
       },
       {}
@@ -359,11 +357,9 @@ test('Scheduler plans missed publications only after startup sync completes', as
       sync: { runOnStart: true, intervalHours: 24 },
       publish: {
         requestTtlHours: 12,
-        selections: {
-          best: {
-            day: { enabled: true, time: '10:00' }
-          }
-        }
+        template: [
+          { source: 'best', key: 'day', enabled: true, time: '10:00' }
+        ]
       },
       logging: { logLevel: 'silent' }
     },
@@ -418,12 +414,10 @@ test('Scheduler plans missed publications inside request TTL without waking work
       },
       publish: {
         requestTtlHours: 12,
-        selections: {
-          best: {
-            day: { enabled: true, time: '10:00' },
-            week: { enabled: true, time: '10:10' }
-          }
-        }
+        template: [
+          { source: 'best', key: 'week', enabled: true, time: '10:10' },
+          { source: 'best', key: 'day', enabled: true, time: '10:00' }
+        ]
       },
       logging: { logLevel: 'silent' }
     },
@@ -456,11 +450,9 @@ test('Scheduler plans catch-up checks without waking worker when request already
       },
       publish: {
         requestTtlHours: 12,
-        selections: {
-          best: {
-            day: { enabled: true, time: '10:00' }
-          }
-        }
+        template: [
+          { source: 'best', key: 'day', enabled: true, time: '10:00' }
+        ]
       },
       logging: { logLevel: 'silent' }
     },
@@ -500,12 +492,10 @@ test('Scheduler skips missed publications older than request TTL', async () => {
       },
       publish: {
         requestTtlHours: 12,
-        selections: {
-          best: {
-            day: { enabled: true, time: '10:00' },
-            week: { enabled: true, time: '10:10' }
-          }
-        }
+        template: [
+          { source: 'best', key: 'week', enabled: true, time: '10:10' },
+          { source: 'best', key: 'day', enabled: true, time: '10:00' }
+        ]
       },
       logging: { logLevel: 'silent' }
     },
