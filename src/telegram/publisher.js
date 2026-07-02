@@ -177,7 +177,6 @@ export class SelectionPublisher {
         return {
           status: 'exists',
           requested: false,
-          count: getExpectedPublicationCount(existing),
           publicationId: existing.id,
           publicationStatus: existing.status,
           publicationKey: canonicalKey
@@ -496,10 +495,6 @@ function getPublicationKeyFromSpec(spec, config) {
 
 function isBlockingPublication(publication) {
   return ['created', 'running', 'published'].includes(publication?.status);
-}
-
-function getExpectedPublicationCount(publication) {
-  return Number(publication?.data?.count || publication?.data?.selection?.posts?.length || 0);
 }
 
 async function getBlockingPublication(repository, key) {

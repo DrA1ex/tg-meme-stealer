@@ -89,7 +89,13 @@ test('SelectionPublisher skips Telegram calls when publication request already e
         insertAttempts += 1;
         return null;
       },
-      getPublicationByKey: async () => ({ id: 10, status: 'published', data: { count: 1 } }),
+      getPublicationByKey: async () => ({
+        id: 10,
+        status: 'published',
+        get data() {
+          throw new Error('duplicate path must not read publication data count');
+        }
+      }),
       getNextPublicationRequest: async () => null
     },
     mediaDownloader: {},
@@ -117,7 +123,6 @@ test('SelectionPublisher skips Telegram calls when publication request already e
   assert.equal(insertAttempts, 0);
   assert.deepEqual(result.selections, [{
     key: 'best.week',
-    count: 1,
     status: 'exists',
     requested: false,
     publicationId: 10,
@@ -166,12 +171,56 @@ test('SelectionPublisher handles concurrent publication scheduling collision wit
   await fs.rm(dbPath, { force: true });
 });
 
+test('SelectionPublisher publication key does not depend on selected post count', async () => {
+  async function planWithPostCount(count) {
+    const insertedKeys = [];
+    const publisher = new SelectionPublisher({
+      repository: {
+        getPublicationByKey: async () => null,
+        getSelectionPosts: async () => Array.from({ length: count }, (_, index) => post(index + 1, 'Alice')),
+        tryCreatePublicationRequest: async ({ key }) => {
+          insertedKeys.push(key);
+          return count;
+        }
+      },
+      mediaDownloader: {},
+      setupAssistant: null,
+      config: {
+        ...config(),
+        publish: {
+          dryRun: false,
+          template: [
+            { source: 'best', key: 'week', enabled: true, limit: 10, template: 'Best week' }
+          ]
+        }
+      }
+    });
+
+    const result = await publisher.publishAll(new Date('2026-06-29T00:00:00.000Z'), ['best.week']);
+    return { result, insertedKeys };
+  }
+
+  const onePost = await planWithPostCount(1);
+  const threePosts = await planWithPostCount(3);
+
+  assert.equal(onePost.result.selections[0].count, 1);
+  assert.equal(threePosts.result.selections[0].count, 3);
+  assert.deepEqual(onePost.insertedKeys, ['publish:best:week:2026-06-29T00-00']);
+  assert.deepEqual(threePosts.insertedKeys, ['publish:best:week:2026-06-29T00-00']);
+});
+
 test('SelectionPublisher scheduled enqueue skips existing publication before selecting posts', async () => {
   let postQueries = 0;
   let insertAttempts = 0;
   const publisher = new SelectionPublisher({
     repository: {
-      getPublicationByKey: async () => ({ id: 20, status: 'published', data: { count: 3 } }),
+      getPublicationByKey: async () => ({
+        id: 20,
+        status: 'published',
+        get data() {
+          throw new Error('duplicate path must not read publication data count');
+        }
+      }),
       getSelectionPosts: async () => {
         postQueries += 1;
         return [post(1, 'Alice')];
@@ -204,7 +253,6 @@ test('SelectionPublisher scheduled enqueue skips existing publication before sel
     key: 'best.week',
     status: 'exists',
     requested: false,
-    count: 3,
     publicationId: 20,
     publicationStatus: 'published',
     publicationKey: 'publish:best:week:2026-06-29T00-00'
@@ -386,7 +434,13 @@ test('SelectionPublisher.runManualPublish replies when requested publication alr
   let loadedPosts = false;
   const publisher = new SelectionPublisher({
     repository: {
-      getPublicationByKey: async () => ({ id: 10, status: 'published', data: { count: 5 } }),
+      getPublicationByKey: async () => ({
+        id: 10,
+        status: 'published',
+        get data() {
+          throw new Error('duplicate path must not read publication data count');
+        }
+      }),
       getSelectionPosts: async () => {
         loadedPosts = true;
         return [post(1, 'Alice')];
