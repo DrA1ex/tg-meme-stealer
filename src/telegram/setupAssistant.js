@@ -120,9 +120,24 @@ export class SetupAssistant {
       await this.suggestParser(ctx);
       return;
     }
+    if (action === 'reset_filters') {
+      this.ensureSession(ctx);
+      await this.resetFilters(ctx);
+      return;
+    }
     if (action === 'publish') {
       this.ensureSession(ctx);
       await this.publishMenu(ctx);
+      return;
+    }
+    if (action === 'publish_presets' || action === 'presets') {
+      this.ensureSession(ctx);
+      await this.publishPresets(ctx);
+      return;
+    }
+    if (action === 'publish_config') {
+      this.ensureSession(ctx);
+      await this.showPublishConfig(ctx);
       return;
     }
     if (action === 'advanced') {
@@ -182,10 +197,24 @@ export class SetupAssistant {
         await this.showParserConfig(ctx);
       } else if (action === 'suggest') {
         await this.suggestParser(ctx);
+      } else if (action === 'reset_filters') {
+        await this.resetFilters(ctx);
       } else if (action.startsWith('apply:')) {
         await this.applySuggestion(ctx, action.slice('apply:'.length));
+      } else if (action.startsWith('noop:')) {
+        return;
       } else if (action === 'publish') {
         await this.publishMenu(ctx);
+      } else if (action === 'publish_presets') {
+        await this.publishPresets(ctx);
+      } else if (action === 'publish_config') {
+        await this.showPublishConfig(ctx);
+      } else if (action.startsWith('preset:')) {
+        await this.showPublishPreset(ctx, action.slice('preset:'.length));
+      } else if (action.startsWith('apply_preset:')) {
+        await this.applyPublishPreset(ctx, action.slice('apply_preset:'.length), { replace: false });
+      } else if (action.startsWith('replace_preset:')) {
+        await this.applyPublishPreset(ctx, action.slice('replace_preset:'.length), { replace: true });
       } else if (action === 'advanced') {
         await this.advanced(ctx);
       } else if (action === 'config') {
@@ -216,6 +245,61 @@ export class SetupAssistant {
 
   async publishMenu(ctx) {
     await this.replyWithKeyboard(ctx, formatPublishMenu(this.getDraft(ctx), this.config), publishMenuKeyboard());
+  }
+
+  async publishPresets(ctx) {
+    await this.replyWithKeyboard(ctx, formatPublishPresetsMenu(), publishPresetsKeyboard());
+  }
+
+  async showPublishPreset(ctx, presetId) {
+    const preset = getPublishPreset(presetId);
+    if (!preset) {
+      await this.replyWithKeyboard(ctx, 'Unknown publish preset. Choose one from the presets list.', publishPresetsKeyboard());
+      return;
+    }
+
+    await this.replyWithKeyboard(
+      ctx,
+      formatPublishPresetDetails(preset, this.getDraft(ctx)),
+      publishPresetDetailsKeyboard(preset)
+    );
+  }
+
+  async applyPublishPreset(ctx, presetId, { replace = false } = {}) {
+    const preset = getPublishPreset(presetId);
+    if (!preset) {
+      await this.replyWithKeyboard(ctx, 'Unknown publish preset. Choose one from the presets list.', publishPresetsKeyboard());
+      return;
+    }
+
+    const draft = this.getDraft(ctx);
+    const beforePublish = structuredClone(draft.publish || {});
+    applyPublishPresetToDraft(draft, preset, { replace });
+    const afterPublish = structuredClone(draft.publish || {});
+
+    try {
+      validateSetupDraft(draft, this.config);
+    } catch (error) {
+      draft.publish = beforePublish;
+      await this.replyWithKeyboard(
+        ctx,
+        [`Preset was not applied: ${preset.title}`, '', `Validation error: ${error.message}`].join('\n'),
+        publishPresetDetailsKeyboard(preset)
+      );
+      return;
+    }
+
+    await this.replyWithKeyboard(
+      ctx,
+      formatAppliedPublishPreset({ preset, beforePublish, afterPublish, replace }),
+      publishAfterPresetKeyboard()
+    );
+  }
+
+  async showPublishConfig(ctx) {
+    await ctx.reply('Current publishing config:');
+    await replyJsonCode(ctx, this.getDraft(ctx).publish || {});
+    await this.replyWithKeyboard(ctx, 'Use presets for common schedules, or Advanced JSON for exact tuning.', publishMenuKeyboard());
   }
 
   async advanced(ctx) {
@@ -263,8 +347,12 @@ export class SetupAssistant {
     this.setupSuggestions.set(ctx.from.id, suggestions);
     await this.replyWithKeyboard(
       ctx,
-      formatParserSuggestions({ suggestions, scanned: result.scanned, matched: result.posts.length }),
-      parserSuggestionsKeyboard(suggestions)
+      formatParserSuggestions({
+        suggestions: markSuggestionStates(suggestions, draft),
+        scanned: result.scanned,
+        matched: result.posts.length
+      }),
+      parserSuggestionsKeyboard(markSuggestionStates(suggestions, draft))
     );
   }
 
@@ -280,12 +368,53 @@ export class SetupAssistant {
       return;
     }
 
-    suggestion.apply(this.getDraft(ctx));
+    const draft = this.getDraft(ctx);
+    if (!isSuggestionUseful(suggestion, draft)) {
+      await this.replyWithKeyboard(
+        ctx,
+        [`No changes: ${suggestion.title}`, '', 'This suggestion is already reflected in the current parser draft.'].join('\n'),
+      parserSuggestionsKeyboard(markSuggestionStates(suggestions, draft))
+    );
+      return;
+    }
+
+    const beforeParsing = structuredClone(draft.parsing || {});
+    suggestion.apply(draft);
+    const afterParsing = structuredClone(draft.parsing || {});
     await this.replyWithKeyboard(
       ctx,
-      [`Applied: ${suggestion.title}`, '', suggestion.afterApply || 'Run Test parser or Preview to check the result.'].join('\n'),
-      parserMenuKeyboard()
-    );
+      [
+        formatAppliedSuggestion({ suggestion, beforeParsing, afterParsing }),
+        '',
+        'You can apply another suggestion from the same list, or run Test parser / Preview.'
+      ].join('\n'),
+    parserSuggestionsKeyboard(markSuggestionStates(suggestions, draft))
+  );
+  }
+
+  async resetFilters(ctx) {
+    const draft = this.getDraft(ctx);
+    const beforeParsing = structuredClone(draft.parsing || {});
+    draft.parsing.filters = [];
+    const afterParsing = structuredClone(draft.parsing || {});
+    const suggestions = this.setupSuggestions.get(ctx.from.id) || [];
+    const keyboard = suggestions.length
+                     ? parserSuggestionsKeyboard(markSuggestionStates(suggestions, draft))
+                     : parserMenuKeyboard();
+    await this.replyWithKeyboard(
+      ctx,
+      [
+        'Filters reset.',
+        '',
+        'Changed parser rules:',
+        ...formatParserChanges(beforeParsing, afterParsing),
+        '',
+        suggestions.length
+        ? 'Now apply filter suggestions again, or run Test parser / Preview.'
+        : 'Run Auto suggestions to add filters again.'
+      ].join('\n'),
+    keyboard
+  );
   }
 
   async setRules(ctx, key) {
@@ -518,8 +647,8 @@ function formatSetupStatus(draft, baseConfig = {}) {
     'Next steps:',
     '- Doctor checks obvious config and parser issues.',
     '- Preview sends real candidate posts to this chat.',
-    '- Parser → Auto suggestions can now detect common filters, author rules, and reaction buttons.',
-    '- Phase 3 will add publish presets such as daily top, morning/night, weekly and controversial.'
+    '- Parser → Auto suggestions can detect common filters, author rules, and reaction buttons.',
+    '- Publishing → Presets can create common schedules without JSON.'
   ].join('\n');
 }
 
@@ -536,7 +665,7 @@ function formatParserMenu(draft) {
     '- Preview sends selected rich posts.',
     '- Advanced JSON lets you edit exact rules.',
     '',
-    'Phase 3 target: button presets for publish templates. Advanced JSON remains available for exact tuning.'
+    'Publishing presets are available in the Publishing screen. Advanced JSON remains available for exact tuning.'
   ].join('\n');
 }
 
@@ -554,10 +683,11 @@ function formatPublishMenu(draft, baseConfig = {}) {
     ...formatTemplateLines(templates, { includeDisabled: true }),
     '',
     'Available now:',
-    '- Status and Doctor explain the current config.',
-    '- Advanced JSON edits exact sources/templates.',
+    '- Presets can add/update common schedules with buttons.',
+    '- Replace templates lets a preset become the full publish.template list.',
+    '- Advanced JSON still edits exact sources/templates.',
     '',
-    'Phase 3 target: button presets for Daily top, Morning + night top, Weekly top, Monthly top, and Controversial.'
+    'Choose Presets to add daily, morning/night, weekly, monthly, or controversial selections.'
   ].join('\n');
 }
 
@@ -737,7 +867,7 @@ function buildParserSuggestions(messages, draft = {}) {
     });
   }
 
-  return suggestions.filter((suggestion) => isSuggestionUseful(suggestion, draft));
+  return suggestions;
 }
 
 function analyzeMessagesForParser(messages) {
@@ -902,36 +1032,50 @@ function formatParserSuggestions({ suggestions, scanned, matched }) {
   ];
 
   if (!suggestions.length) {
-    lines.push('- No useful suggestions found. Use Advanced JSON with /raw or /debug for this source shape.');
+    lines.push('- No suggestions found. Use Advanced JSON with /raw or /debug for this source shape.');
   } else {
     for (const suggestion of suggestions) {
-      lines.push(`- ${suggestion.title}: ${suggestion.description}`);
+      const marker = suggestion.actionable ? '•' : '✓';
+      const state = suggestion.actionable ? '' : ' — already applied / no change';
+      lines.push(`- ${marker} ${suggestion.title}: ${suggestion.description}${state}`);
     }
   }
 
-  lines.push('', 'Choose a button, then run Test parser and Preview before saving.');
+  lines.push(
+    '',
+    'Legend: • changes the parser draft, ✓ already matches the current draft and does nothing when clicked.',
+    'You can apply several suggestions from this screen, then run Test parser and Preview before saving.'
+  );
   return lines.join('\n');
 }
 
 function parserSuggestionsKeyboard(suggestions) {
-  if (!suggestions.length) {
-    return inlineKeyboard([
-      [button('Advanced JSON', 'setup:advanced'), button('Back', 'setup:parser')]
-    ]);
-  }
-
   const rows = [];
-  const recommended = suggestions.find((suggestion) => suggestion.recommended);
-  if (recommended) rows.push([button(recommended.title, `setup:apply:${recommended.id}`)]);
 
-  const regular = suggestions.filter((suggestion) => !suggestion.recommended);
-  for (let index = 0; index < regular.length; index += 2) {
-    rows.push(regular.slice(index, index + 2).map((suggestion) => button(shortSuggestionTitle(suggestion.title), `setup:apply:${suggestion.id}`)));
+  if (suggestions.length) {
+    const recommended = suggestions.find((suggestion) => suggestion.recommended);
+    if (recommended) rows.push([suggestionButton(recommended, { fullTitle: true })]);
+
+    const regular = suggestions.filter((suggestion) => !suggestion.recommended);
+    for (let index = 0; index < regular.length; index += 2) {
+      rows.push(regular.slice(index, index + 2).map((suggestion) => suggestionButton(suggestion)));
+    }
+  } else {
+    rows.push([button('Advanced JSON', 'setup:advanced')]);
   }
+
+  rows.push([button('Reset filters', 'setup:reset_filters')]);
   rows.push([button('Test parser', 'setup:test'), button('Preview', 'setup:preview')]);
   rows.push([button('Show parser config', 'setup:parser_config')]);
   rows.push([button('Advanced JSON', 'setup:advanced'), button('Back', 'setup:parser')]);
   return inlineKeyboard(rows);
+}
+
+function suggestionButton(suggestion, { fullTitle = false } = {}) {
+  const prefix = suggestion.actionable ? '• ' : '✓ ';
+  const title = fullTitle ? suggestion.title : shortSuggestionTitle(suggestion.title);
+  const action = suggestion.actionable ? `setup:apply:${suggestion.id}` : `setup:noop:${suggestion.id}`;
+  return button(`${prefix}${title}`.slice(0, 52), action);
 }
 
 function shortSuggestionTitle(title) {
@@ -941,6 +1085,13 @@ function shortSuggestionTitle(title) {
     .replace(' as author', '')
     .replace('detected ', '')
     .slice(0, 32);
+}
+
+function markSuggestionStates(suggestions, draft) {
+  return suggestions.map((suggestion) => ({
+    ...suggestion,
+    actionable: isSuggestionUseful(suggestion, draft)
+  }));
 }
 
 function isSuggestionUseful(suggestion, draft) {
@@ -1035,6 +1186,312 @@ function escapeRegex(value) {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+
+const PUBLISH_PRESETS = [
+  {
+    id: 'daily_top',
+    title: 'Daily top',
+    description: 'One daily best selection. Good when you want a single fresh digest every day.',
+    sources: [{ key: 'best', where: 'likes > 0' }],
+    templates: [
+      publishTemplate({
+        source: 'best',
+        key: 'daily_best',
+        schedule: { type: 'daily', time: '11:00' },
+        windowHours: 24,
+        posts: { min: 5, target: 10, max: 20 },
+        reactions: { strategy: 'likes', min: 20, includeAbove: 30 },
+        template: 'Best {{count}} fresh posts'
+      })
+    ],
+    notes: ['Publishes every day at 11:00 and looks back 24 hours.']
+  },
+  {
+    id: 'morning_night_top',
+    title: 'Morning + night top',
+    description: 'Two daily best selections with non-overlapping 12h windows.',
+    sources: [{ key: 'best', where: 'likes > 0' }],
+    templates: [
+      publishTemplate({
+        source: 'best',
+        key: 'daily_morning_best',
+        schedule: { type: 'daily', time: '11:00' },
+        windowHours: 12,
+        posts: { min: 5, target: 10, max: 20 },
+        reactions: { strategy: 'likes', min: 20, includeAbove: 30 },
+        template: 'Best {{count}} morning fresh posts'
+      }),
+      publishTemplate({
+        source: 'best',
+        key: 'daily_night_best',
+        schedule: { type: 'daily', time: '23:00' },
+        windowHours: 12,
+        posts: { min: 5, target: 10, max: 20 },
+        reactions: { strategy: 'likes', min: 20, includeAbove: 30 },
+        template: 'Best {{count}} night fresh posts'
+      })
+    ],
+    notes: ['Morning publishes at 11:00 for the previous 12h.', 'Night publishes at 23:00 for the previous 12h.']
+  },
+  {
+    id: 'weekly_top',
+    title: 'Weekly top',
+    description: 'One weekly best selection on Monday morning.',
+    sources: [{ key: 'best', where: 'likes > 0' }],
+    templates: [
+      publishTemplate({
+        source: 'best',
+        key: 'weekly_best',
+        schedule: { type: 'weekly', weekday: 1, time: '10:30' },
+        windowHours: 168,
+        posts: { min: 5, target: 10, max: 15 },
+        reactions: { strategy: 'likes', min: 30, includeAbove: 40 },
+        template: 'Best {{count}} posts from the last week'
+      })
+    ],
+    notes: ['Publishes every Monday at 10:30 and looks back 7 days.']
+  },
+  {
+    id: 'monthly_top',
+    title: 'Monthly top',
+    description: 'One monthly best selection on the first day of the month.',
+    sources: [{ key: 'best', where: 'likes > 0' }],
+    templates: [
+      publishTemplate({
+        source: 'best',
+        key: 'monthly_best',
+        schedule: { type: 'monthly', dayOfMonth: 1, time: '10:00' },
+        windowHours: 720,
+        posts: { min: 5, target: 10, max: 20 },
+        reactions: { strategy: 'likes', min: 30, includeAbove: 40 },
+        template: 'Best {{count}} posts from the last month'
+      })
+    ],
+    notes: ['Publishes on day 1 at 10:00 and looks back about 30 days.']
+  },
+  {
+    id: 'monthly_controversial',
+    title: 'Monthly controversial',
+    description: 'One monthly selection for posts with close like/dislike counts.',
+    sources: [{ key: 'controversial', where: 'abs(likes - dislikes) < max(likes, dislikes) * 0.25' }],
+    templates: [
+      publishTemplate({
+        source: 'controversial',
+        key: 'monthly_controversial',
+        schedule: { type: 'monthly', dayOfMonth: 1, time: '10:30' },
+        windowHours: 720,
+        posts: { min: 3, target: 5, max: 15 },
+        reactions: { strategy: 'sum', min: 0, includeAbove: 50 },
+        template: 'Most controversial posts from the last month ({{count}})'
+      })
+    ],
+    notes: ['Uses source where abs(likes - dislikes) < max(likes, dislikes) * 0.25.', 'Ranks by total reactions.']
+  },
+  {
+    id: 'full_rankings',
+    title: 'Full rankings pack',
+    description: 'Monthly, weekly, morning/night, and monthly controversial selections together.',
+    sources: [
+      { key: 'best', where: 'likes > 0' },
+      { key: 'controversial', where: 'abs(likes - dislikes) < max(likes, dislikes) * 0.25' }
+    ],
+    templates: [
+      publishTemplate({
+        source: 'best',
+        key: 'monthly_best',
+        schedule: { type: 'monthly', dayOfMonth: 1, time: '10:00' },
+        windowHours: 720,
+        posts: { min: 5, target: 10, max: 20 },
+        reactions: { strategy: 'likes', min: 30, includeAbove: 40 },
+        template: 'Best {{count}} posts from the last month'
+      }),
+      publishTemplate({
+        source: 'best',
+        key: 'weekly_best',
+        schedule: { type: 'weekly', weekday: 1, time: '10:30' },
+        windowHours: 168,
+        posts: { min: 5, target: 10, max: 15 },
+        reactions: { strategy: 'likes', min: 30, includeAbove: 40 },
+        template: 'Best {{count}} posts from the last week'
+      }),
+      publishTemplate({
+        source: 'best',
+        key: 'daily_morning_best',
+        schedule: { type: 'daily', time: '11:00' },
+        windowHours: 12,
+        posts: { min: 5, target: 10, max: 20 },
+        reactions: { strategy: 'likes', min: 20, includeAbove: 30 },
+        template: 'Best {{count}} morning fresh posts'
+      }),
+      publishTemplate({
+        source: 'best',
+        key: 'daily_night_best',
+        schedule: { type: 'daily', time: '23:00' },
+        windowHours: 12,
+        posts: { min: 5, target: 10, max: 20 },
+        reactions: { strategy: 'likes', min: 20, includeAbove: 30 },
+        template: 'Best {{count}} night fresh posts'
+      }),
+      publishTemplate({
+        source: 'controversial',
+        key: 'monthly_controversial',
+        schedule: { type: 'monthly', dayOfMonth: 1, time: '10:30' },
+        windowHours: 720,
+        posts: { min: 3, target: 5, max: 15 },
+        reactions: { strategy: 'sum', min: 0, includeAbove: 50 },
+        template: 'Most controversial posts from the last month ({{count}})'
+      })
+    ],
+    notes: ['Good starting point when you want all common rankings.', 'Use Replace templates if you want this to be the whole publish.template list.']
+  }
+];
+
+function publishTemplate(template) {
+  return {
+    enabled: true,
+    ...template
+  };
+}
+
+function getPublishPreset(presetId) {
+  return PUBLISH_PRESETS.find((preset) => preset.id === presetId) || null;
+}
+
+function formatPublishPresetsMenu() {
+  return [
+    'Publish presets',
+    '',
+    'Choose a preset, review the exact templates it will create, then apply it with one button.',
+    '',
+    ...PUBLISH_PRESETS.flatMap((preset) => [
+      `- ${preset.title}: ${preset.description}`
+    ]),
+    '',
+    'Apply/update keeps existing templates and upserts matching keys.',
+    'Replace all templates uses the selected preset as the full publish.template list.'
+  ].join('\n');
+}
+
+function formatPublishPresetDetails(preset, draft = {}) {
+  const existingTemplates = new Set((draft.publish?.template || []).map((template) => template.key));
+  const existingSources = new Set((draft.publish?.sources || []).map((source) => source.key));
+  const lines = [
+    `Preset: ${preset.title}`,
+    '',
+    preset.description,
+    '',
+    'Sources:'
+  ];
+
+  for (const source of preset.sources || []) {
+    const status = existingSources.has(source.key) ? 'already exists, will keep current where' : 'will add if missing';
+    lines.push(`- ${source.key}: ${status}; default where=${source.where || 'true'}`);
+  }
+
+  lines.push('', 'Templates:');
+  for (const template of preset.templates || []) {
+    const status = existingTemplates.has(template.key) ? 'update existing' : 'add new';
+    lines.push(`- ${template.key}: ${status}; source=${template.source}, ${formatSchedule(template.schedule)}, window=${template.windowHours}h, posts=${formatPostsConfig(template.posts)}, reactions=${formatReactionsConfig(template.reactions)}`);
+  }
+
+  if (preset.notes?.length) {
+    lines.push('', 'Notes:', ...preset.notes.map((note) => `- ${note}`));
+  }
+
+  lines.push(
+    '',
+    'Apply/update is safe for existing unrelated templates.',
+    'Replace all templates removes other templates and keeps only this preset.'
+  );
+
+  return lines.join('\n');
+}
+
+function applyPublishPresetToDraft(draft, preset, { replace = false } = {}) {
+  draft.publish = draft.publish || {};
+  draft.publish.sources = Array.isArray(draft.publish.sources) ? draft.publish.sources : [];
+  draft.publish.template = replace ? [] : (Array.isArray(draft.publish.template) ? draft.publish.template : []);
+
+  for (const source of preset.sources || []) {
+    ensurePublishSource(draft, source);
+  }
+
+  for (const template of preset.templates || []) {
+    setPublishTemplate(draft, structuredClone(template));
+  }
+}
+
+function ensurePublishSource(draft, source) {
+  draft.publish = draft.publish || {};
+  draft.publish.sources = Array.isArray(draft.publish.sources) ? draft.publish.sources : [];
+  if (draft.publish.sources.some((item) => item.key === source.key)) return;
+  upsertPublishSource(draft, source);
+}
+
+function formatAppliedPublishPreset({ preset, beforePublish, afterPublish, replace }) {
+  return [
+    `${replace ? 'Replaced publish templates with preset' : 'Applied publish preset'}: ${preset.title}`,
+    '',
+    'Changed publishing config:',
+    ...formatPublishChanges(beforePublish, afterPublish),
+    '',
+    'Run Doctor to validate schedules, then Preview to inspect selected posts before saving.'
+  ].join('\n');
+}
+
+function formatPublishChanges(beforePublish = {}, afterPublish = {}) {
+  const lines = [];
+  const beforeSources = mapByKey(beforePublish.sources || []);
+  const afterSources = mapByKey(afterPublish.sources || []);
+  const beforeTemplates = mapByKey(beforePublish.template || []);
+  const afterTemplates = mapByKey(afterPublish.template || []);
+
+  const addedSources = [...afterSources.keys()].filter((key) => !beforeSources.has(key));
+  const updatedSources = [...afterSources.keys()].filter((key) => beforeSources.has(key) && JSON.stringify(beforeSources.get(key)) !== JSON.stringify(afterSources.get(key)));
+  const removedSources = [...beforeSources.keys()].filter((key) => !afterSources.has(key));
+  const addedTemplates = [...afterTemplates.keys()].filter((key) => !beforeTemplates.has(key));
+  const updatedTemplates = [...afterTemplates.keys()].filter((key) => beforeTemplates.has(key) && JSON.stringify(beforeTemplates.get(key)) !== JSON.stringify(afterTemplates.get(key)));
+  const removedTemplates = [...beforeTemplates.keys()].filter((key) => !afterTemplates.has(key));
+
+  lines.push(`- sources: ${beforeSources.size} → ${afterSources.size}`);
+  if (addedSources.length) lines.push(`  added: ${addedSources.join(', ')}`);
+  if (updatedSources.length) lines.push(`  updated: ${updatedSources.join(', ')}`);
+  if (removedSources.length) lines.push(`  removed: ${removedSources.join(', ')}`);
+
+  lines.push(`- templates: ${beforeTemplates.size} → ${afterTemplates.size}`);
+  if (addedTemplates.length) lines.push(`  added: ${addedTemplates.join(', ')}`);
+  if (updatedTemplates.length) lines.push(`  updated: ${updatedTemplates.join(', ')}`);
+  if (removedTemplates.length) lines.push(`  removed: ${removedTemplates.join(', ')}`);
+
+  for (const key of [...addedTemplates, ...updatedTemplates].slice(0, 8)) {
+    const template = afterTemplates.get(key);
+    lines.push(`  ${key}: ${formatSchedule(template.schedule)}, window=${template.windowHours}h, posts=${formatPostsConfig(template.posts)}, reactions=${formatReactionsConfig(template.reactions)}`);
+  }
+  if (addedTemplates.length + updatedTemplates.length > 8) {
+    lines.push(`  ...and ${addedTemplates.length + updatedTemplates.length - 8} more changed template(s)`);
+  }
+
+  if (lines.length === 2 && !addedSources.length && !updatedSources.length && !removedSources.length && !addedTemplates.length && !updatedTemplates.length && !removedTemplates.length) {
+    lines.push('- no changes');
+  }
+
+  return lines;
+}
+
+function mapByKey(items) {
+  return new Map((Array.isArray(items) ? items : [])
+    .filter((item) => item?.key)
+    .map((item) => [item.key, item]));
+}
+
+function formatPostsConfig(posts = {}) {
+  return `${posts.min ?? '?'}-${posts.target ?? '?'}-${posts.max ?? '?'}`;
+}
+
+function formatReactionsConfig(reactions = {}) {
+  return `${reactions.strategy || 'likes'} min=${reactions.min ?? 0} includeAbove=${reactions.includeAbove ?? '∞'}`;
+}
+
 function setupMenuKeyboard() {
   return inlineKeyboard([
     [button('Status', 'setup:status'), button('Doctor', 'setup:doctor')],
@@ -1048,6 +1505,7 @@ function setupMenuKeyboard() {
 function parserMenuKeyboard() {
   return inlineKeyboard([
     [button('Auto suggestions', 'setup:suggest')],
+    [button('Reset filters', 'setup:reset_filters')],
     [button('Test parser', 'setup:test'), button('Preview', 'setup:preview')],
     [button('Show parser config', 'setup:parser_config')],
     [button('Advanced JSON', 'setup:advanced'), button('Status', 'setup:status')],
@@ -1065,9 +1523,34 @@ function parserAfterApplyKeyboard() {
 
 function publishMenuKeyboard() {
   return inlineKeyboard([
+    [button('Presets', 'setup:publish_presets'), button('Show publish config', 'setup:publish_config')],
     [button('Doctor', 'setup:doctor'), button('Preview', 'setup:preview')],
-    [button('Advanced JSON', 'setup:advanced'), button('Show config', 'setup:config')],
+    [button('Advanced JSON', 'setup:advanced'), button('Show full config', 'setup:config')],
     [button('Back to setup', 'setup:status')]
+  ]);
+}
+
+function publishPresetsKeyboard() {
+  const rows = PUBLISH_PRESETS.map((preset) => [button(preset.title, `setup:preset:${preset.id}`)]);
+  rows.push([button('Show publish config', 'setup:publish_config')]);
+  rows.push([button('Back', 'setup:publish')]);
+  return inlineKeyboard(rows);
+}
+
+function publishPresetDetailsKeyboard(preset) {
+  return inlineKeyboard([
+    [button('Apply / update preset', `setup:apply_preset:${preset.id}`)],
+    [button('Replace all templates with preset', `setup:replace_preset:${preset.id}`)],
+    [button('Show publish config', 'setup:publish_config')],
+    [button('Back to presets', 'setup:publish_presets'), button('Publishing', 'setup:publish')]
+  ]);
+}
+
+function publishAfterPresetKeyboard() {
+  return inlineKeyboard([
+    [button('Presets', 'setup:publish_presets'), button('Show publish config', 'setup:publish_config')],
+    [button('Doctor', 'setup:doctor'), button('Preview', 'setup:preview')],
+    [button('Save', 'setup:save'), button('Publishing', 'setup:publish')]
   ]);
 }
 
