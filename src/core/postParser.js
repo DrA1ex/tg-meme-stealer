@@ -51,6 +51,58 @@ export function parseReactions(replyMarkup) {
   return result;
 }
 
+
+export function getReactionEmoji(value) {
+  const reaction = value?.reaction ?? value?.type ?? value;
+  if (typeof reaction === 'string') return reaction;
+  return String(
+    reaction?.emoji ??
+      reaction?.emoticon ??
+      reaction?.value ??
+      reaction?.reaction ??
+      ''
+  );
+}
+
+export function getReactionCount(value) {
+  const raw = value?.count ?? value?.total_count ?? value?.totalCount ?? value?.total ?? 0;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+export function parseReactionCount(value, rule = {}) {
+  const emoji = getReactionEmoji(value);
+  const count = getReactionCount(value);
+  const emojis = getRuleEmojis(rule);
+  const listed = emojis.includes(emoji);
+  const matched = Boolean(emoji) && (emojis.length === 0 ? true : (rule.invert ? !listed : listed));
+  return matched ? count : 0;
+}
+
+export function parseReactionCountDetails(value, rule = {}) {
+  const emoji = getReactionEmoji(value);
+  const count = getReactionCount(value);
+  const emojis = getRuleEmojis(rule);
+  const listed = emojis.includes(emoji);
+  const matched = Boolean(emoji) && (emojis.length === 0 ? true : (rule.invert ? !listed : listed));
+  return {
+    input: serializeDebugValue(value),
+    emoji,
+    count,
+    emojis,
+    invert: Boolean(rule.invert),
+    listed,
+    matched,
+    result: matched ? count : 0
+  };
+}
+
+function getRuleEmojis(rule = {}) {
+  const raw = rule.emojis ?? rule.emoji ?? rule.values ?? rule.value;
+  if (raw === undefined || raw === null) return [];
+  return (Array.isArray(raw) ? raw : [raw]).map((item) => String(item));
+}
+
 export function getSenderUserId(message) {
   return Number(
     message?.sender?.id ??
@@ -485,6 +537,7 @@ function applyRegex(value, extractor) {
 
 function transformValue(value, transform, rule = {}) {
   if (transform === 'count') return parseCount(value);
+  if (transform === 'reactionCount') return parseReactionCount(value, rule);
   if (transform === 'telegramUsername') return String(value).startsWith('@') ? String(value) : `@${value}`;
   if (transform === 'exists') return value !== undefined && value !== null && String(value).trim() !== '';
   if (transform === 'notEmpty') return String(value).trim().length > 0;
@@ -506,6 +559,7 @@ function transformValue(value, transform, rule = {}) {
 function getTransformDetails(value, transform, rule = {}) {
   if (value === undefined || value === null) return null;
   if (transform === 'count') return parseCountDetails(value);
+  if (transform === 'reactionCount') return parseReactionCountDetails(value, rule);
   if (transform === 'telegramUsername') {
     return {
       input: serializeDebugValue(value),

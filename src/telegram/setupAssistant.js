@@ -14,6 +14,7 @@ import {
   summarizeParsedPosts,
   validateSetupDraft
 } from '../core/setupConfig.js';
+import { parseMessagesToPosts } from '../core/postParser.js';
 import { loadConfig } from '../config/index.js';
 import { sendRichPost } from './richPost.js';
 import {
@@ -121,6 +122,7 @@ export class SetupAssistant {
     this.setupMeta = new Map();
     this.setupLastChange = new Map();
     this.setupTrafficPresets = new Map();
+    this.setupSampleCache = new Map();
   }
 
   register(bot) {
@@ -397,6 +399,7 @@ export class SetupAssistant {
     this.setupMeta.set(ctx.from.id, createSetupMeta());
     this.setupLastChange.delete(ctx.from.id);
     this.setupTrafficPresets.delete(ctx.from.id);
+    this.setupSampleCache.delete(ctx.from.id);
     await this.replyWithKeyboard(ctx, formatSetupIntro(this.getDraft(ctx), this.getMeta(ctx)), setupMenuKeyboard());
   }
 
@@ -452,7 +455,7 @@ export class SetupAssistant {
       draft.publish = beforePublish;
       await this.replyWithKeyboard(
         ctx,
-        [`Preset was not applied: ${preset.title}`, '', `Validation error: ${error.message}`].join(''),
+        [`Preset was not applied: ${preset.title}`, '', `Validation error: ${error.message}`].join('\n'),
         validationKeyboard
       );
       return;
@@ -692,13 +695,35 @@ export class SetupAssistant {
     includeMessages = false
   } = {}) {
     const draft = this.getDraft(ctx);
+    const maxMessages = Math.max(1, Number(maxLimit || initialLimit || DEFAULT_TEST_MESSAGES));
+    const cache = this.getUsableSampleCache(ctx, maxMessages);
+    const cachedMessages = cache?.messages?.slice(0, maxMessages) || [];
+    const cachedPosts = cachedMessages.length ? parseCachedSetupPosts(cachedMessages, draft, this.config) : [];
+    const cacheEnough = cachedMessages.length > 0 && (
+      cachedPosts.length >= minMatched ||
+      cache.exhausted ||
+      cachedMessages.length >= maxMessages ||
+      !Number.isFinite(minMatched)
+    );
+
+    if (cacheEnough) {
+      return {
+        scanned: cachedMessages.length,
+        posts: cachedPosts,
+        pages: cache.pages || 0,
+        exhausted: Boolean(cache.exhausted),
+        fromCache: true,
+        ...(includeMessages ? { messages: cachedMessages } : {})
+      };
+    }
+
     const progress = await ctx.reply(formatSampleProgress({
       purpose,
-      scanned: 0,
-      matched: 0,
+      scanned: cachedMessages.length,
+      matched: cachedPosts.length,
       minMatched,
-      maxLimit,
-      status: 'starting'
+      maxLimit: maxMessages,
+      status: cachedMessages.length ? 'using-cache' : 'starting'
     }));
 
     const editProgress = async (state) => {
@@ -711,9 +736,21 @@ export class SetupAssistant {
       initialLimit,
       minMatched,
       step,
-      maxLimit,
-      includeMessages,
+      maxLimit: maxMessages,
+      includeMessages: true,
+      seedMessages: cachedMessages,
+      seedOffset: cache?.nextOffset,
+      seedExhausted: cache?.exhausted,
+      seedPages: cache?.pages,
       onProgress: editProgress
+    });
+
+    this.setupSampleCache.set(ctx.from.id, {
+      messages: result.messages || [],
+      nextOffset: result.nextOffset,
+      exhausted: Boolean(result.exhausted),
+      pages: result.pages || 0,
+      loadedAt: Date.now()
     });
 
     await ctx.telegram.editMessageText(ctx.chat.id, progress.message_id, undefined, formatSampleProgress({
@@ -721,12 +758,24 @@ export class SetupAssistant {
       scanned: result.scanned,
       matched: result.posts.length,
       minMatched,
-      maxLimit,
+      maxLimit: maxMessages,
       exhausted: result.exhausted,
       status: 'done'
     })).catch(() => {});
 
-    return result;
+    return includeMessages ? result : { ...result, messages: undefined };
+  }
+
+  getUsableSampleCache(ctx, maxMessages) {
+    const cache = this.setupSampleCache.get(ctx.from.id);
+    if (!cache?.messages?.length) return null;
+    const maxAgeMs = 10 * 60 * 1000;
+    if (Date.now() - Number(cache.loadedAt || 0) > maxAgeMs) {
+      this.setupSampleCache.delete(ctx.from.id);
+      return null;
+    }
+    if (Number(maxMessages || 0) <= 0) return null;
+    return cache;
   }
 
   async applySuggestion(ctx, suggestionId) {
@@ -904,15 +953,33 @@ export class SetupAssistant {
       return;
     }
 
-    for (let index = 0; index < posts.length; index += 1) {
-      await sendRichPost({
-        telegram: ctx.telegram,
-        chatId: ctx.chat.id,
-        mediaDownloader: this.mediaDownloader,
-        post: posts[index],
-        index,
-        templates: draft.templates
+    const progress = await ctx.reply(formatPreviewProgress({ total: posts.length, sent: 0 }));
+    try {
+      for (let index = 0; index < posts.length; index += 1) {
+        await ctx.telegram.editMessageText(ctx.chat.id, progress.message_id, undefined, formatPreviewProgress({
+          total: posts.length,
+          sent: index,
+          current: index + 1
+        })).catch(() => {});
+        await sendRichPost({
+          telegram: ctx.telegram,
+          chatId: ctx.chat.id,
+          mediaDownloader: this.mediaDownloader,
+          post: posts[index],
+          index,
+          templates: draft.templates
+        });
+        await ctx.telegram.editMessageText(ctx.chat.id, progress.message_id, undefined, formatPreviewProgress({
+          total: posts.length,
+          sent: index + 1
+        })).catch(() => {});
+      }
+      await ctx.telegram.deleteMessage(ctx.chat.id, progress.message_id).catch(async () => {
+        await ctx.telegram.editMessageText(ctx.chat.id, progress.message_id, undefined, `✅ Preview sent: ${posts.length} post(s).`).catch(() => {});
       });
+    } catch (error) {
+      await ctx.telegram.editMessageText(ctx.chat.id, progress.message_id, undefined, `⚠️ Preview stopped after sending some posts: ${error.message}`).catch(() => {});
+      throw error;
     }
   }
 
@@ -934,6 +1001,7 @@ export class SetupAssistant {
     this.setupMeta.delete(ctx.from.id);
     this.setupLastChange.delete(ctx.from.id);
     this.setupTrafficPresets.delete(ctx.from.id);
+    this.setupSampleCache.delete(ctx.from.id);
   }
 
   async cancel(ctx) {
@@ -942,6 +1010,7 @@ export class SetupAssistant {
     this.setupMeta.delete(ctx.from.id);
     this.setupLastChange.delete(ctx.from.id);
     this.setupTrafficPresets.delete(ctx.from.id);
+    this.setupSampleCache.delete(ctx.from.id);
     await this.clearLastSetupKeyboard(ctx);
     await ctx.reply('Setup mode cancelled.');
   }
@@ -1044,6 +1113,26 @@ export class SetupAssistant {
 
 export { stringifyForSetup } from './setup/utils.js';
 
+
+
+function formatPreviewProgress({ total, sent, current = null }) {
+  const lines = [
+    '📤 Sending preview',
+    '',
+    `The bot will send ${total} preview post(s).`,
+    `Sent: ${sent}/${total}.`
+  ];
+  if (current !== null) lines.push('', `Sending post ${current}/${total}...`);
+  return lines.join('\n');
+}
+
+function parseCachedSetupPosts(messages, draft, config) {
+  return parseMessagesToPosts(messages, {
+    chatId: config.telegram?.sourceChatId,
+    parsing: draft.parsing || config.parsing || {}
+  });
+}
+
 function formatSampleProgress({ purpose, scanned, matched, minMatched, maxLimit, exhausted = false, status = 'loading' }) {
   const lines = [
     `🔎 Collecting sample · ${purpose}`,
@@ -1052,6 +1141,7 @@ function formatSampleProgress({ purpose, scanned, matched, minMatched, maxLimit,
     `Matched parser filters: ${matched}/${minMatched}.`
   ];
   if (status === 'starting') lines.push('', 'Starting scan...');
+  else if (status === 'using-cache') lines.push('', 'Using cached messages first. Loading more only if needed...');
   else if (status === 'done') {
     if (matched >= minMatched) lines.push('', 'Done. Enough matched posts for a reliable sample.');
     else if (exhausted) lines.push('', 'Done. Source history ended before enough matched posts were found.');

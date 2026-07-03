@@ -82,16 +82,19 @@ export function manageTemplatesKeyboard(templates = []) {
   for (const template of templates.slice(0, 18)) {
     const key = template.key;
     if (!key) continue;
-    rows.push([
-      template.enabled === false
-        ? button(`Enable ${key}`, `setup:template_enable:${key}`)
-        : button(`Disable ${key}`, `setup:template_disable:${key}`)
-    ]);
-    rows.push([button(`Remove ${key}`, `setup:template_remove:${key}`)]);
+    const toggle = template.enabled === false
+      ? button(`Enable ${shortKey(key)}`, `setup:template_enable:${key}`)
+      : button(`Disable ${shortKey(key)}`, `setup:template_disable:${key}`);
+    rows.push([toggle, button(`Remove ${shortKey(key)}`, `setup:template_remove:${key}`)]);
   }
   rows.push([button('Show publish config', 'setup:publish_config')]);
   rows.push([button('Back', 'setup:publish')]);
   return inlineKeyboard(rows);
+}
+
+function shortKey(key) {
+  const text = String(key);
+  return text.length > 22 ? `${text.slice(0, 21)}…` : text;
 }
 
 export function confirmRemoveTemplateKeyboard(key) {

@@ -1,4 +1,4 @@
-import { parseMessagesToPosts } from '../../core/postParser.js';
+import { getReactionCount, getReactionEmoji, parseMessagesToPosts } from '../../core/postParser.js';
 import { setupScreen } from './formattingBase.js';
 import {
   analyzeMessagesForParser,
@@ -7,7 +7,9 @@ import {
   getSetupValuesByPath,
   hasSetupContent,
   hasSetupMedia,
-  markSuggestionStates
+  markSuggestionStates,
+  NATIVE_REACTION_PATHS,
+  countNativeReactionEmojis
 } from './parserSuggestions.js';
 
 const TEXT_PATHS = ['text', 'message'];
@@ -31,12 +33,23 @@ export function formatParserPaths(messages = [], draft = {}) {
     return `- ${marker} message.${path}: ${messageCount}/${stats.scanned} messages, ${labels.length} labels; examples: ${examples}`;
   });
 
+  const nativeReactionLines = NATIVE_REACTION_PATHS.map((path) => {
+    const values = stats.nativeReactionPaths.get(path) || [];
+    const messageCount = countMessagesWithNativeReactionPath(messages, path);
+    const examples = countNativeReactionEmojis(values).slice(0, 6).map(([emoji, count]) => `${emoji}=${count}`).join(' · ') || 'none';
+    const marker = values.length ? '•' : '✓';
+    return `- ${marker} message.${path}: ${messageCount}/${stats.scanned} messages, ${values.length} reaction rows; examples: ${examples}`;
+  });
+
   const recommendedTextPath = TEXT_PATHS
     .map((path) => ({ path, count: countMessagesWithPath(messages, path) }))
     .sort((a, b) => b.count - a.count)[0];
   const recommendedButtonPath = [...stats.buttonPaths.entries()]
     .map(([path, labels]) => ({ path, labels }))
     .sort((a, b) => b.labels.length - a.labels.length)[0];
+  const recommendedNativeReactionPath = [...stats.nativeReactionPaths.entries()]
+    .map(([path, values]) => ({ path, values }))
+    .sort((a, b) => b.values.length - a.values.length)[0];
 
   return setupScreen({
     icon: '🧭',
@@ -45,9 +58,11 @@ export function formatParserPaths(messages = [], draft = {}) {
       ['🔎 Scan', [`Scanned ${stats.scanned} recent source message(s).`]],
       ['📝 Text fields', textLines],
       ['👍 Reaction button fields', buttonLines],
+      ['🧡 Native reaction fields', nativeReactionLines],
       ['💡 Recommended', [
         recommendedTextPath?.count ? `Use message.${recommendedTextPath.path} for text/author rules.` : 'No reliable text field detected.',
-        recommendedButtonPath ? `Use message.${recommendedButtonPath.path} for reaction buttons.` : 'No reaction button path detected.'
+        recommendedButtonPath ? `Use message.${recommendedButtonPath.path} for reaction buttons.` : 'No reaction button path detected.',
+        recommendedNativeReactionPath ? `Use message.${recommendedNativeReactionPath.path} for native reaction counters.` : 'No native reaction path detected.'
       ]],
       ['➡️ Next', ['Use Author test / Reaction test to verify the current rules, or Auto suggestions to apply detected paths.']]
     ]
@@ -83,7 +98,10 @@ export function formatReactionExtractionTest({ messages = [], draft = {}, baseCo
   });
   const warnings = [];
   if (posts.length && zeroLikes / posts.length > 0.8) {
-    warnings.push('Reaction parser returns 0 likes for most matched posts. Button path or regex may be wrong.');
+    const nativeRows = countNativeReactionRows(messages);
+    warnings.push(nativeRows > 0
+      ? `Reaction parser returns 0 likes for most matched posts, but ${nativeRows} native reaction row(s) were found. Try native reaction suggestions.`
+      : 'Reaction parser returns 0 likes for most matched posts. Button path or regex may be wrong.');
   }
 
   return setupScreen({
@@ -153,6 +171,19 @@ function inferRejectionReason(message, draft = {}) {
     return `sender mismatch: ${current} != ${Array.isArray(expected) ? expected.join(',') : expected}`;
   }
   return 'did not pass current parser filters';
+}
+
+
+function countMessagesWithNativeReactionPath(messages, path) {
+  return messages.filter((message) => getSetupValuesByPath(message, path).some((value) => getReactionEmoji(value) && getReactionCount(value) > 0)).length;
+}
+
+function countNativeReactionRows(messages) {
+  return NATIVE_REACTION_PATHS.reduce((sum, path) => (
+    sum + messages.reduce((count, message) => (
+      count + getSetupValuesByPath(message, path).filter((value) => getReactionEmoji(value) && getReactionCount(value) > 0).length
+    ), 0)
+  ), 0);
 }
 
 function unique(values) {

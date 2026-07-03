@@ -280,26 +280,32 @@ export class TelegramScanner {
     step = 20,
     maxLimit = 160,
     includeMessages = false,
-    onProgress = null
+    onProgress = null,
+    seedMessages = [],
+    seedOffset = undefined,
+    seedExhausted = false,
+    seedPages = 0
   } = {}) {
-    const messages = [];
-    let offset = undefined;
-    let pages = 0;
-    let nextTarget = Math.max(1, Number(initialLimit || 40));
+    const messages = Array.isArray(seedMessages) ? [...seedMessages] : [];
+    let offset = seedOffset;
+    let pages = Number(seedPages || 0);
+    let nextTarget = Math.max(1, Number(initialLimit || 40), messages.length);
     const maxMessages = Math.max(nextTarget, Number(maxLimit || nextTarget));
     const stepSize = Math.max(1, Number(step || 1));
     let posts = [];
-    let exhausted = false;
+    let exhausted = Boolean(seedExhausted);
 
     this.logger.info('Adaptive preview scan started', {
       initialLimit: nextTarget,
       minMatched,
       step: stepSize,
-      maxLimit: maxMessages
+      maxLimit: maxMessages,
+      seedMessages: messages.length,
+      seedExhausted: exhausted
     });
 
-    while (messages.length < maxMessages) {
-      while (messages.length < nextTarget && messages.length < maxMessages) {
+    while (true) {
+      while (!exhausted && messages.length < nextTarget && messages.length < maxMessages) {
         pages += 1;
         const batchLimit = Math.min(this.config.sync.pageSize, nextTarget - messages.length, maxMessages - messages.length);
         const history = await this.getHistory({ limit: batchLimit, offset });
@@ -346,6 +352,7 @@ export class TelegramScanner {
       posts,
       pages,
       exhausted,
+      nextOffset: offset,
       ...(includeMessages ? { messages } : {})
     };
   }
