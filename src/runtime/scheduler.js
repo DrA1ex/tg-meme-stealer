@@ -70,15 +70,16 @@ export class Scheduler {
 
   schedulePublications(now = new Date()) {
     for (const entry of getScheduledPublishEntries(this.config)) {
-      this.schedulePublication(entry.key, entry.schedule, now);
+      this.schedulePublication(entry.key, entry.schedule, now, entry.firstSendAtIso);
     }
   }
 
-  schedulePublication(key, schedule, now = new Date()) {
-    const nextRunAt = getNextScheduledRunAsDate({
+  schedulePublication(key, schedule, now = new Date(), firstSendAtIso = null) {
+    const nextRunAt = getNextEligibleScheduledRunAsDate({
       now,
       schedule,
-      timezone: this.config.schedule.timezone
+      timezone: this.config.schedule.timezone,
+      firstSendAtIso
     });
     const delayMs = nextRunAt.getTime() - now.getTime();
     this.logTimerScheduled({
@@ -87,6 +88,7 @@ export class Scheduler {
       scheduleType: schedule.type,
       time: schedule.time,
       timezone: this.config.schedule.timezone,
+      firstSendAt: firstSendAtIso || '',
       delayMs,
       nextRunAt
     });
@@ -95,7 +97,7 @@ export class Scheduler {
       if (hasScheduledPublicationRequest(result)) {
         await this.handlers.publishWorker();
       }
-      this.schedulePublication(key, schedule);
+      this.schedulePublication(key, schedule, undefined, firstSendAtIso);
     }, delayMs);
   }
 
@@ -110,6 +112,14 @@ export class Scheduler {
         timezone: this.config.schedule.timezone
       });
       const ageMs = now.getTime() - scheduledAt.getTime();
+      if (isBeforeFirstSendAt(scheduledAt, entry.firstSendAtIso)) {
+        this.logger.debug('Missed publication skipped before first send time', {
+          key: entry.key,
+          scheduledAt,
+          firstSendAt: entry.firstSendAtIso
+        });
+        continue;
+      }
       if (ageMs < 0 || ageMs > requestTtlMs) {
         this.logger.debug('Missed publication skipped', {
           key: entry.key,
@@ -251,11 +261,32 @@ export function getNextScheduledRunAsDate({ now = new Date(), time, timezone, pe
   return getNextLocalTimeAsDate({ now, time: schedule.time, timezone });
 }
 
+export function getNextEligibleScheduledRunAsDate({ now = new Date(), time, timezone, period = 'day', schedule: configuredSchedule = null, firstSendAtIso = null }) {
+  const firstSendAt = firstSendAtIso ? new Date(firstSendAtIso) : null;
+  let target = getNextScheduledRunAsDate({ now, time, timezone, period, schedule: configuredSchedule });
+  if (!firstSendAt || Number.isNaN(firstSendAt.getTime())) return target;
+
+  let guard = 0;
+  while (target < firstSendAt) {
+    target = getNextScheduledRunAsDate({ now: target, time, timezone, period, schedule: configuredSchedule });
+    guard += 1;
+    if (guard > 10000) throw new Error('Unable to find eligible scheduled run after firstSendAt');
+  }
+  return target;
+}
+
 export function getPreviousScheduledRunAsDate({ now = new Date(), time, timezone, period = 'day', schedule: configuredSchedule = null }) {
   const schedule = normalizeScheduleArgument({ time, period, schedule: configuredSchedule });
   if (schedule.type === 'monthly') return getPreviousMonthlyRunAsDate({ now, schedule, timezone });
   if (schedule.type === 'weekly') return getPreviousWeeklyRunAsDate({ now, schedule, timezone });
   return getPreviousLocalTimeAsDate({ now, time: schedule.time, timezone });
+}
+
+function isBeforeFirstSendAt(scheduledAt, firstSendAtIso) {
+  if (!firstSendAtIso) return false;
+  const firstSendAt = new Date(firstSendAtIso);
+  if (Number.isNaN(firstSendAt.getTime())) return false;
+  return scheduledAt < firstSendAt;
 }
 
 function normalizeScheduleArgument({ schedule, time, period }) {

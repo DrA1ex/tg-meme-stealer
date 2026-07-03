@@ -182,6 +182,7 @@ Common options:
     "dryRun": false,
     "requestTtlHours": 12,
     "workerIntervalMinutes": 10,
+    "firstSendAt": "2026-07-01T00:00:00+03:00",
     "sources": [
       {
         "key": "best",
@@ -217,6 +218,7 @@ Common options:
           "min": 10,
           "includeAbove": 30
         },
+        "firstSendAt": "2026-07-01T10:10:00+03:00",
         "template": "Best posts for the last {{windowHours}}h ({{count}})"
       },
       {
@@ -274,6 +276,10 @@ Common options:
 `logging.logLevel` can be `DEBUG`, `INFO`, `WARN`, `ERROR`, or `SILENT` and is case-insensitive. `logging.color` can be `auto`, `always`, or `never`; `auto` uses colors only for interactive terminals. Log levels are colored, scopes are highlighted, and high-signal fields such as `status`, `key`, `publicationId`, `messageId`, `reason`, and `error` get distinct colors. Sync logs include the scan window, each Telegram history request, fetched message counts, matched post counts, saved rows, skipped old posts, and deleted-post cleanup. `sync.runOnStart` controls whether the daemon runs one sync immediately after startup. `sync.intervalHours` controls the recurring sync interval. `sync.retentionDays` controls how long source post rows stay in `posts`; the default is 60 days. Retention starts after `sync.retentionInitialDelayMinutes` and then repeats every `sync.retentionIntervalHours`; it uses the same in-memory job gate as sync and publishing. Set `sync.runOnStart` to `false` to disable the initial startup sync.
 
 Publication schedules use `schedule.timezone`. Each item under `publish.template` has a globally unique `key`, `source`, explicit `schedule`, `windowHours`, `posts`, `reactions`, and header `template`. `source` names an entry from `publish.sources`; `best` and `controversial` are the defaults, and you can add your own. Schedules can be daily (`{"type":"daily","time":"10:00"}`), weekly (`{"type":"weekly","weekday":1,"time":"10:00"}` with Monday as `1`), or monthly (`{"type":"monthly","dayOfMonth":15,"time":"10:00"}`; use days `1..28`). Selections use the rolling window `[scheduledAt - windowHours, scheduledAt)`.
+
+Set optional `publish.firstSendAt` to stage a daemon without publishing older missed periods. Scheduled runs and normal `/publish` calls before that timestamp are skipped; `/publish <key> -force` can still publish earlier. Use an ISO date string, preferably with an explicit timezone offset, for example `"2026-07-01T00:00:00+03:00"`.
+
+You can also set `firstSendAt` on an individual `publish.template` item. If both global and template values are present, the later timestamp wins. For example, global `"2026-10-01T00:00:00+03:00"` and template `"2026-01-01T00:00:00+03:00"` means the template will not publish normally until October 1, 2026.
 
 Each `publish.sources[]` item has a unique `key` and a safe SQL-like `where` expression. Expressions can only use `likes`, `dislikes`, numeric literals, arithmetic/comparison/boolean operators, and `abs(...)`, `min(...)`, `max(...)`. They cannot access text, author, JSON data, message dates, or arbitrary SQL functions.
 
@@ -670,6 +676,8 @@ If a selection for the same period already exists, the command replies with the 
 /publish best.weekly_best --force
 /publish best.weekly_best -force
 ```
+
+`firstSendAt` also applies to manual publishing. If a selection has not reached its first allowed send time yet, `/publish weekly_best` reports that it was skipped. Use `-force` only when you intentionally want to publish an earlier period.
 
 Run the daemon for normal operation:
 

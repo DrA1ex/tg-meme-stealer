@@ -144,7 +144,8 @@ export class SelectionPublisher {
 
   async planPublicationRequests(now = new Date(), keys = null, options = {}) {
     const specs = buildSelectionSpecs(this.config, now, keys, {
-      includeDisabled: Boolean(options.force && keys)
+      includeDisabled: Boolean(options.force && keys),
+      ignoreFirstSendAt: Boolean(options.force)
     });
     this.logger.debug('Publish planning started', {
       targetChatId: this.config.telegram.publishChannelId,
@@ -165,6 +166,19 @@ export class SelectionPublisher {
   }
 
   async planPublicationRequest(spec, options = {}) {
+    if (!options.force && isBeforeFirstSendAt(spec.scheduledAtIso || spec.untilIso, spec.firstSendAtIso)) {
+      this.logger.info('Publication request skipped before first send time', {
+        selection: spec.key,
+        scheduledAt: spec.scheduledAtIso || spec.untilIso,
+        firstSendAt: spec.firstSendAtIso
+      });
+      return {
+        status: 'first_send_pending',
+        requested: false,
+        firstSendAt: spec.firstSendAtIso
+      };
+    }
+
     const canonicalKey = getPublicationKeyFromSpec(spec, this.config);
     if (!options.force) {
       const existing = await getBlockingPublication(this.repository, canonicalKey);
@@ -497,6 +511,14 @@ function isBlockingPublication(publication) {
   return ['created', 'running', 'published'].includes(publication?.status);
 }
 
+function isBeforeFirstSendAt(scheduledAtIso, firstSendAtIso) {
+  if (!firstSendAtIso) return false;
+  const scheduledAt = new Date(scheduledAtIso);
+  const firstSendAt = new Date(firstSendAtIso);
+  if (Number.isNaN(scheduledAt.getTime()) || Number.isNaN(firstSendAt.getTime())) return false;
+  return scheduledAt < firstSendAt;
+}
+
 async function getBlockingPublication(repository, key) {
   if (typeof repository.getBlockingPublicationByKey === 'function') {
     return repository.getBlockingPublicationByKey(key);
@@ -578,6 +600,9 @@ function formatPublishResult(result, job = null) {
     }
     if (selection.status === 'empty') {
       return `${selection.key}: no matching posts, nothing was scheduled`;
+    }
+    if (selection.status === 'first_send_pending') {
+      return `${selection.key}: skipped until firstSendAt ${selection.firstSendAt}. Use -force to publish earlier.`;
     }
     return `${selection.key}: ${selection.status}`;
   });

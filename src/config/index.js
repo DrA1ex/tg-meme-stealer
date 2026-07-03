@@ -50,6 +50,7 @@ const SELECTION_SCHEMA = {
     min: NUMBER,
     includeAbove: NUMBER
   },
+  firstSendAt: STRING,
   template: STRING
 };
 
@@ -103,6 +104,7 @@ const CONFIG_SCHEMA = {
     dryRun: BOOLEAN,
     requestTtlHours: NUMBER,
     workerIntervalMinutes: NUMBER,
+    firstSendAt: STRING,
     sources: { type: 'array', items: SOURCE_SCHEMA },
     template: { type: 'array', items: SELECTION_SCHEMA }
   },
@@ -328,6 +330,9 @@ function validatePublishTemplates(config) {
   const templates = config?.publish?.template || [];
   const issues = [];
   const sourceKeys = new Set(getSourceDefinitions(config).map((source) => source.key));
+  if (config?.publish?.firstSendAt !== undefined && Number.isNaN(Date.parse(config.publish.firstSendAt))) {
+    issues.push('publish.firstSendAt: expected valid date string');
+  }
 
   for (const [index, template] of templates.entries()) {
     const pathPrefix = `publish.template.${index}`;
@@ -369,6 +374,9 @@ function validatePublishTemplates(config) {
 
     if (template.enabled) {
       issues.push(...validateSchedule(template.schedule, `${pathPrefix}.schedule`));
+    }
+    if (template.firstSendAt !== undefined && Number.isNaN(Date.parse(template.firstSendAt))) {
+      issues.push(`${pathPrefix}.firstSendAt: expected valid date string`);
     }
   }
 

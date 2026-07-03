@@ -18,6 +18,7 @@ test('buildSelectionSpecs builds rolling windows from configured templates', () 
   assert.equal(specs[0].sinceIso, '2026-06-28T10:00:00.000Z');
   assert.equal(specs[0].untilIso, '2026-06-29T10:00:00.000Z');
   assert.equal(specs[0].limit, 20);
+  assert.equal(specs[0].firstSendAtIso, '2026-06-30T00:00:00.000Z');
   assert.deepEqual(specs[0].posts, { min: 5, target: 10, max: 20 });
   assert.deepEqual(specs[2].reactions, { strategy: 'sum', min: 10, includeAbove: 30 });
 });
@@ -61,6 +62,26 @@ test('buildSelectionSpecs supports separate monthly rolling windows', () => {
   assert.deepEqual(specs.map((spec) => spec.windowHours), [720, 720]);
 });
 
+test('buildSelectionSpecs uses later global or template firstSendAt', () => {
+  const specs = buildSelectionSpecs({
+    telegram: { sourceChatId: -1001 },
+    publish: {
+      firstSendAt: '2026-10-01T00:00:00.000Z',
+      template: [
+        template({ source: 'best', key: 'early_template', firstSendAt: '2026-01-01T00:00:00.000Z' }),
+        template({ source: 'best', key: 'late_template', firstSendAt: '2026-12-01T00:00:00.000Z' }),
+        template({ source: 'best', key: 'global_only' })
+      ]
+    }
+  }, new Date('2026-06-15T10:00:00.000Z'));
+
+  assert.deepEqual(specs.map((spec) => [spec.templateKey, spec.firstSendAtIso]), [
+    ['early_template', '2026-10-01T00:00:00.000Z'],
+    ['late_template', '2026-12-01T00:00:00.000Z'],
+    ['global_only', '2026-10-01T00:00:00.000Z']
+  ]);
+});
+
 test('normalizeSelectionKeys expands configured aliases and rejects unknown keys', () => {
   assert.deepEqual(normalizeSelectionKeys('daily_morning', config()), ['best.daily_morning']);
   assert.deepEqual(normalizeSelectionKeys('best.daily_morning', config()), ['best.daily_morning']);
@@ -82,7 +103,8 @@ test('getScheduledPublishEntries reads enabled schedule objects', () => {
       source: 'best',
       templateKey: 'daily_morning',
       period: 'daily_morning',
-      schedule: { type: 'daily', time: '10:00' }
+      schedule: { type: 'daily', time: '10:00' },
+      firstSendAtIso: '2026-06-30T00:00:00.000Z'
     },
     {
       key: 'best.daily_evening',
@@ -90,7 +112,8 @@ test('getScheduledPublishEntries reads enabled schedule objects', () => {
       source: 'best',
       templateKey: 'daily_evening',
       period: 'daily_evening',
-      schedule: { type: 'daily', time: '18:00' }
+      schedule: { type: 'daily', time: '18:00' },
+      firstSendAtIso: null
     },
     {
       key: 'controversial.weekly_hot',
@@ -98,7 +121,8 @@ test('getScheduledPublishEntries reads enabled schedule objects', () => {
       source: 'controversial',
       templateKey: 'weekly_hot',
       period: 'weekly_hot',
-      schedule: { type: 'weekly', weekday: 1, time: '11:10' }
+      schedule: { type: 'weekly', weekday: 1, time: '11:10' },
+      firstSendAtIso: null
     }
   ]);
 });
@@ -130,7 +154,7 @@ function config() {
         { key: 'positive', where: 'likes > dislikes' }
       ],
       template: [
-        template({ source: 'best', key: 'daily_morning', schedule: { type: 'daily', time: '10:00' }, windowHours: 24, template: 'Best morning {{windowHours}}h ({{count}})' }),
+        template({ source: 'best', key: 'daily_morning', schedule: { type: 'daily', time: '10:00' }, windowHours: 24, firstSendAt: '2026-06-30T00:00:00.000Z', template: 'Best morning {{windowHours}}h ({{count}})' }),
         template({ source: 'best', key: 'daily_evening', schedule: { type: 'daily', time: '18:00' }, windowHours: 24, template: 'Best evening {{windowHours}}h ({{count}})' }),
         template({ source: 'best', key: 'monthly_hidden', enabled: false, schedule: { type: 'monthly', dayOfMonth: 15, time: '10:00' }, windowHours: 720 }),
         template({ source: 'controversial', key: 'weekly_hot', schedule: { type: 'weekly', weekday: 1, time: '11:10' }, windowHours: 168, reactions: { strategy: 'sum', min: 10, includeAbove: 30 }, template: 'Controversial {{windowHours}}h ({{count}})' }),

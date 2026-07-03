@@ -470,6 +470,144 @@ test('SelectionPublisher.runManualPublish replies when requested publication alr
   assert.match(replies[0], /No new publication request was created\. Worker was not started\./);
 });
 
+test('SelectionPublisher.runManualPublish skips selections before firstSendAt unless forced', async () => {
+  const replies = [];
+  let postQueries = 0;
+  let insertAttempts = 0;
+  const publisher = new SelectionPublisher({
+    repository: {
+      getPublicationByKey: async () => {
+        throw new Error('firstSendAt skip must happen before duplicate lookup');
+      },
+      getSelectionPosts: async () => {
+        postQueries += 1;
+        return [post(1, 'Alice')];
+      },
+      tryCreatePublicationRequest: async () => {
+        insertAttempts += 1;
+        return 123;
+      }
+    },
+    mediaDownloader: {},
+    setupAssistant: null,
+    config: {
+      ...config(),
+      publish: {
+        dryRun: false,
+        template: [
+          {
+            source: 'best',
+            key: 'day',
+            enabled: true,
+            limit: 5,
+            firstSendAt: '2999-06-30T00:00:00.000Z',
+            template: 'Best day'
+          }
+        ]
+      }
+    }
+  });
+
+  await publisher.runManualPublish({
+    message: { text: '/publish day' },
+    reply: async (message) => replies.push(message)
+  });
+
+  assert.equal(postQueries, 0);
+  assert.equal(insertAttempts, 0);
+  assert.equal(replies.length, 1);
+  assert.match(replies[0], /best\.day: skipped until firstSendAt 2999-06-30T00:00:00\.000Z\. Use -force to publish earlier\./);
+  assert.match(replies[0], /No new publication request was created\. Worker was not started\./);
+});
+
+test('SelectionPublisher.runManualPublish force bypasses firstSendAt', async () => {
+  const replies = [];
+  let postQueries = 0;
+  const publisher = new SelectionPublisher({
+    repository: {
+      getPublicationByKey: async () => {
+        throw new Error('forced publish must not check canonical duplicate');
+      },
+      getSelectionPosts: async () => {
+        postQueries += 1;
+        return [post(1, 'Alice')];
+      },
+      tryCreatePublicationRequest: async () => 123,
+      getNextPublicationRequest: async () => null
+    },
+    mediaDownloader: {},
+    setupAssistant: null,
+    config: {
+      ...config(),
+      publish: {
+        dryRun: false,
+        template: [
+          {
+            source: 'best',
+            key: 'day',
+            enabled: true,
+            limit: 5,
+            firstSendAt: '2999-06-30T00:00:00.000Z',
+            template: 'Best day'
+          }
+        ]
+      }
+    }
+  });
+
+  await publisher.runManualPublish({
+    message: { text: '/publish day -force' },
+    reply: async (message) => replies.push(message)
+  });
+
+  assert.equal(postQueries, 1);
+  assert.match(replies[0], /best\.day: publication request created \(1 posts\) forced/);
+});
+
+test('SelectionPublisher.runManualPublish uses later global firstSendAt', async () => {
+  const replies = [];
+  let postQueries = 0;
+  const publisher = new SelectionPublisher({
+    repository: {
+      getPublicationByKey: async () => {
+        throw new Error('firstSendAt skip must happen before duplicate lookup');
+      },
+      getSelectionPosts: async () => {
+        postQueries += 1;
+        return [post(1, 'Alice')];
+      },
+      tryCreatePublicationRequest: async () => 123
+    },
+    mediaDownloader: {},
+    setupAssistant: null,
+    config: {
+      ...config(),
+      publish: {
+        dryRun: false,
+        firstSendAt: '2999-10-01T00:00:00.000Z',
+        template: [
+          {
+            source: 'best',
+            key: 'day',
+            enabled: true,
+            limit: 5,
+            firstSendAt: '2026-01-01T00:00:00.000Z',
+            template: 'Best day'
+          }
+        ]
+      }
+    }
+  });
+
+  await publisher.runManualPublish({
+    message: { text: '/publish day' },
+    reply: async (message) => replies.push(message)
+  });
+
+  assert.equal(postQueries, 0);
+  assert.match(replies[0], /best\.day: skipped until firstSendAt 2999-10-01T00:00:00\.000Z/);
+});
+
 test('SelectionPublisher.runManualPublish does not create publication request when period has no posts', async () => {
   const replies = [];
   let insertAttempted = false;

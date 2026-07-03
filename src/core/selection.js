@@ -6,6 +6,7 @@ export function buildSelectionSpecs(config, now = new Date(), keys = null, optio
   const chatId = config.telegram.sourceChatId;
   const templates = getPublishTemplates(config);
   const requestedKeys = keys ? new Set(normalizeSelectionKeys(keys, config)) : null;
+  const globalFirstSendAtIso = normalizeFirstSendAt(config?.publish?.firstSendAt);
   const specs = [];
 
   for (const entry of templates) {
@@ -13,6 +14,7 @@ export function buildSelectionSpecs(config, now = new Date(), keys = null, optio
 
     const publicKey = getSelectionKey(entry);
     if (requestedKeys && !requestedKeys.has(publicKey)) continue;
+    const firstSendAtIso = getEffectiveFirstSendAtIso(globalFirstSendAtIso, entry.firstSendAt);
 
     const posts = normalizePosts(entry.posts, entry.limit);
     const reactions = normalizeReactions(entry.reactions);
@@ -31,6 +33,7 @@ export function buildSelectionSpecs(config, now = new Date(), keys = null, optio
       sinceIso: since.toISOString(),
       untilIso: until.toISOString(),
       scheduledAtIso: until.toISOString(),
+      firstSendAtIso,
       windowHours,
       limit: posts.max,
       posts,
@@ -46,6 +49,7 @@ export function buildSelectionSpecs(config, now = new Date(), keys = null, optio
 
 export function getScheduledPublishEntries(config) {
   const entries = [];
+  const globalFirstSendAtIso = normalizeFirstSendAt(config?.publish?.firstSendAt);
   for (const entry of getPublishTemplates(config)) {
     if (entry?.enabled && entry.schedule) {
       entries.push({
@@ -54,7 +58,8 @@ export function getScheduledPublishEntries(config) {
         source: entry.source,
         templateKey: entry.key,
         period: entry.key,
-        schedule: entry.schedule
+        schedule: entry.schedule,
+        firstSendAtIso: getEffectiveFirstSendAtIso(globalFirstSendAtIso, entry.firstSendAt)
       });
     }
   }
@@ -139,6 +144,22 @@ function normalizeReactions(reactions = {}) {
     min: Number(reactions.min ?? 0),
     includeAbove: Number(reactions.includeAbove ?? Number.POSITIVE_INFINITY)
   };
+}
+
+function normalizeFirstSendAt(value) {
+  if (!value) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  return date.toISOString();
+}
+
+function getEffectiveFirstSendAtIso(globalFirstSendAtIso, templateFirstSendAt) {
+  const templateFirstSendAtIso = normalizeFirstSendAt(templateFirstSendAt);
+  if (!globalFirstSendAtIso) return templateFirstSendAtIso;
+  if (!templateFirstSendAtIso) return globalFirstSendAtIso;
+  return new Date(globalFirstSendAtIso) > new Date(templateFirstSendAtIso)
+    ? globalFirstSendAtIso
+    : templateFirstSendAtIso;
 }
 
 export function renderSelectionTemplate(spec, posts) {

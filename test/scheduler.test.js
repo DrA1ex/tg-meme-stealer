@@ -5,6 +5,7 @@ import {
   Scheduler,
   getDelayUntilLocalTime,
   getNextLocalTimeAsDate,
+  getNextEligibleScheduledRunAsDate,
   getNextScheduledRunAsDate,
   getPreviousScheduledRunAsDate
 } from '../src/runtime/scheduler.js';
@@ -232,6 +233,48 @@ test('Scheduler publishes with intended scheduled time instead of callback time'
     key: 'best.daily_best',
     scheduledAt: '2026-06-29T10:00:00.000Z'
   }]);
+});
+
+test('Scheduler delays publication timers until firstSendAt eligible run', async () => {
+  const scheduled = [];
+  const scheduler = new Scheduler(
+    {
+      schedule: {
+        enabled: true,
+        timezone: 'UTC'
+      },
+      sync: {
+        runOnStart: false,
+        intervalHours: 24
+      },
+      publish: {
+        firstSendAt: '2026-07-03T00:00:00.000Z',
+        template: [
+          {
+            source: 'best',
+            key: 'daily_best',
+            enabled: true,
+            schedule: { type: 'daily', time: '10:00' },
+            firstSendAt: '2026-07-02T00:00:00.000Z'
+          }
+        ]
+      },
+      logging: { logLevel: 'silent' }
+    },
+    {
+      publish: async () => {},
+      publishWorker: async () => {}
+    }
+  );
+  scheduler.scheduleTimeout = (fn, delayMs) => {
+    scheduled.push({ fn, delayMs });
+    return { fake: true };
+  };
+
+  scheduler.schedulePublications(new Date('2026-06-29T09:00:00.000Z'));
+
+  assert.equal(scheduled.length, 1);
+  assert.equal(scheduled[0].delayMs, 97 * 60 * 60 * 1000);
 });
 
 test('Scheduler chunks timeouts that exceed Node maximum delay', async () => {
@@ -481,6 +524,40 @@ test('Scheduler plans catch-up checks without waking worker when request already
   assert.equal(workerRuns, 0);
 });
 
+test('Scheduler skips missed publications before firstSendAt', async () => {
+  const planned = [];
+  const scheduler = new Scheduler(
+    {
+      schedule: {
+        enabled: true,
+        timezone: 'UTC'
+      },
+      publish: {
+        requestTtlHours: 12,
+        template: [
+          {
+            source: 'best',
+            key: 'daily_best',
+            enabled: true,
+            schedule: { type: 'daily', time: '10:00' },
+            firstSendAt: '2026-06-30T00:00:00.000Z'
+          }
+        ]
+      },
+      logging: { logLevel: 'silent' }
+    },
+    {
+      publish: async (key, scheduledAt) => planned.push({ key, scheduledAt: scheduledAt.toISOString() }),
+      publishWorker: async () => {}
+    }
+  );
+
+  const plannedCount = await scheduler.planMissedPublications(new Date('2026-06-29T11:00:00.000Z'));
+
+  assert.equal(plannedCount, 0);
+  assert.deepEqual(planned, []);
+});
+
 test('Scheduler skips missed publications older than request TTL', async () => {
   const planned = [];
   let workerRuns = 0;
@@ -564,6 +641,17 @@ test('getNextScheduledRunAsDate schedules day, week and month at their natural c
     timezone: 'Asia/Yekaterinburg',
     period: 'month'
   }).toISOString(), '2026-07-01T05:00:00.000Z');
+});
+
+test('getNextEligibleScheduledRunAsDate skips natural runs before firstSendAt', () => {
+  const target = getNextEligibleScheduledRunAsDate({
+    now: new Date('2026-06-29T09:00:00.000Z'),
+    timezone: 'UTC',
+    schedule: { type: 'daily', time: '10:00' },
+    firstSendAtIso: '2026-07-02T00:00:00.000Z'
+  });
+
+  assert.equal(target.toISOString(), '2026-07-02T10:00:00.000Z');
 });
 
 test('getPreviousScheduledRunAsDate returns last scheduled day, week and month', () => {

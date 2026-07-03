@@ -181,6 +181,7 @@ test('validateConfig rejects duplicate publish template keys globally', () => {
       ...validConfig(),
       publish: {
         ...validConfig().publish,
+        firstSendAt: 'not-a-date',
         template: [
           ...validConfig().publish.template,
           {
@@ -205,6 +206,7 @@ test('validateConfig rejects invalid publish template settings', () => {
       ...validConfig(),
       publish: {
         ...validConfig().publish,
+        firstSendAt: 'not-a-date',
         template: [
           {
             source: 'custom',
@@ -212,13 +214,14 @@ test('validateConfig rejects invalid publish template settings', () => {
             enabled: true,
             schedule: { type: 'monthly', dayOfMonth: 31, time: '25:00' },
             windowHours: 0,
+            firstSendAt: 'not-a-date',
             posts: { min: 5, target: 3, max: 4 },
             reactions: { strategy: 'median', min: 0, includeAbove: 10 }
           }
         ]
       }
     }),
-    /publish\.template\.0\.source: unknown publish source[\s\S]*publish\.template\.0\.windowHours: expected number greater than 0[\s\S]*publish\.template\.0\.posts: expected min <= target <= max[\s\S]*publish\.template\.0\.reactions\.strategy: expected likes, dislikes, sum, or max[\s\S]*publish\.template\.0\.schedule\.time: expected HH:mm[\s\S]*publish\.template\.0\.schedule\.dayOfMonth: expected integer from 1 to 28/
+    /publish\.firstSendAt: expected valid date string[\s\S]*publish\.template\.0\.source: unknown publish source[\s\S]*publish\.template\.0\.windowHours: expected number greater than 0[\s\S]*publish\.template\.0\.posts: expected min <= target <= max[\s\S]*publish\.template\.0\.reactions\.strategy: expected likes, dislikes, sum, or max[\s\S]*publish\.template\.0\.schedule\.time: expected HH:mm[\s\S]*publish\.template\.0\.schedule\.dayOfMonth: expected integer from 1 to 28[\s\S]*publish\.template\.0\.firstSendAt: expected valid date string/
   );
 });
 
