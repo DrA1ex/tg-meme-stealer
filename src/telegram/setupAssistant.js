@@ -54,6 +54,7 @@ import {
   confirmResetFiltersKeyboard,
   isSuggestionUseful,
   markSuggestionStates,
+  toggleFilterSuggestion,
   parserSuggestionsKeyboard,
   suggestionOptionsKeyboard
 } from './setup/parserSuggestions.js';
@@ -69,8 +70,10 @@ import {
   formatAuthorFields,
   formatFieldScan,
   formatMessageShape,
+  formatMessageBrowser,
   formatParserTrace,
   formatReactionFields,
+  formatTechnicalMessagePreview,
   formatTechnicalDiagnosticsOverview
 } from './setup/technicalDiagnostics.js';
 import {
@@ -100,7 +103,7 @@ import {
   setPublishTemplateEnabled
 } from './setup/publishTemplates.js';
 import { formatSourceExpressionTest } from './setup/sourceDiagnostics.js';
-import { applySourcePreset, formatAppliedSourcePreset, formatSourcesMenu, getSourcePreset } from './setup/sourcePresets.js';
+import { applySourcePreset, formatAppliedSourcePreset, formatCustomSourceHelp, formatResetSources, formatSourcesMenu, getSourcePreset, parseSourceTextCommand, resetDraftSources } from './setup/sourcePresets.js';
 import { applyManualSchedule, createScheduleWizard, formatManualScheduleApplied, formatManualScheduleConfirm, formatManualScheduleWizard, getWizardNextStep, normalizeWizardStep } from './setup/scheduleWizard.js';
 import {
   advancedMenuKeyboard,
@@ -110,6 +113,8 @@ import {
   reactionsMenuKeyboard,
   technicalDiagnosticsKeyboard,
   technicalDiagnosticsBackKeyboard,
+  technicalMessageBrowserKeyboard,
+  technicalMessagePreviewKeyboard,
   confirmReplacePublishPresetKeyboard,
   confirmRemoveTemplateKeyboard,
   manageTemplatesKeyboard,
@@ -363,6 +368,16 @@ export class SetupAssistant {
       await this.sourcesMenu(ctx);
       return;
     }
+    if (action === 'source_custom') {
+      this.ensureSession(ctx);
+      await this.sourceCustomHelp(ctx);
+      return;
+    }
+    if (action === 'sources_reset') {
+      this.ensureSession(ctx);
+      await this.resetSources(ctx);
+      return;
+    }
     if (action === 'manual_schedule') {
       this.ensureSession(ctx);
       await this.startManualSchedule(ctx);
@@ -495,6 +510,10 @@ export class SetupAssistant {
         await this.sourcesMenu(ctx);
       } else if (action.startsWith('source_preset:')) {
         await this.applySourcePresetAction(ctx, action.slice('source_preset:'.length));
+      } else if (action === 'source_custom') {
+        await this.sourceCustomHelp(ctx);
+      } else if (action === 'sources_reset') {
+        await this.resetSources(ctx);
       } else if (action === 'manual_schedule') {
         await this.startManualSchedule(ctx);
       } else if (action.startsWith('manual_source:')) {
@@ -599,6 +618,16 @@ export class SetupAssistant {
       await this.technicalRaw(ctx, target.slice('raw:'.length));
       return;
     }
+    if (target.startsWith('preview_msg:')) {
+      const [, messageId, page] = target.match(/^preview_msg:(\d+):(\d+)$/) || [];
+      await this.technicalPreviewMessage(ctx, Number(messageId || 0), Number(page || 0));
+      return;
+    }
+    if (target.startsWith('preview')) {
+      const page = Number(target.split(':')[1] || 0);
+      await this.technicalMessageBrowser(ctx, page);
+      return;
+    }
     const mapping = {
       field_scan: () => this.technicalFieldScan(ctx),
       shape: () => this.technicalMessageShape(ctx),
@@ -661,6 +690,30 @@ export class SetupAssistant {
     await ctx.reply(`Compact raw message for #${found.message.id || '?'} (${found.reason}):`);
     await replyJsonCode(ctx, buildCompactRawMessage(found.message));
     await this.replyWithKeyboard(ctx, 'Use Parser trace for rule-by-rule explanation, or send /raw <message_id> for full JSON file.', technicalDiagnosticsBackKeyboard(`technical_raw:${normalized}`));
+  }
+
+  async technicalMessageBrowser(ctx, page = 0) {
+    const safePage = Math.max(0, Number(page || 0));
+    this.rememberCurrentView(ctx, `technical_preview:${safePage}`);
+    const result = await this.collectSetupSample(ctx, { purpose: `message browser page ${safePage + 1}`, includeMessages: true });
+    const messages = result.messages || [];
+    await this.replyWithKeyboard(
+      ctx,
+      formatMessageBrowser({ messages, draft: this.getDraft(ctx), baseConfig: this.config, page: safePage }),
+      technicalMessageBrowserKeyboard(messages, { page: safePage })
+    );
+  }
+
+  async technicalPreviewMessage(ctx, messageId, page = 0) {
+    const safePage = Math.max(0, Number(page || 0));
+    this.rememberCurrentView(ctx, `technical_preview_msg:${messageId}:${safePage}`);
+    const result = await this.collectSetupSample(ctx, { purpose: `message preview #${messageId}`, includeMessages: true });
+    const message = (result.messages || []).find((item) => Number(item?.id || 0) === Number(messageId));
+    await this.replyWithKeyboard(
+      ctx,
+      formatTechnicalMessagePreview({ message, draft: this.getDraft(ctx), baseConfig: this.config }),
+      technicalMessagePreviewKeyboard(safePage)
+    );
   }
 
 
@@ -1003,18 +1056,28 @@ export class SetupAssistant {
   }
   async sourcesMenu(ctx) {
     this.rememberCurrentView(ctx, 'sources');
-    await this.replyWithKeyboard(ctx, formatSourcesMenu(this.getDraft(ctx), this.config), sourcesKeyboard());
+    await this.replyWithKeyboard(ctx, formatSourcesMenu(this.getDraft(ctx), this.config), sourcesKeyboard(this.getDraft(ctx)));
   }
 
   async applySourcePresetAction(ctx, presetId) {
     const preset = getSourcePreset(presetId);
     if (!preset) {
-      await this.replyWithKeyboard(ctx, 'Unknown source preset. Choose one from Sources.', sourcesKeyboard());
+      await this.replyWithKeyboard(ctx, 'Unknown source preset. Choose one from Sources.', sourcesKeyboard(this.getDraft(ctx)));
       return;
     }
     const change = applySourcePreset(this.getDraft(ctx), preset);
-    this.markChanged(ctx, 'publishing', `Applied source preset: ${preset.key}`, change.lines);
-    await this.replyWithKeyboard(ctx, formatAppliedSourcePreset(preset, change), sourcesKeyboard());
+    this.markChanged(ctx, 'publishing', `${change.action === 'removed' ? 'Removed' : 'Selected'} source preset: ${preset.key}`, change.lines);
+    await this.replyWithKeyboard(ctx, formatAppliedSourcePreset(preset, change), sourcesKeyboard(this.getDraft(ctx)));
+  }
+
+  async sourceCustomHelp(ctx, error = '') {
+    await this.replyWithKeyboard(ctx, formatCustomSourceHelp(error), sourcesKeyboard(this.getDraft(ctx)));
+  }
+
+  async resetSources(ctx) {
+    const change = resetDraftSources(this.getDraft(ctx));
+    this.markChanged(ctx, 'publishing', 'Reset draft publish sources', change.lines);
+    await this.replyWithKeyboard(ctx, formatResetSources(change), sourcesKeyboard(this.getDraft(ctx)));
   }
 
   async startManualSchedule(ctx) {
@@ -1025,7 +1088,11 @@ export class SetupAssistant {
 
   async manualScheduleSet(ctx, patch = {}) {
     const wizard = this.getManualScheduleWizard(ctx);
-    Object.assign(wizard, patch);
+    if (Object.prototype.hasOwnProperty.call(patch, 'source') && wizard.source === patch.source) {
+      wizard.source = '';
+    } else {
+      Object.assign(wizard, patch);
+    }
     this.setupScheduleWizards.set(ctx.from.id, wizard);
     await this.showManualScheduleStep(ctx, getWizardNextStep(wizard));
   }
@@ -1084,6 +1151,11 @@ export class SetupAssistant {
     if (target === 'technical_author') return this.technicalAuthorFields(ctx);
     if (target.startsWith('technical_trace:')) return this.technicalTrace(ctx, target.slice('technical_trace:'.length));
     if (target.startsWith('technical_raw:')) return this.technicalRaw(ctx, target.slice('technical_raw:'.length));
+    if (target.startsWith('technical_preview_msg:')) {
+      const parts = target.split(':');
+      return this.technicalPreviewMessage(ctx, Number(parts[1] || 0), Number(parts[2] || 0));
+    }
+    if (target.startsWith('technical_preview')) return this.technicalMessageBrowser(ctx, Number(target.split(':')[1] || 0));
     if (target === 'test') return this.testDefaults(ctx);
     return this.suggestParser(ctx);
   }
@@ -1222,14 +1294,19 @@ export class SetupAssistant {
     }
 
     const beforeParsing = structuredClone(draft.parsing || {});
-    suggestion.apply(draft);
+    const filterToggleAction = suggestion.filterRules?.length ? toggleFilterSuggestion(draft, suggestion) : null;
+    if (!filterToggleAction) suggestion.apply(draft);
     const afterParsing = structuredClone(draft.parsing || {});
     const detail = formatParserChanges(beforeParsing, afterParsing, { compact: false });
-    this.markChanged(ctx, 'parser', `Applied parser suggestion: ${suggestion.title}`, detail);
+    this.markChanged(ctx, 'parser', `${filterToggleAction === 'removed' ? 'Removed filter suggestion' : 'Applied parser suggestion'}: ${suggestion.title}`, detail);
     await this.replyWithKeyboard(
       ctx,
       [
-        formatAppliedSuggestion({ suggestion, beforeParsing, afterParsing }),
+        formatAppliedSuggestion({
+          suggestion: filterToggleAction === 'removed' ? { ...suggestion, title: `Removed ${suggestion.title}` } : suggestion,
+          beforeParsing,
+          afterParsing
+        }),
         '',
         'You can apply another suggestion from the same list, or run Test content / Preview.'
       ].join('\n'),
@@ -1323,10 +1400,16 @@ export class SetupAssistant {
 
   async setSource(ctx) {
     const beforePublish = structuredClone(this.getDraft(ctx).publish || {});
-    const source = parseJsonArgument(ctx.message.text);
+    let source;
+    try {
+      source = parseSourceTextCommand(ctx.message.text);
+    } catch (error) {
+      await this.sourceCustomHelp(ctx, error.message);
+      return;
+    }
     upsertPublishSource(this.getDraft(ctx), source);
     this.markChanged(ctx, 'publishing', `publish.sources.${source.key} updated`, formatPublishChanges(beforePublish, this.getDraft(ctx).publish || {}));
-    await this.replyWithKeyboard(ctx, `publish.sources.${source.key} updated. Run Doctor or Save when ready.`, publishMenuKeyboard());
+    await this.replyWithKeyboard(ctx, `publish.sources.${source.key} updated. Run Source test or Save when ready.`, sourcesKeyboard(this.getDraft(ctx)));
   }
 
   async setPublish(ctx) {
@@ -1599,9 +1682,9 @@ function normalizeLoadMoreTarget(target, fallback = 'suggest') {
     'test'
   ]);
   const normalized = String(target || '').trim();
-  if (allowed.has(normalized) || normalized.startsWith('technical_trace:') || normalized.startsWith('technical_raw:')) return normalized;
+  if (allowed.has(normalized) || normalized.startsWith('technical_trace:') || normalized.startsWith('technical_raw:') || normalized.startsWith('technical_preview')) return normalized;
   const fallbackValue = String(fallback || '').trim();
-  if (allowed.has(fallbackValue) || fallbackValue.startsWith('technical_trace:') || fallbackValue.startsWith('technical_raw:')) return fallbackValue;
+  if (allowed.has(fallbackValue) || fallbackValue.startsWith('technical_trace:') || fallbackValue.startsWith('technical_raw:') || fallbackValue.startsWith('technical_preview')) return fallbackValue;
   return 'suggest';
 }
 

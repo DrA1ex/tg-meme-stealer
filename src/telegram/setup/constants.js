@@ -18,7 +18,7 @@ export const ADVANCED_HELP = [
   '',
   'Publishing JSON:',
   '/setsources <json array>',
-  '/setsource <json object>',
+  '/setsource <key> <where>  OR  /setsource <json object>',
   '/setpublish <json object>',
   '/settemplate <key> <value>',
   '',

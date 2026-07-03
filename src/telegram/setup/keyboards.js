@@ -54,6 +54,7 @@ export function technicalDiagnosticsKeyboard() {
     [button('Trace matched', 'setup:technical_trace:matched'), button('Trace rejected', 'setup:technical_trace:rejected')],
     [button('Trace unknown author', 'setup:technical_trace:unknown_author'), button('Trace zero likes', 'setup:technical_trace:zero_likes')],
     [button('Raw matched', 'setup:technical_raw:matched'), button('Raw reactions', 'setup:technical_raw:buttons')],
+    [button('Message browser', 'setup:technical_preview:0')],
     [button('Load more messages', 'setup:load_more:technical'), button('Refresh sample', 'setup:refresh_sample:technical')],
     [button('Content config', 'setup:parser_config'), button('Advanced JSON', 'setup:advanced')],
     [button('Content setup', 'setup:parser'), button('Setup home', 'setup:status')]
@@ -162,8 +163,10 @@ export function trafficSuggestionsKeyboard(presets = [], options = {}) {
 }
 
 
-export function sourcesKeyboard() {
-  const rows = SOURCE_PRESETS.map((preset) => [button(`Apply ${preset.title}`, `setup:source_preset:${preset.id}`)]);
+export function sourcesKeyboard(draft = {}) {
+  const selected = new Set((Array.isArray(draft?.publish?.sources) ? draft.publish.sources : []).map((source) => source.key));
+  const rows = SOURCE_PRESETS.map((preset) => [button(`${selected.has(preset.key) ? '✓' : '•'} ${preset.title}`, `setup:source_preset:${preset.id}`)]);
+  rows.push([button('Custom source help', 'setup:source_custom'), button('Reset sources', 'setup:sources_reset')]);
   rows.push([button('Source test', 'setup:source_test'), button('Show publish config', 'setup:publish_config')]);
   rows.push([button('Publishing', 'setup:publish')]);
   return inlineKeyboard(rows);
@@ -172,7 +175,10 @@ export function sourcesKeyboard() {
 export function manualScheduleKeyboard({ draft = {}, baseConfig = {}, wizard = {}, step = 'source' } = {}) {
   const rows = [];
   if (step === 'source') {
-    for (const source of getPublishSources(draft, baseConfig).slice(0, 12)) rows.push([button(source.key, `setup:manual_source:${source.key}`)]);
+    for (const source of getPublishSources(draft, baseConfig).slice(0, 12)) {
+      const selected = wizard.source === source.key;
+      rows.push([button(`${selected ? '✓ ' : '• '}${source.key}`, `setup:manual_source:${source.key}`)]);
+    }
     rows.push([button('Add source preset', 'setup:sources')]);
   } else if (step === 'cadence') {
     rows.push([button('Daily', 'setup:manual_cadence:daily'), button('Weekly', 'setup:manual_cadence:weekly')]);
@@ -190,12 +196,16 @@ export function manualScheduleKeyboard({ draft = {}, baseConfig = {}, wizard = {
       }
     }
   } else if (step === 'time') {
-    for (let index = 0; index < TIME_OPTIONS.length; index += 2) {
-      rows.push(TIME_OPTIONS.slice(index, index + 2).map((time) => button(time, `setup:manual_time:${time}`)));
+    for (let index = 0; index < TIME_OPTIONS.length; index += 3) {
+      rows.push(TIME_OPTIONS.slice(index, index + 3).map((time) => button(`${wizard.time === time ? '✓ ' : ''}${time}`, `setup:manual_time:${time}`)));
     }
   } else if (step === 'window') {
     for (let index = 0; index < WINDOW_OPTIONS.length; index += 2) {
-      rows.push(WINDOW_OPTIONS.slice(index, index + 2).map((hours) => button(`${hours}h`, `setup:manual_window:${hours}`)));
+      rows.push(WINDOW_OPTIONS.slice(index, index + 2).map((option) => {
+        const hours = typeof option === 'object' ? option.hours : option;
+        const label = typeof option === 'object' ? option.label : `${option}h`;
+        return button(`${Number(wizard.windowHours) === Number(hours) ? '✓ ' : ''}${label}`, `setup:manual_window:${hours}`);
+      }));
     }
   } else if (step === 'posts') {
     const entries = Object.entries(POSTS_PRESETS);
@@ -208,6 +218,35 @@ export function manualScheduleKeyboard({ draft = {}, baseConfig = {}, wizard = {
   }
   rows.push([button('Start over', 'setup:manual_schedule'), button('Publishing', 'setup:publish')]);
   return inlineKeyboard(rows);
+}
+
+
+export function technicalMessageBrowserKeyboard(messages = [], { page = 0, pageSize = 6 } = {}) {
+  const totalPages = Math.max(1, Math.ceil(messages.length / pageSize));
+  const currentPage = Math.min(Math.max(0, Number(page || 0)), totalPages - 1);
+  const pageMessages = messages.slice(currentPage * pageSize, currentPage * pageSize + pageSize);
+  const rows = [];
+  for (let index = 0; index < pageMessages.length; index += 3) {
+    rows.push(pageMessages.slice(index, index + 3).map((message) => {
+      const id = Number(message?.id || 0);
+      return button(`#${id || '?'}`, `setup:technical_preview_msg:${id}:${currentPage}`);
+    }));
+  }
+  const nav = [];
+  if (currentPage > 0) nav.push(button('Prev', `setup:technical_preview:${currentPage - 1}`));
+  if (currentPage < totalPages - 1) nav.push(button('Next', `setup:technical_preview:${currentPage + 1}`));
+  if (nav.length) rows.push(nav);
+  rows.push([button('Load more messages', `setup:load_more:technical_preview:${currentPage}`), button('Refresh sample', `setup:refresh_sample:technical_preview:${currentPage}`)]);
+  rows.push([button('Technical diagnostics', 'setup:technical'), button('Content setup', 'setup:parser')]);
+  rows.push([button('Setup home', 'setup:status')]);
+  return inlineKeyboard(rows);
+}
+
+export function technicalMessagePreviewKeyboard(page = 0) {
+  return inlineKeyboard([
+    [button('Back to message browser', `setup:technical_preview:${page}`)],
+    [button('Technical diagnostics', 'setup:technical'), button('Setup home', 'setup:status')]
+  ]);
 }
 
 export function previewMenuKeyboard() {

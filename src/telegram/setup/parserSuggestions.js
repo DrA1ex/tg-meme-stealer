@@ -2,7 +2,7 @@ import { getReactionCount, getReactionEmoji } from '../../core/postParser.js';
 import { button, inlineKeyboard } from './keyboards.js';
 import { setupScreen } from './formattingBase.js';
 
-export const NATIVE_REACTION_PATHS = ['nativeReactions[]', 'reactionCounts[]', 'messageReactions.reactions[]', 'messageReactions.raw.results[]', 'reactions.reactions[]', 'reactions.results[]', 'raw.reactions.results[]', 'reaction_count[]'];
+export const NATIVE_REACTION_PATHS = ['nativeReactions[]', 'reactionCounts[]', 'messageReactions.reactions[]', 'messageReactions.results[]', 'messageReactions.raw.results[]', 'messageReactions.raw.reactions[]', 'reactions[]', 'reactions.reactions[]', 'reactions.results[]', 'raw.reactions[]', 'raw.reactions.reactions[]', 'raw.reactions.results[]', 'reaction_count[]', 'reactionCounts[]'];
 
 export const CONSERVATIVE_LIKE_EMOJIS = ['👍', '❤', '❤️', '🔥'];
 export const CONSERVATIVE_DISLIKE_EMOJIS = ['👎'];
@@ -27,10 +27,10 @@ export function buildParserSuggestions(messages, draft = {}) {
   const authorSuggestion = authorOptions.find((item) => item.recommended) || authorOptions[0] || null;
   const buttonReactionSuggestions = buildButtonReactionSuggestions(stats);
   const nativeReactionSuggestions = buildNativeReactionSuggestions(stats);
-  const reactionSuggestion = buttonReactionSuggestions.find((item) => item.recommended)
-    || nativeReactionSuggestions.find((item) => item.recommended)
-    || buttonReactionSuggestions[0]
-    || nativeReactionSuggestions[0];
+  const reactionSuggestion = nativeReactionSuggestions.find((item) => item.recommended)
+    || buttonReactionSuggestions.find((item) => item.recommended)
+    || nativeReactionSuggestions[0]
+    || buttonReactionSuggestions[0];
 
   suggestions.push({
     id: 'rec',
@@ -54,16 +54,18 @@ export function buildParserSuggestions(messages, draft = {}) {
 
   suggestions.push({
     id: 'f_content',
-    title: 'Add hasContent filter',
+    title: 'Content filter · has content',
     description: `${stats.contentCount}/${stats.scanned} recent messages have text or supported media`,
+    filterRules: [{ source: 'message', transform: 'hasContent' }],
     apply: (draftConfig) => addUniqueParsingRule(draftConfig, 'filters', { source: 'message', transform: 'hasContent' })
   });
 
   if (stats.mediaCount > 0) {
     suggestions.push({
       id: 'f_media',
-      title: 'Add hasMedia filter',
+      title: 'Content filter · has media',
       description: `${stats.mediaCount}/${stats.scanned} recent messages have photo/video media`,
+      filterRules: [{ source: 'message', transform: 'hasMedia' }],
       apply: (draftConfig) => addUniqueParsingRule(draftConfig, 'filters', { source: 'message', transform: 'hasMedia' })
     });
   }
@@ -71,8 +73,9 @@ export function buildParserSuggestions(messages, draft = {}) {
   if (stats.topSender) {
     suggestions.push({
       id: 'f_sender',
-      title: `Add top sender filter`,
+      title: `Content filter · top sender`,
       description: `sender ${stats.topSender.id} appears in ${stats.topSender.count}/${stats.scanned} recent messages${stats.topSender.label ? ` (${stats.topSender.label})` : ''}`,
+      filterRules: [{ source: 'sender', path: 'id', transform: 'equals', value: stats.topSender.id }],
       apply: (draftConfig) => addUniqueParsingRule(draftConfig, 'filters', {
         source: 'sender',
         path: 'id',
@@ -112,6 +115,7 @@ export function buildParserSuggestions(messages, draft = {}) {
       id: nativeSuggestion.id,
       title: nativeSuggestion.title,
       description: nativeSuggestion.description,
+      recommended: Boolean(nativeSuggestion.recommended),
       apply: (draftConfig) => {
         draftConfig.parsing.likes = structuredClone(nativeSuggestion.likesRules);
         draftConfig.parsing.dislikes = structuredClone(nativeSuggestion.dislikesRules);
@@ -325,7 +329,7 @@ export function buildButtonReactionVariants(path, texts = []) {
     details: `likes=detected non-negative markers, dislikes=${NEGATIVE_ONLY_EMOJIS.join(' ')} -`
   });
 
-  return dedupeButtonReactionVariants(variants);
+  return variants;
 }
 
 function addButtonReactionVariant(variants, { id, path, texts, title, likeMarkers = [], dislikeMarkers = [], recommended = false, details = '' }) {
@@ -544,7 +548,7 @@ export function formatParserSuggestions({ suggestions, scanned, matched }) {
     ? suggestions.map((suggestion) => {
       const marker = suggestion.actionable ? '•' : '✓';
       const state = suggestion.actionable ? '' : ' — already applied / no change';
-      return `- ${marker} ${suggestion.title}: ${suggestion.description}${state}`;
+      return `- ${marker} ${suggestion.title}${suggestion.recommended ? ' · ★ suggested' : ''}: ${suggestion.description}${state}`;
     })
     : ['- No suggestions found. Use Advanced JSON with /raw or /debug for this source shape.'];
 
@@ -581,7 +585,7 @@ export function confirmResetFiltersKeyboard() {
 }
 
 export function suggestionButton(suggestion, { fullTitle = false } = {}) {
-  const prefix = suggestion.actionable ? '• ' : '✓ ';
+  const prefix = suggestion.active ? '✓ ' : suggestion.actionable ? '• ' : '✓ ';
   const title = fullTitle ? suggestion.title : shortSuggestionTitle(suggestion.title);
   const action = suggestion.actionable ? `setup:apply:${suggestion.id}` : `setup:noop:${suggestion.id}`;
   return button(`${prefix}${title}`.slice(0, 52), action);
@@ -597,18 +601,44 @@ export function shortSuggestionTitle(title) {
 }
 
 export function markSuggestionStates(suggestions, draft) {
-  return suggestions.map((suggestion) => ({
-    ...suggestion,
-    actionable: isSuggestionUseful(suggestion, draft)
-  }));
+  return suggestions.map((suggestion) => {
+    const active = isFilterSuggestionActive(suggestion, draft);
+    return {
+      ...suggestion,
+      active,
+      actionable: active || isSuggestionUseful(suggestion, draft)
+    };
+  });
 }
 
 export function isSuggestionUseful(suggestion, draft) {
+  if (suggestion?.filterRules?.length) return true;
   const clone = structuredClone(draft || {});
   const before = JSON.stringify(clone.parsing || {});
   suggestion.apply(clone);
   const after = JSON.stringify(clone.parsing || {});
   return before !== after;
+}
+
+export function isFilterSuggestionActive(suggestion, draft) {
+  if (!suggestion?.filterRules?.length) return false;
+  const rules = Array.isArray(draft?.parsing?.filters) ? draft.parsing.filters : [];
+  return suggestion.filterRules.every((rule) => rules.some((item) => JSON.stringify(item) === JSON.stringify(rule)));
+}
+
+export function toggleFilterSuggestion(draft, suggestion) {
+  if (!suggestion?.filterRules?.length) return false;
+  draft.parsing = draft.parsing || {};
+  const before = Array.isArray(draft.parsing.filters) ? draft.parsing.filters : [];
+  const active = suggestion.filterRules.every((rule) => before.some((item) => JSON.stringify(item) === JSON.stringify(rule)));
+  if (active) {
+    const remove = new Set(suggestion.filterRules.map((rule) => JSON.stringify(rule)));
+    draft.parsing.filters = before.filter((rule) => !remove.has(JSON.stringify(rule)));
+  } else {
+    draft.parsing.filters = [...before];
+    for (const rule of suggestion.filterRules) addUniqueParsingRule(draft, 'filters', rule);
+  }
+  return active ? 'removed' : 'added';
 }
 
 export function addUniqueParsingRule(draft, key, rule) {
@@ -644,13 +674,14 @@ export function formatSuggestionOptions({ title, icon, categoryTitle, suggestion
     sections: [
       ['🔎 Sample', [`Scanned ${scanned} recent source message(s).`, `Current filters matched ${matched}.`]],
       [categoryTitle, lines],
-      ['ℹ️ Legend', ['★ suggested = best guess from current sample.', '• can apply, ✓ already current.']],
+      ['ℹ️ Legend', ['★ suggested = best guess from current sample.', '• can apply, ✓ selected/current. In Filters, clicking ✓ removes that filter.']],
       ['➡️ Next', [next || 'Choose an option, then run the related test and Preview.']]
     ]
   });
 }
 
 export function formatSuggestionStateMarker(suggestion) {
+  if (suggestion.active) return '✓';
   return suggestion.actionable ? '•' : '✓';
 }
 

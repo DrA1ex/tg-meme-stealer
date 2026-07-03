@@ -1,5 +1,5 @@
-import { upsertPublishSource } from '../../core/setupConfig.js';
-import { getSourceDefinitions } from '../../core/sourceExpression.js';
+import { setPublishSources, upsertPublishSource } from '../../core/setupConfig.js';
+import { compileSourceWhere, getSourceDefinitions } from '../../core/sourceExpression.js';
 import { formatPublishChanges } from './publishPresets.js';
 import { setupScreen } from './formattingBase.js';
 
@@ -38,31 +38,37 @@ export function getSourcePreset(id) {
   return SOURCE_PRESETS.find((preset) => preset.id === id || preset.key === id) || null;
 }
 
-export function formatSourcesMenu(draft = {}, baseConfig = {}) {
-  const sources = getSourceDefinitionsFromDraft(draft, baseConfig);
-  const sourceLines = sources.length
-    ? sources.map((source) => `- ${source.key}: ${source.where || 'true'}`)
-    : ['- no publish sources configured'];
-  const presetLines = SOURCE_PRESETS.map((preset) => {
-    const current = sources.find((source) => source.key === preset.key);
-    return `- ${current ? '✓' : '•'} ${preset.title}: key=${preset.key}, where=${preset.where}`;
-  });
 
-  return setupScreen({
-    icon: '📦',
-    title: 'Publish sources',
-    sections: [
-      ['📌 Current sources', sourceLines],
-      ['✨ Source presets', presetLines],
-      ['➡️ Next', ['Add/update a source preset, then run Source test or use Add custom schedule.']]
-    ]
-  });
+export function getDraftSources(draft = {}) {
+  return Array.isArray(draft?.publish?.sources) ? draft.publish.sources : [];
 }
 
-export function applySourcePreset(draft, preset) {
+export function hasDraftSource(draft = {}, key) {
+  return getDraftSources(draft).some((source) => source.key === key);
+}
+
+export function toggleSourcePreset(draft, preset) {
   draft.publish = draft.publish || {};
   const beforePublish = structuredClone(draft.publish || {});
-  upsertPublishSource(draft, { key: preset.key, where: preset.where });
+  const current = getDraftSources(draft);
+  if (current.some((source) => source.key === preset.key)) {
+    setPublishSources(draft, current.filter((source) => source.key !== preset.key));
+  } else {
+    upsertPublishSource(draft, { key: preset.key, where: preset.where });
+  }
+  const afterPublish = structuredClone(draft.publish || {});
+  return {
+    action: current.some((source) => source.key === preset.key) ? 'removed' : 'added',
+    beforePublish,
+    afterPublish,
+    lines: formatPublishChanges(beforePublish, afterPublish, { compact: true })
+  };
+}
+
+export function resetDraftSources(draft) {
+  draft.publish = draft.publish || {};
+  const beforePublish = structuredClone(draft.publish || {});
+  delete draft.publish.sources;
   const afterPublish = structuredClone(draft.publish || {});
   return {
     beforePublish,
@@ -71,14 +77,96 @@ export function applySourcePreset(draft, preset) {
   };
 }
 
+export function parseSourceTextCommand(text = '') {
+  const raw = String(text || '').trim();
+  const rest = raw.replace(/^\/setsource\s*/i, '').trim();
+  if (!rest) throw new Error('Usage: /setsource <key> <where> or /setsource {"key":"custom","where":"likes > 0"}');
+  if (rest.startsWith('{')) return JSON.parse(rest);
+  const match = rest.match(/^([A-Za-z][A-Za-z0-9_-]{0,31})\s+([\s\S]+)$/);
+  if (!match) throw new Error('Usage: /setsource <key> <where>. Example: /setsource positive likes > dislikes and likes >= 10');
+  const source = { key: match[1], where: match[2].trim() };
+  validateSourceExpression(source);
+  return source;
+}
+
+export function validateSourceExpression(source = {}) {
+  if (!source.key || typeof source.key !== 'string') throw new Error('Source key must be a non-empty string');
+  compileSourceWhere(source.where || 'true');
+  return source;
+}
+
+export function formatCustomSourceHelp(error = '') {
+  return setupScreen({
+    icon: '✍️',
+    title: 'Custom source condition',
+    sections: [
+      ...(error ? [['❌ Last error', [error]]] : []),
+      ['📌 Usage', [
+        '/setsource <key> <where>',
+        'Example: /setsource positive likes > dislikes and likes >= 10',
+        'JSON also works: /setsource {"key":"positive","where":"likes > dislikes"}'
+      ]],
+      ['🧮 Allowed fields', [
+        'likes, dislikes',
+        'Operators: > >= < <= = != + - * / % and or not',
+        'Functions: abs(...), min(...), max(...)',
+        'Examples:',
+        '- likes > 0',
+        '- dislikes > likes',
+        '- likes + dislikes >= 10',
+        '- abs(likes - dislikes) < max(likes, dislikes) * 0.25'
+      ]],
+      ['➡️ Next', ['Send /setsource with your condition. It will be validated before saving.']]
+    ]
+  });
+}
+
+export function formatSourcesMenu(draft = {}, baseConfig = {}) {
+  const sources = getSourceDefinitionsFromDraft(draft, baseConfig);
+  const sourceLines = sources.length
+                      ? sources.map((source) => `- ${source.key}: ${source.where || 'true'}`)
+                      : ['- no publish sources configured'];
+  const draftSources = getDraftSources(draft);
+  const presetLines = SOURCE_PRESETS.map((preset) => {
+    const current = draftSources.find((source) => source.key === preset.key);
+    return `- ${current ? '✓ selected' : '• available'} ${preset.title}: key=${preset.key}, where=${preset.where}`;
+  });
+
+  return setupScreen({
+    icon: '📦',
+    title: 'Publish sources',
+    sections: [
+      ['📌 Current sources', sourceLines],
+      ['✨ Source presets', presetLines],
+      ['➡️ Next', ['Click a selected preset again to remove it from draft sources. Use Custom source for your own condition.']]
+    ]
+  });
+}
+
+export function applySourcePreset(draft, preset) {
+  return toggleSourcePreset(draft, preset);
+}
+
 export function formatAppliedSourcePreset(preset, change) {
   return setupScreen({
-    icon: '✅',
-    title: 'Source preset applied',
+    icon: change.action === 'removed' ? '🗑' : '✅',
+    title: change.action === 'removed' ? 'Source preset removed' : 'Source preset selected',
     sections: [
       ['📦 Source', [`${preset.key}: ${preset.where}`, preset.description]],
       ['📣 Changed', change.lines],
-      ['➡️ Next', ['Run Source test, then choose this source in Add custom schedule.']]
+      ['➡️ Next', ['Run Source test, then choose sources in Add custom schedule.']]
+    ]
+  });
+}
+
+export function formatResetSources(change) {
+  return setupScreen({
+    icon: '✅',
+    title: 'Draft sources reset',
+    sections: [
+      ['📣 Changed', change.lines],
+      ['📌 State', ['Draft publish.sources was removed. Effective defaults from config/defaults may still be available.']],
+      ['➡️ Next', ['Select source presets again or add a custom source.']]
     ]
   });
 }

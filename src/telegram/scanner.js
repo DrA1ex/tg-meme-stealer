@@ -421,7 +421,7 @@ export class TelegramScanner {
 
   async enrichMessagesWithNativeReactions(messages = []) {
     if (!this.client || typeof this.client.getMessageReactions !== 'function') return messages;
-    const candidates = messages.filter((message) => message && message.reactions && !hasEnrichedNativeReactions(message));
+    const candidates = messages.filter((message) => message && hasReactionSummaryMarker(message) && !hasEnrichedNativeReactions(message));
     if (!candidates.length) return messages;
 
     try {
@@ -470,6 +470,10 @@ export class TelegramScanner {
   }
 }
 
+
+function hasReactionSummaryMarker(message) {
+  return Boolean(message?.reactions || message?.raw?.reactions || message?.messageReactions);
+}
 
 function hasEnrichedNativeReactions(message) {
   return Array.isArray(message?.nativeReactions) || Array.isArray(message?.reactionCounts);

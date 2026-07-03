@@ -24,8 +24,8 @@ const MAX_PATHS_PER_MESSAGE = 260;
 export function formatTechnicalDiagnosticsOverview({ messages = [], draft = {}, baseConfig = {}, sample = {} } = {}) {
   const posts = parseDiagnosticPosts(messages, draft, baseConfig);
   const cacheAge = sample.cacheAgeMs === null || sample.cacheAgeMs === undefined
-    ? 'unknown'
-    : formatAge(sample.cacheAgeMs);
+                   ? 'unknown'
+                   : formatAge(sample.cacheAgeMs);
 
   return setupScreen({
     icon: '🛠',
@@ -277,6 +277,81 @@ function parseDiagnosticPosts(messages, draft, baseConfig) {
     chatId: baseConfig.telegram?.sourceChatId,
     parsing: draft.parsing || baseConfig.parsing || {}
   });
+}
+
+
+export function formatMessageBrowser({ messages = [], draft = {}, baseConfig = {}, page = 0, pageSize = 6 } = {}) {
+  const parsed = parseDiagnosticPosts(messages, draft, baseConfig);
+  const postByMessageId = new Map(parsed.map((post) => [Number(post.messageId), post]));
+  const totalPages = Math.max(1, Math.ceil(messages.length / pageSize));
+  const currentPage = Math.min(Math.max(0, Number(page || 0)), totalPages - 1);
+  const pageMessages = messages.slice(currentPage * pageSize, currentPage * pageSize + pageSize);
+  const lines = pageMessages.map((message) => {
+    const id = Number(message?.id || 0);
+    const post = postByMessageId.get(id);
+    const date = formatMessageDate(message);
+    const media = getSetupMediaKind(message);
+    const text = oneLine(String(message?.message || message?.text || '').replace(/\n/g, ' '), 42) || '<no text>';
+    return `- #${id || '?'} · ${post ? '✓ matched' : '✗ rejected'} · ${date} · ${media} · ${post ? `👍${post.likes || 0}/👎${post.dislikes || 0}` : 'not parsed'} · ${text}`;
+  });
+  return setupScreen({
+    icon: '🔍',
+    title: 'Message browser',
+    sections: [
+      ['📦 Sample', [`Loaded ${messages.length} message(s). Page ${currentPage + 1}/${totalPages}.`]],
+      ['🧾 Messages', lines.length ? lines : ['- no loaded messages']],
+      ['➡️ Next', ['Click a message id to inspect parser trace and compact fields. Use Load more to add more messages without changing draft config.']]
+    ]
+  });
+}
+
+export function formatTechnicalMessagePreview({ message = null, draft = {}, baseConfig = {} } = {}) {
+  if (!message) {
+    return setupScreen({
+      icon: '🔍',
+      title: 'Message preview',
+      sections: [
+        ['⚠️ Not found', ['Message is not available in the loaded setup sample.']],
+        ['➡️ Next', ['Load more messages or refresh sample.']]
+      ]
+    });
+  }
+  const debug = debugParseMessage(message, {
+    chatId: baseConfig.telegram?.sourceChatId,
+    parsing: draft.parsing || baseConfig.parsing || {}
+  });
+  const compact = buildCompactRawMessage(message);
+  return setupScreen({
+    icon: '🔍',
+    title: `Message preview · #${Number(message.id || 0) || '?'}`,
+    sections: [
+      ['📌 Summary', [
+        `matched=${Boolean(debug.result?.matched)}`,
+        `date=${formatMessageDate(message)}`,
+        `media=${getSetupMediaKind(message)}`,
+        `text=${oneLine(String(message?.message || message?.text || ''), 90) || '<no text>'}`
+      ]],
+      ['✅ Parsed result', debug.result?.post ? [
+        `author=${debug.result.post.author || 'unknown'}`,
+        `likes=${debug.result.post.likes || 0}, dislikes=${debug.result.post.dislikes || 0}`
+      ] : ['Message does not match current filters/parser.']],
+      ['🔎 Filters', formatFilterTrace(debug.filters)],
+      ['👤 Author', formatExtractorTrace(debug.extractors?.author, 'author')],
+      ['👍 Likes', formatNumberTrace(debug.extractors?.likes, 'likes')],
+      ['👎 Dislikes', formatNumberTrace(debug.extractors?.dislikes, 'dislikes')],
+      ['🧬 Compact fields', [
+        `sender=${JSON.stringify(compact.sender || {})}`,
+        `buttons=${JSON.stringify(compact.markup?.buttons || compact.replyMarkup?.buttons || [])}`,
+        `nativeReactions=${JSON.stringify(compact.nativeReactions || compact.reactionCounts || compact.messageReactions || [])}`,
+        `entities=${JSON.stringify(compact.entities || compact.messageEntities || [])}`
+      ]]
+    ]
+  });
+}
+
+function formatMessageDate(message) {
+  const date = message?.date instanceof Date ? message.date : new Date(Number(message?.date || 0) * 1000);
+  return Number.isNaN(date.getTime()) ? '<no date>' : date.toISOString().slice(0, 16).replace('T', ' ');
 }
 
 function scanFieldPaths(messages) {
