@@ -230,6 +230,8 @@ export function formatPublishMenu(draft, baseConfig = {}) {
       ]],
       ['🗓 Templates', formatTemplateLines(templates, { includeDisabled: true })],
       ['✨ Available now', [
+        'Add custom schedule builds daily/weekly/twice-weekly/monthly templates with buttons.',
+        'Sources provides simple source presets such as best, controversial, disliked, and engagement.',
         'Presets can add/update common schedules with buttons, including time/strictness variants.',
         'Traffic suggestions has recent-scan and extended database modes, and can add schedules with buttons.',
         'Manage templates can enable, disable, or remove schedules from the draft.',
@@ -238,7 +240,7 @@ export function formatPublishMenu(draft, baseConfig = {}) {
         'Source test checks publish.sources[].where against stored posts.',
         'Advanced JSON still edits exact sources/templates.'
       ]],
-      ['➡️ Next', ['Choose Presets or Traffic suggestions, then run Source test and Schedule doctor.', 'Use Manage templates to remove old or duplicate schedules.']]
+      ['➡️ Next', ['Use Add custom schedule for manual control, or Traffic suggestions for volume-based schedules.', 'Run Source test and Schedule doctor before saving.']]
     ]
   });
 }

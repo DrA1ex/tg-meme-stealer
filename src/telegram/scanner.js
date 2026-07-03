@@ -365,6 +365,7 @@ export class TelegramScanner {
       () => this.client.getMessages(peerId, [messageId]),
       { label: 'getMessages' }
     );
+    await this.enrichMessagesWithNativeReactions(messages.filter(Boolean));
     return messages[0] || null;
   }
 
@@ -418,6 +419,39 @@ export class TelegramScanner {
     return pruned;
   }
 
+  async enrichMessagesWithNativeReactions(messages = []) {
+    if (!this.client || typeof this.client.getMessageReactions !== 'function') return messages;
+    const candidates = messages.filter((message) => message && message.reactions && !hasEnrichedNativeReactions(message));
+    if (!candidates.length) return messages;
+
+    try {
+      const reactionSummaries = await withTelegramRetry(
+        () => this.client.getMessageReactions(candidates),
+        { label: 'getMessageReactions' }
+      );
+
+      for (let index = 0; index < candidates.length; index += 1) {
+        const summary = reactionSummaries?.[index] || null;
+        const reactions = extractMtcuteReactionRows(summary);
+        if (!reactions.length) continue;
+        candidates[index].messageReactions = summary;
+        candidates[index].nativeReactions = reactions;
+        candidates[index].reactionCounts = reactions;
+      }
+
+      this.logger.debug('Native reactions enriched', {
+        requested: candidates.length,
+        enriched: candidates.filter(hasEnrichedNativeReactions).length
+      });
+    } catch (error) {
+      this.logger.warn('Failed to enrich native reactions', {
+        requested: candidates.length,
+        error: error.message
+      });
+    }
+    return messages;
+  }
+
   async getHistory(params) {
     const peerId = normalizeTelegramPeerId(this.config.telegram.sourceChatId);
     this.logger.info('Requesting history', {
@@ -430,9 +464,25 @@ export class TelegramScanner {
       () => this.client.getHistory(peerId, params),
       { label: 'getHistory' }
     );
+    await this.enrichMessagesWithNativeReactions([...history]);
     this.logger.debug('History request completed', { hasNext: Boolean(history.next) });
     return history;
   }
+}
+
+
+function hasEnrichedNativeReactions(message) {
+  return Array.isArray(message?.nativeReactions) || Array.isArray(message?.reactionCounts);
+}
+
+function extractMtcuteReactionRows(summary) {
+  if (!summary) return [];
+  if (Array.isArray(summary)) return summary;
+  if (Array.isArray(summary.reactions)) return summary.reactions;
+  if (Array.isArray(summary.results)) return summary.results;
+  if (Array.isArray(summary.raw?.results)) return summary.raw.results;
+  if (Array.isArray(summary.raw?.reactions)) return summary.raw.reactions;
+  return [];
 }
 
 function getMessageDate(message) {

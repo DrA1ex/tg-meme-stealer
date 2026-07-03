@@ -195,6 +195,57 @@ export function getMaxTrafficDays(config = {}) {
 }
 
 export function buildTrafficPreset({ id, title, kind, time, morningTime, nightTime, notes = [] }) {
+  if (kind === 'weekly') {
+    return {
+      id,
+      title,
+      description: `Traffic-based weekly digest on Monday at ${time}.`,
+      sources: [TRAFFIC_PRESET_SOURCE],
+      templates: [
+        publishTemplate({
+          source: 'best',
+          key: 'weekly_best',
+          schedule: { type: 'weekly', weekday: 1, time },
+          windowHours: 168,
+          posts: { min: 5, target: 10, max: 20 },
+          reactions: { strategy: 'likes', min: 20, includeAbove: 30 },
+          template: 'Best {{count}} posts from the last week'
+        })
+      ],
+      notes
+    };
+  }
+
+  if (kind === 'twice_weekly') {
+    return {
+      id,
+      title,
+      description: `Traffic-based twice-weekly digest on Monday/Thursday at ${time}.`,
+      sources: [TRAFFIC_PRESET_SOURCE],
+      templates: [
+        publishTemplate({
+          source: 'best',
+          key: 'twice_weekly_best_mon',
+          schedule: { type: 'weekly', weekday: 1, time },
+          windowHours: 84,
+          posts: { min: 3, target: 7, max: 14 },
+          reactions: { strategy: 'likes', min: 10, includeAbove: 25 },
+          template: 'Best {{count}} posts from the last half-week'
+        }),
+        publishTemplate({
+          source: 'best',
+          key: 'twice_weekly_best_thu',
+          schedule: { type: 'weekly', weekday: 4, time },
+          windowHours: 84,
+          posts: { min: 3, target: 7, max: 14 },
+          reactions: { strategy: 'likes', min: 10, includeAbove: 25 },
+          template: 'Best {{count}} posts from the last half-week'
+        })
+      ],
+      notes
+    };
+  }
+
   if (kind === 'morning_night') {
     return {
       id,
@@ -413,8 +464,9 @@ function buildTrafficReport({ items, timezone, source, sampleLines, allowPresets
     .sort((a, b) => b[1] - a[1] || a[0] - b[0])
     .slice(0, 5);
   const activeClusters = buildActiveClusters(buckets);
-  const suggestionLines = buildScheduleSuggestionsFromTraffic({ topHours, activeClusters });
-  const presets = allowPresets ? buildTrafficPresetsFromTraffic({ topHours, activeClusters }) : [];
+  const metrics = getTrafficMetrics(items);
+  const suggestionLines = buildScheduleSuggestionsFromTraffic({ topHours, activeClusters, metrics });
+  const presets = allowPresets ? buildTrafficPresetsFromTraffic({ topHours, activeClusters, metrics }) : [];
 
   const bucketLines = topHours.map(([hour, count]) => `- ${formatHour(hour)}–${formatHour(hour + 1)}: ${count} post/message(s)`);
   const clusterLines = activeClusters.slice(0, 4).map((cluster) => `- ${formatHour(cluster.start)}–${formatHour(cluster.end)}: ${cluster.count} post/message(s)`);
@@ -429,6 +481,12 @@ function buildTrafficReport({ items, timezone, source, sampleLines, allowPresets
           ...sampleLines,
           `Source: ${source}.`,
           `Timezone: ${timezone}.`
+        ]],
+        ['📌 Traffic summary', [
+          `Items: ${metrics.total}.`,
+          `Active days: ${metrics.activeDays}.`,
+          `Average: ${formatNumber(metrics.avgPerDay)} post/message(s) per day.`,
+          `Recommended cadence: ${metrics.cadence}.`
         ]],
         ['⏱ Busiest hours', bucketLines.length ? bucketLines : ['- no dated posts/messages found']],
         ['📈 Active clusters', clusterLines.length ? clusterLines : ['- no activity clusters found']],
@@ -491,51 +549,106 @@ function buildActiveClusters(buckets) {
   return clusters.sort((a, b) => b.count - a.count || a.start - b.start);
 }
 
-function buildScheduleSuggestionsFromTraffic({ topHours, activeClusters }) {
+function buildScheduleSuggestionsFromTraffic({ topHours, activeClusters, metrics }) {
   if (!topHours.length) return [];
   const suggestions = [];
   const busiestHour = topHours[0][0];
   const dailyTime = formatTime((busiestHour + 1) % 24, 0);
-  suggestions.push(`Daily top around ${dailyTime}: one digest shortly after the busiest hour.`);
+  const split = chooseMorningNightTimes(activeClusters) || { morningTime: '11:00', nightTime: '23:00' };
 
-  const split = chooseMorningNightTimes(activeClusters);
-  if (split) {
-    suggestions.push(`Morning + night around ${split.morningTime} / ${split.nightTime}: split the day around active clusters.`);
+  if (metrics.avgPerDay < 1) {
+    suggestions.push(`Weekly digest around ${dailyTime}: sample is too small for daily publishing.`);
+  } else if (metrics.avgPerDay < 3) {
+    suggestions.push(`Twice weekly around ${dailyTime}: low traffic, safer than daily.`);
+    suggestions.push(`Weekly digest around ${dailyTime}: conservative fallback.`);
+  } else if (metrics.avgPerDay < 8) {
+    suggestions.push(`Daily digest around ${dailyTime}: enough posts for one daily run.`);
+    suggestions.push(`Twice weekly around ${dailyTime}: safer fallback if reaction thresholds are strict.`);
   } else {
-    suggestions.push('Morning + night 11:00 / 23:00: use the standard split if traffic is spread out or sample is small.');
+    suggestions.push(`Daily digest around ${dailyTime}: one digest shortly after the busiest hour.`);
+    suggestions.push(`Morning + night around ${split.morningTime} / ${split.nightTime}: enough traffic for two daily windows.`);
   }
 
-  if (topHours.length >= 3) {
-    const latestTop = Math.max(...topHours.slice(0, 3).map(([hour]) => hour));
-    suggestions.push(`Night digest around ${formatTime((latestTop + 1) % 24, 0)}: good if most posts arrive later in the day.`);
-  }
+  if (metrics.avgPerDay >= 20) suggestions.push('High volume: consider strict thresholds or two daily selections.');
   return suggestions;
 }
 
-function buildTrafficPresetsFromTraffic({ topHours, activeClusters }) {
+function buildTrafficPresetsFromTraffic({ topHours, activeClusters, metrics }) {
   if (!topHours.length) return [];
   const presets = [];
   const busiestHour = topHours[0][0];
   const dailyTime = formatTime((busiestHour + 1) % 24, 0);
-  presets.push(buildTrafficPreset({
-    id: `traffic_daily_${dailyTime.replace(':', '')}`,
-    title: `Apply daily digest · ${dailyTime}`,
-    kind: 'daily',
-    time: dailyTime,
-    notes: ['Generated from observed traffic. Apply/update keeps unrelated templates.']
-  }));
-
   const split = chooseMorningNightTimes(activeClusters) || { morningTime: '11:00', nightTime: '23:00' };
+
+  if (metrics.avgPerDay >= 3) {
+    presets.push(buildTrafficPreset({
+      id: `traffic_daily_${dailyTime.replace(':', '')}`,
+      title: `Apply daily digest · ${dailyTime}`,
+      kind: 'daily',
+      time: dailyTime,
+      notes: ['Generated from observed traffic. Apply/update keeps unrelated templates.']
+    }));
+  }
+
+  if (metrics.avgPerDay >= 8) {
+    presets.push(buildTrafficPreset({
+      id: `traffic_mn_${split.morningTime.replace(':', '')}_${split.nightTime.replace(':', '')}`,
+      title: `Apply morning/night · ${split.morningTime} / ${split.nightTime}`,
+      kind: 'morning_night',
+      morningTime: split.morningTime,
+      nightTime: split.nightTime,
+      notes: ['Generated from observed traffic. Apply/update keeps unrelated templates.']
+    }));
+  }
+
+  if (metrics.avgPerDay < 8) {
+    presets.push(buildTrafficPreset({
+      id: `traffic_twice_weekly_${dailyTime.replace(':', '')}`,
+      title: `Apply twice weekly · Mon/Thu ${dailyTime}`,
+      kind: 'twice_weekly',
+      time: dailyTime,
+      notes: ['Generated from observed low-volume traffic. Creates Monday and Thursday weekly schedules.']
+    }));
+  }
+
   presets.push(buildTrafficPreset({
-    id: `traffic_mn_${split.morningTime.replace(':', '')}_${split.nightTime.replace(':', '')}`,
-    title: `Apply morning/night · ${split.morningTime} / ${split.nightTime}`,
-    kind: 'morning_night',
-    morningTime: split.morningTime,
-    nightTime: split.nightTime,
-    notes: ['Generated from observed traffic. Apply/update keeps unrelated templates.']
+    id: `traffic_weekly_${dailyTime.replace(':', '')}`,
+    title: `Apply weekly digest · Mon ${dailyTime}`,
+    kind: 'weekly',
+    time: dailyTime,
+    notes: ['Generated from observed traffic. Good fallback for low-volume sources.']
   }));
 
   return presets;
+}
+
+function getTrafficMetrics(items = []) {
+  const dates = items
+    .map((item) => item.date)
+    .filter((date) => date instanceof Date && !Number.isNaN(date.getTime()))
+    .sort((a, b) => a - b);
+  if (!dates.length) return { total: 0, activeDays: 0, avgPerDay: 0, cadence: 'not enough data' };
+  const days = new Set(dates.map((date) => date.toISOString().slice(0, 10)));
+  const spanDays = Math.max(1, Math.ceil((dates[dates.length - 1] - dates[0]) / 86400000) + 1);
+  const avgPerDay = items.length / spanDays;
+  return {
+    total: items.length,
+    activeDays: days.size,
+    avgPerDay,
+    cadence: recommendCadence(avgPerDay)
+  };
+}
+
+function recommendCadence(avgPerDay) {
+  if (avgPerDay >= 20) return 'two daily runs or strict daily digest';
+  if (avgPerDay >= 8) return 'daily or morning/night';
+  if (avgPerDay >= 3) return 'daily digest';
+  if (avgPerDay >= 1) return 'twice weekly or weekly';
+  return 'weekly digest';
+}
+
+function formatNumber(value) {
+  return Number(value || 0).toFixed(value >= 10 ? 1 : 2).replace(/\.00$/, '').replace(/0$/, '');
 }
 
 function chooseMorningNightTimes(activeClusters) {

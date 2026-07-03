@@ -1,4 +1,6 @@
 import { PUBLISH_PRESETS } from './publishPresets.js';
+import { SOURCE_PRESETS } from './sourcePresets.js';
+import { POSTS_PRESETS, THRESHOLD_PRESETS, TIME_OPTIONS, WEEKDAYS, WINDOW_OPTIONS, getPublishSources } from './scheduleWizard.js';
 
 export function setupMenuKeyboard() {
   return inlineKeyboard([
@@ -76,6 +78,7 @@ export function parserAfterApplyKeyboard() {
 
 export function publishMenuKeyboard() {
   return inlineKeyboard([
+    [button('Add custom schedule', 'setup:manual_schedule'), button('Sources', 'setup:sources')],
     [button('Presets', 'setup:publish_presets'), button('Traffic suggestions', 'setup:traffic_suggestions')],
     [button('Manage templates', 'setup:manage_templates')],
     [button('Schedule preview', 'setup:schedule_preview'), button('Schedule doctor', 'setup:schedule_doctor')],
@@ -155,6 +158,55 @@ export function trafficSuggestionsKeyboard(presets = [], options = {}) {
   rows.push([button('Extended · week', 'setup:traffic_extended:7'), button('Extended · month', 'setup:traffic_extended:30')]);
   if (options.maxDays && options.maxDays > 30) rows.push([button(`Extended · max ${options.maxDays}d`, `setup:traffic_extended:${options.maxDays}`)]);
   rows.push([button('Schedule preview', 'setup:schedule_preview'), button('Publishing', 'setup:publish')]);
+  return inlineKeyboard(rows);
+}
+
+
+export function sourcesKeyboard() {
+  const rows = SOURCE_PRESETS.map((preset) => [button(`Apply ${preset.title}`, `setup:source_preset:${preset.id}`)]);
+  rows.push([button('Source test', 'setup:source_test'), button('Show publish config', 'setup:publish_config')]);
+  rows.push([button('Publishing', 'setup:publish')]);
+  return inlineKeyboard(rows);
+}
+
+export function manualScheduleKeyboard({ draft = {}, baseConfig = {}, wizard = {}, step = 'source' } = {}) {
+  const rows = [];
+  if (step === 'source') {
+    for (const source of getPublishSources(draft, baseConfig).slice(0, 12)) rows.push([button(source.key, `setup:manual_source:${source.key}`)]);
+    rows.push([button('Add source preset', 'setup:sources')]);
+  } else if (step === 'cadence') {
+    rows.push([button('Daily', 'setup:manual_cadence:daily'), button('Weekly', 'setup:manual_cadence:weekly')]);
+    rows.push([button('Twice weekly', 'setup:manual_cadence:twice_weekly'), button('Monthly', 'setup:manual_cadence:monthly')]);
+  } else if (step === 'weekday') {
+    if (wizard.cadence === 'monthly') {
+      rows.push([button('Day 1', 'setup:manual_monthday:1'), button('Day 7', 'setup:manual_monthday:7')]);
+      rows.push([button('Day 15', 'setup:manual_monthday:15'), button('Day 28', 'setup:manual_monthday:28')]);
+    } else if (wizard.cadence === 'twice_weekly') {
+      rows.push([button('Mon + Thu', 'setup:manual_weekdays:1,4'), button('Tue + Fri', 'setup:manual_weekdays:2,5')]);
+      rows.push([button('Wed + Sat', 'setup:manual_weekdays:3,6')]);
+    } else {
+      for (let index = 0; index < WEEKDAYS.length; index += 2) {
+        rows.push(WEEKDAYS.slice(index, index + 2).map(([value, label]) => button(label, `setup:manual_weekday:${value}`)));
+      }
+    }
+  } else if (step === 'time') {
+    for (let index = 0; index < TIME_OPTIONS.length; index += 2) {
+      rows.push(TIME_OPTIONS.slice(index, index + 2).map((time) => button(time, `setup:manual_time:${time}`)));
+    }
+  } else if (step === 'window') {
+    for (let index = 0; index < WINDOW_OPTIONS.length; index += 2) {
+      rows.push(WINDOW_OPTIONS.slice(index, index + 2).map((hours) => button(`${hours}h`, `setup:manual_window:${hours}`)));
+    }
+  } else if (step === 'posts') {
+    const entries = Object.entries(POSTS_PRESETS);
+    for (let index = 0; index < entries.length; index += 1) rows.push([button(entries[index][1].label, `setup:manual_posts:${entries[index][0]}`)]);
+  } else if (step === 'threshold') {
+    const entries = Object.entries(THRESHOLD_PRESETS);
+    for (let index = 0; index < entries.length; index += 1) rows.push([button(entries[index][1].label, `setup:manual_threshold:${entries[index][0]}`)]);
+  } else {
+    rows.push([button('Create schedule', 'setup:manual_create')]);
+  }
+  rows.push([button('Start over', 'setup:manual_schedule'), button('Publishing', 'setup:publish')]);
   return inlineKeyboard(rows);
 }
 

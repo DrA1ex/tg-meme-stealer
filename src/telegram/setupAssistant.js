@@ -100,6 +100,8 @@ import {
   setPublishTemplateEnabled
 } from './setup/publishTemplates.js';
 import { formatSourceExpressionTest } from './setup/sourceDiagnostics.js';
+import { applySourcePreset, formatAppliedSourcePreset, formatSourcesMenu, getSourcePreset } from './setup/sourcePresets.js';
+import { applyManualSchedule, createScheduleWizard, formatManualScheduleApplied, formatManualScheduleConfirm, formatManualScheduleWizard, getWizardNextStep, normalizeWizardStep } from './setup/scheduleWizard.js';
 import {
   advancedMenuKeyboard,
   button,
@@ -116,6 +118,8 @@ import {
   previewMenuKeyboard,
   publishAfterPresetKeyboard,
   publishMenuKeyboard,
+  sourcesKeyboard,
+  manualScheduleKeyboard,
   publishPresetDetailsKeyboard,
   publishPresetsKeyboard,
   setupMenuKeyboard,
@@ -148,6 +152,7 @@ export class SetupAssistant {
     this.setupTrafficPresets = new Map();
     this.setupSampleCache = new Map();
     this.setupCurrentView = new Map();
+    this.setupScheduleWizards = new Map();
   }
 
   register(bot) {
@@ -353,6 +358,16 @@ export class SetupAssistant {
       await this.sourceTest(ctx);
       return;
     }
+    if (action === 'sources') {
+      this.ensureSession(ctx);
+      await this.sourcesMenu(ctx);
+      return;
+    }
+    if (action === 'manual_schedule') {
+      this.ensureSession(ctx);
+      await this.startManualSchedule(ctx);
+      return;
+    }
     if (action === 'advanced') {
       this.ensureSession(ctx);
       await this.advanced(ctx);
@@ -476,6 +491,32 @@ export class SetupAssistant {
         await this.confirmRemoveTemplate(ctx, action.slice('template_remove:'.length));
       } else if (action.startsWith('template_remove_confirm:')) {
         await this.removeTemplate(ctx, action.slice('template_remove_confirm:'.length));
+      } else if (action === 'sources') {
+        await this.sourcesMenu(ctx);
+      } else if (action.startsWith('source_preset:')) {
+        await this.applySourcePresetAction(ctx, action.slice('source_preset:'.length));
+      } else if (action === 'manual_schedule') {
+        await this.startManualSchedule(ctx);
+      } else if (action.startsWith('manual_source:')) {
+        await this.manualScheduleSet(ctx, { source: action.slice('manual_source:'.length) });
+      } else if (action.startsWith('manual_cadence:')) {
+        await this.manualScheduleSet(ctx, { cadence: action.slice('manual_cadence:'.length), weekdays: [], dayOfMonth: null, time: '', windowHours: null });
+      } else if (action.startsWith('manual_weekday:')) {
+        await this.manualScheduleSet(ctx, { weekdays: [Number(action.slice('manual_weekday:'.length))] });
+      } else if (action.startsWith('manual_weekdays:')) {
+        await this.manualScheduleSet(ctx, { weekdays: action.slice('manual_weekdays:'.length).split(',').map(Number) });
+      } else if (action.startsWith('manual_monthday:')) {
+        await this.manualScheduleSet(ctx, { dayOfMonth: Number(action.slice('manual_monthday:'.length)) });
+      } else if (action.startsWith('manual_time:')) {
+        await this.manualScheduleSet(ctx, { time: action.slice('manual_time:'.length) });
+      } else if (action.startsWith('manual_window:')) {
+        await this.manualScheduleSet(ctx, { windowHours: Number(action.slice('manual_window:'.length)) });
+      } else if (action.startsWith('manual_posts:')) {
+        await this.manualScheduleSet(ctx, { postsPreset: action.slice('manual_posts:'.length) });
+      } else if (action.startsWith('manual_threshold:')) {
+        await this.manualScheduleSet(ctx, { thresholdPreset: action.slice('manual_threshold:'.length) });
+      } else if (action === 'manual_create') {
+        await this.createManualSchedule(ctx);
       } else if (action === 'source_test') {
         await this.sourceTest(ctx);
       } else if (action.startsWith('preset:')) {
@@ -510,6 +551,7 @@ export class SetupAssistant {
     this.setupTrafficPresets.delete(ctx.from.id);
     this.setupSampleCache.delete(ctx.from.id);
     this.setupCurrentView.delete(ctx.from.id);
+    this.setupScheduleWizards.delete(ctx.from.id);
     await this.replyWithKeyboard(ctx, formatSetupIntro(this.getDraft(ctx), this.getMeta(ctx)), setupMenuKeyboard());
   }
 
@@ -959,6 +1001,62 @@ export class SetupAssistant {
       baseConfig: this.config
     }), publishMenuKeyboard());
   }
+  async sourcesMenu(ctx) {
+    this.rememberCurrentView(ctx, 'sources');
+    await this.replyWithKeyboard(ctx, formatSourcesMenu(this.getDraft(ctx), this.config), sourcesKeyboard());
+  }
+
+  async applySourcePresetAction(ctx, presetId) {
+    const preset = getSourcePreset(presetId);
+    if (!preset) {
+      await this.replyWithKeyboard(ctx, 'Unknown source preset. Choose one from Sources.', sourcesKeyboard());
+      return;
+    }
+    const change = applySourcePreset(this.getDraft(ctx), preset);
+    this.markChanged(ctx, 'publishing', `Applied source preset: ${preset.key}`, change.lines);
+    await this.replyWithKeyboard(ctx, formatAppliedSourcePreset(preset, change), sourcesKeyboard());
+  }
+
+  async startManualSchedule(ctx) {
+    const wizard = createScheduleWizard(this.getDraft(ctx), this.config);
+    this.setupScheduleWizards.set(ctx.from.id, wizard);
+    await this.showManualScheduleStep(ctx, 'source');
+  }
+
+  async manualScheduleSet(ctx, patch = {}) {
+    const wizard = this.getManualScheduleWizard(ctx);
+    Object.assign(wizard, patch);
+    this.setupScheduleWizards.set(ctx.from.id, wizard);
+    await this.showManualScheduleStep(ctx, getWizardNextStep(wizard));
+  }
+
+  async showManualScheduleStep(ctx, step = '') {
+    const wizard = this.getManualScheduleWizard(ctx);
+    const normalizedStep = normalizeWizardStep(step || getWizardNextStep(wizard));
+    await this.replyWithKeyboard(
+      ctx,
+      normalizedStep === 'confirm'
+        ? formatManualScheduleConfirm(wizard)
+        : formatManualScheduleWizard({ wizard, draft: this.getDraft(ctx), baseConfig: this.config, step: normalizedStep }),
+      manualScheduleKeyboard({ draft: this.getDraft(ctx), baseConfig: this.config, wizard, step: normalizedStep })
+    );
+  }
+
+  async createManualSchedule(ctx) {
+    const wizard = this.getManualScheduleWizard(ctx);
+    const change = applyManualSchedule(this.getDraft(ctx), wizard);
+    this.markChanged(ctx, 'publishing', 'Created custom schedule', change.lines);
+    this.setupScheduleWizards.delete(ctx.from.id);
+    await this.replyWithKeyboard(ctx, formatManualScheduleApplied(change), publishAfterPresetKeyboard());
+  }
+
+  getManualScheduleWizard(ctx) {
+    if (!this.setupScheduleWizards.has(ctx.from.id)) {
+      this.setupScheduleWizards.set(ctx.from.id, createScheduleWizard(this.getDraft(ctx), this.config));
+    }
+    return this.setupScheduleWizards.get(ctx.from.id);
+  }
+
 
   async loadMoreMessages(ctx, target = '') {
     const normalizedTarget = normalizeLoadMoreTarget(target, this.getCurrentView(ctx));
@@ -1355,6 +1453,7 @@ export class SetupAssistant {
     this.setupTrafficPresets.delete(ctx.from.id);
     this.setupSampleCache.delete(ctx.from.id);
     this.setupCurrentView.delete(ctx.from.id);
+    this.setupScheduleWizards.delete(ctx.from.id);
   }
 
   async cancel(ctx) {
@@ -1365,6 +1464,7 @@ export class SetupAssistant {
     this.setupTrafficPresets.delete(ctx.from.id);
     this.setupSampleCache.delete(ctx.from.id);
     this.setupCurrentView.delete(ctx.from.id);
+    this.setupScheduleWizards.delete(ctx.from.id);
     await this.clearLastSetupKeyboard(ctx);
     await ctx.reply('Setup mode cancelled.');
   }
@@ -1494,6 +1594,8 @@ function normalizeLoadMoreTarget(target, fallback = 'suggest') {
     'technical_shape',
     'technical_reactions',
     'technical_author',
+    'sources',
+    'manual_schedule',
     'test'
   ]);
   const normalized = String(target || '').trim();

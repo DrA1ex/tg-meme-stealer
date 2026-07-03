@@ -2,7 +2,7 @@ import { getReactionCount, getReactionEmoji } from '../../core/postParser.js';
 import { button, inlineKeyboard } from './keyboards.js';
 import { setupScreen } from './formattingBase.js';
 
-export const NATIVE_REACTION_PATHS = ['reactions.results[]', 'reaction_count[]', 'reactionCounts[]'];
+export const NATIVE_REACTION_PATHS = ['nativeReactions[]', 'reactionCounts[]', 'messageReactions.reactions[]', 'messageReactions.raw.results[]', 'reactions.reactions[]', 'reactions.results[]', 'raw.reactions.results[]', 'reaction_count[]'];
 
 export const CONSERVATIVE_LIKE_EMOJIS = ['👍', '❤', '❤️', '🔥'];
 export const CONSERVATIVE_DISLIKE_EMOJIS = ['👎'];

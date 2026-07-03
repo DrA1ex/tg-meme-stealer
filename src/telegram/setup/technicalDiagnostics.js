@@ -239,7 +239,7 @@ export function buildCompactRawMessage(message) {
     media: compactMedia(message.media),
     markup: compactMarkup(message.markup),
     replyMarkup: compactMarkup(message.replyMarkup),
-    reactions: compactReactions(message.reactions || message.reactionCount || message.reactionCounts),
+    reactions: compactReactions(message.nativeReactions || message.reactionCounts || message.messageReactions?.reactions || message.reactions || message.reactionCount),
     entities: compactEntities(getMessageEntities(message)),
     replyTo: message.replyTo || message.replyToMsgId || undefined,
     forward: message.forward || message.fwdFrom || undefined
