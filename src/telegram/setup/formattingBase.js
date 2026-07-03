@@ -16,6 +16,15 @@ export function setupScreen({ icon, title, sections = [] }) {
   return lines.join('\n');
 }
 
+export function setupHtmlScreen({ icon, title, sections = [] }) {
+  const lines = [`${icon || '🧰'} ${title}`];
+  for (const [heading, body] of sections) {
+    const bodyLines = Array.isArray(body) ? body : [String(body || '')];
+    lines.push('', heading, ...bodyLines.filter((line) => line !== undefined && line !== null).map(String));
+  }
+  return lines.join('\n');
+}
+
 export function isPreviewStale(meta = createSetupMeta()) {
   return Boolean(meta.changedAt && (!meta.previewedAt || meta.previewedAt < meta.changedAt));
 }

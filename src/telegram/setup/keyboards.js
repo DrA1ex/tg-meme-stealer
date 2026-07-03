@@ -69,6 +69,30 @@ export function technicalDiagnosticsBackKeyboard(target = 'technical') {
   ]);
 }
 
+export function technicalTraceKeyboard({ mode = 'matched', index = 0, total = 0 } = {}) {
+  const rows = [];
+  const nav = [];
+  if (Number(index || 0) > 0) nav.push(button('Prev', `setup:technical_trace:${mode}:${Number(index || 0) - 1}`));
+  if (Number(index || 0) < Number(total || 0) - 1) nav.push(button('Next', `setup:technical_trace:${mode}:${Number(index || 0) + 1}`));
+  if (nav.length) rows.push(nav);
+  rows.push([button('Load more messages', `setup:load_more:technical_trace:${mode}:${index}`), button('Refresh sample', `setup:refresh_sample:technical_trace:${mode}:${index}`)]);
+  rows.push([button('Technical diagnostics', 'setup:technical'), button('Message browser', 'setup:technical_preview:0')]);
+  rows.push([button('Setup home', 'setup:status')]);
+  return inlineKeyboard(rows);
+}
+
+export function technicalRawKeyboard({ mode = 'matched', index = 0, total = 0 } = {}) {
+  const rows = [];
+  const nav = [];
+  if (Number(index || 0) > 0) nav.push(button('Prev', `setup:technical_raw:${mode}:${Number(index || 0) - 1}`));
+  if (Number(index || 0) < Number(total || 0) - 1) nav.push(button('Next', `setup:technical_raw:${mode}:${Number(index || 0) + 1}`));
+  if (nav.length) rows.push(nav);
+  rows.push([button('Load more messages', `setup:load_more:technical_raw:${mode}:${index}`), button('Refresh sample', `setup:refresh_sample:technical_raw:${mode}:${index}`)]);
+  rows.push([button('Technical diagnostics', 'setup:technical'), button('Message browser', 'setup:technical_preview:0')]);
+  rows.push([button('Setup home', 'setup:status')]);
+  return inlineKeyboard(rows);
+}
+
 export function parserAfterApplyKeyboard() {
   return inlineKeyboard([
     [button('Test content', 'setup:test'), button('Preview', 'setup:preview')],

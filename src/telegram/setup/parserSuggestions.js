@@ -27,10 +27,13 @@ export function buildParserSuggestions(messages, draft = {}) {
   const authorSuggestion = authorOptions.find((item) => item.recommended) || authorOptions[0] || null;
   const buttonReactionSuggestions = buildButtonReactionSuggestions(stats);
   const nativeReactionSuggestions = buildNativeReactionSuggestions(stats);
-  const reactionSuggestion = nativeReactionSuggestions.find((item) => item.recommended)
-    || buttonReactionSuggestions.find((item) => item.recommended)
-    || nativeReactionSuggestions[0]
-    || buttonReactionSuggestions[0];
+  const allReactionSuggestions = markBestReactionSuggestion([
+    ...buttonReactionSuggestions,
+    ...nativeReactionSuggestions
+  ]);
+  const reactionSuggestion = allReactionSuggestions.find((item) => item.recommended)
+    || allReactionSuggestions[0]
+    || null;
 
   suggestions.push({
     id: 'rec',
@@ -97,28 +100,15 @@ export function buildParserSuggestions(messages, draft = {}) {
     });
   }
 
-  for (const buttonReactionSuggestion of buttonReactionSuggestions) {
+  for (const reactionOption of allReactionSuggestions) {
     suggestions.push({
-      id: buttonReactionSuggestion.id,
-      title: buttonReactionSuggestion.title,
-      description: buttonReactionSuggestion.description,
-      recommended: Boolean(buttonReactionSuggestion.recommended),
+      id: reactionOption.id,
+      title: reactionOption.title,
+      description: reactionOption.description,
+      recommended: Boolean(reactionOption.recommended),
       apply: (draftConfig) => {
-        draftConfig.parsing.likes = structuredClone(buttonReactionSuggestion.likesRules);
-        draftConfig.parsing.dislikes = structuredClone(buttonReactionSuggestion.dislikesRules);
-      }
-    });
-  }
-
-  for (const nativeSuggestion of nativeReactionSuggestions) {
-    suggestions.push({
-      id: nativeSuggestion.id,
-      title: nativeSuggestion.title,
-      description: nativeSuggestion.description,
-      recommended: Boolean(nativeSuggestion.recommended),
-      apply: (draftConfig) => {
-        draftConfig.parsing.likes = structuredClone(nativeSuggestion.likesRules);
-        draftConfig.parsing.dislikes = structuredClone(nativeSuggestion.dislikesRules);
+        draftConfig.parsing.likes = structuredClone(reactionOption.likesRules);
+        draftConfig.parsing.dislikes = structuredClone(reactionOption.dislikesRules);
       }
     });
   }
@@ -343,13 +333,16 @@ function addButtonReactionVariant(variants, { id, path, texts, title, likeMarker
   if (!uniqueLikeMarkers.length && !uniqueDislikeMarkers.length) return;
   const likesRules = uniqueLikeMarkers.length ? buildReactionRules(path, uniqueLikeMarkers) : [];
   const dislikesRules = uniqueDislikeMarkers.length ? buildReactionRules(path, uniqueDislikeMarkers) : [];
-  const coverage = formatReactionCoverage(countMessagesWithParsedReactions(messages, likesRules, dislikesRules));
+  const reactionStats = countMessagesWithParsedReactions(messages, likesRules, dislikesRules);
+  const coverage = formatReactionCoverage(reactionStats);
   variants.push({
     id,
     kind: 'reaction button',
     title,
-    description: `path=${path}, ${details}, parsed=${coverage}, labels=${texts.length}`,
+    description: `path=${path}, ${details}, parsed=${coverage}, reactions=${reactionStats.reactions}, labels=${texts.length}`,
     recommended,
+    reactionScore: reactionStats.reactions,
+    reactionMatched: reactionStats.matched,
     likesRules,
     dislikesRules
   });
@@ -415,41 +408,75 @@ export function buildNativeReactionSuggestions(stats) {
   const path = bestPath.path;
   const baseInfo = `path=${path}, rows=${bestPath.values.length}, ${summary}`;
   return [
-    {
+    buildNativeReactionSuggestion({
       id: 'r_native_conservative',
-      kind: 'native reaction',
       title: 'native · conservative',
-      description: `${baseInfo}; parsed=${formatReactionCoverage(countMessagesWithParsedReactions(stats.messages || [], buildNativeReactionRules(path, { likeEmojis: CONSERVATIVE_LIKE_EMOJIS, dislikeEmojis: CONSERVATIVE_DISLIKE_EMOJIS }).likesRules, buildNativeReactionRules(path, { likeEmojis: CONSERVATIVE_LIKE_EMOJIS, dislikeEmojis: CONSERVATIVE_DISLIKE_EMOJIS }).dislikesRules))}; likes=${CONSERVATIVE_LIKE_EMOJIS.join(' ')}, dislikes=${CONSERVATIVE_DISLIKE_EMOJIS.join(' ')}`,
-      recommended: false,
-      ...buildNativeReactionRules(path, {
-        likeEmojis: CONSERVATIVE_LIKE_EMOJIS,
-        dislikeEmojis: CONSERVATIVE_DISLIKE_EMOJIS
-      })
-    },
-    {
+      path,
+      messages: stats.messages || [],
+      details: `${baseInfo}; likes=${CONSERVATIVE_LIKE_EMOJIS.join(' ')}, dislikes=${CONSERVATIVE_DISLIKE_EMOJIS.join(' ')}`,
+      likeEmojis: CONSERVATIVE_LIKE_EMOJIS,
+      dislikeEmojis: CONSERVATIVE_DISLIKE_EMOJIS
+    }),
+    buildNativeReactionSuggestion({
       id: 'r_native_broad',
-      kind: 'native reaction',
       title: 'native · broad',
-      description: `${baseInfo}; parsed=${formatReactionCoverage(countMessagesWithParsedReactions(stats.messages || [], buildNativeReactionRules(path, { likeEmojis: BROAD_LIKE_EMOJIS, dislikeEmojis: BROAD_DISLIKE_EMOJIS }).likesRules, buildNativeReactionRules(path, { likeEmojis: BROAD_LIKE_EMOJIS, dislikeEmojis: BROAD_DISLIKE_EMOJIS }).dislikesRules))}; broad positive/negative emoji sets`,
-      recommended: false,
-      ...buildNativeReactionRules(path, {
-        likeEmojis: BROAD_LIKE_EMOJIS,
-        dislikeEmojis: BROAD_DISLIKE_EMOJIS
-      })
-    },
-    {
+      path,
+      messages: stats.messages || [],
+      details: `${baseInfo}; broad positive/negative emoji sets`,
+      likeEmojis: BROAD_LIKE_EMOJIS,
+      dislikeEmojis: BROAD_DISLIKE_EMOJIS
+    }),
+    buildNativeReactionSuggestion({
       id: 'r_native_except_negative',
-      kind: 'native reaction',
       title: 'native · except 👎💩🤡 is like',
-      description: `${baseInfo}; parsed=${formatReactionCoverage(countMessagesWithParsedReactions(stats.messages || [], buildNativeReactionRules(path, { likeEmojis: NEGATIVE_ONLY_EMOJIS, likeInvert: true, dislikeEmojis: NEGATIVE_ONLY_EMOJIS }).likesRules, buildNativeReactionRules(path, { likeEmojis: NEGATIVE_ONLY_EMOJIS, likeInvert: true, dislikeEmojis: NEGATIVE_ONLY_EMOJIS }).dislikesRules))}; likes=all native emoji except ${NEGATIVE_ONLY_EMOJIS.join(' ')}, dislikes=${NEGATIVE_ONLY_EMOJIS.join(' ')}`,
-      recommended: true,
-      ...buildNativeReactionRules(path, {
-        likeEmojis: NEGATIVE_ONLY_EMOJIS,
-        likeInvert: true,
-        dislikeEmojis: NEGATIVE_ONLY_EMOJIS
-      })
-    }
+      path,
+      messages: stats.messages || [],
+      details: `${baseInfo}; likes=all native emoji except ${NEGATIVE_ONLY_EMOJIS.join(' ')}, dislikes=${NEGATIVE_ONLY_EMOJIS.join(' ')}`,
+      likeEmojis: NEGATIVE_ONLY_EMOJIS,
+      likeInvert: true,
+      dislikeEmojis: NEGATIVE_ONLY_EMOJIS
+    })
   ];
+}
+
+function buildNativeReactionSuggestion({ id, title, path, messages = [], details = '', likeEmojis = [], dislikeEmojis = [], likeInvert = false, dislikeInvert = false }) {
+  const rules = buildNativeReactionRules(path, { likeEmojis, dislikeEmojis, likeInvert, dislikeInvert });
+  const reactionStats = countMessagesWithParsedReactions(messages, rules.likesRules, rules.dislikesRules);
+  return {
+    id,
+    kind: 'native reaction',
+    title,
+    description: `${details}; parsed=${formatReactionCoverage(reactionStats)}, reactions=${reactionStats.reactions}`,
+    recommended: false,
+    reactionScore: reactionStats.reactions,
+    reactionMatched: reactionStats.matched,
+    ...rules
+  };
+}
+
+function markBestReactionSuggestion(suggestions = []) {
+  if (!suggestions.length) return [];
+  const scored = suggestions.map((item) => ({
+    ...item,
+    recommended: false,
+    reactionScore: Number(item.reactionScore || 0),
+    reactionMatched: Number(item.reactionMatched || 0)
+  }));
+  scored.sort((a, b) => (
+    b.reactionScore - a.reactionScore
+    || b.reactionMatched - a.reactionMatched
+    || reactionPriority(b) - reactionPriority(a)
+    || String(a.title).localeCompare(String(b.title))
+  ));
+  const bestId = scored[0]?.id;
+  return suggestions.map((item) => ({ ...item, recommended: item.id === bestId }));
+}
+
+function reactionPriority(item) {
+  const id = String(item?.id || '');
+  if (id.includes('native')) return 2;
+  if (id.includes('except_negative')) return 1;
+  return 0;
 }
 
 export function buildNativeReactionRules(path, { likeEmojis = [], dislikeEmojis = [], likeInvert = false, dislikeInvert = false } = {}) {
@@ -727,14 +754,17 @@ export function formatReactionCountsForDisplay(counts = []) {
 
 function countMessagesWithParsedReactions(messages = [], likesRules = [], dislikesRules = []) {
   let matched = 0;
+  let reactions = 0;
   for (const message of messages || []) {
     const posts = parseMessagesToPosts([message], {
       chatId: 0,
       parsing: { filters: [], author: [], likes: likesRules, dislikes: dislikesRules }
     });
-    if (posts.some((post) => Number(post.likes || 0) > 0 || Number(post.dislikes || 0) > 0)) matched += 1;
+    const score = posts.reduce((sum, post) => sum + Number(post.likes || 0) + Number(post.dislikes || 0), 0);
+    if (score > 0) matched += 1;
+    reactions += score;
   }
-  return { matched, total: messages.length };
+  return { matched, total: messages.length, reactions };
 }
 
 function formatReactionCoverage({ matched, total }) {

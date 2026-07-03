@@ -67,6 +67,8 @@ import {
 import {
   buildCompactRawMessage,
   findDiagnosticMessage,
+  findDiagnosticMessages,
+  formatCompactRawMessageScreen,
   formatAuthorFields,
   formatFieldScan,
   formatMessageShape,
@@ -113,6 +115,8 @@ import {
   reactionsMenuKeyboard,
   technicalDiagnosticsKeyboard,
   technicalDiagnosticsBackKeyboard,
+  technicalTraceKeyboard,
+  technicalRawKeyboard,
   technicalMessageBrowserKeyboard,
   technicalMessagePreviewKeyboard,
   confirmReplacePublishPresetKeyboard,
@@ -624,11 +628,13 @@ export class SetupAssistant {
   async technicalAction(ctx, action) {
     const target = String(action || '').replace(/^technical_/, '');
     if (target.startsWith('trace:')) {
-      await this.technicalTrace(ctx, target.slice('trace:'.length));
+      const parts = target.slice('trace:'.length).split(':');
+      await this.technicalTrace(ctx, parts[0], Number(parts[1] || 0));
       return;
     }
     if (target.startsWith('raw:')) {
-      await this.technicalRaw(ctx, target.slice('raw:'.length));
+      const parts = target.slice('raw:'.length).split(':');
+      await this.technicalRaw(ctx, parts[0], Number(parts[1] || 0));
       return;
     }
     if (target.startsWith('send_preview:')) {
@@ -684,30 +690,34 @@ export class SetupAssistant {
     await this.replyWithKeyboard(ctx, formatAuthorFields(result.messages || []), technicalDiagnosticsBackKeyboard('technical_author'));
   }
 
-  async technicalTrace(ctx, mode = 'matched') {
+  async technicalTrace(ctx, mode = 'matched', index = 0) {
     const normalized = normalizeTechnicalTraceMode(mode);
-    this.rememberCurrentView(ctx, `technical_trace:${normalized}`);
     const result = await this.collectSetupSample(ctx, { purpose: `parser trace ${normalized}`, includeMessages: true });
-    await this.replyWithKeyboard(ctx, formatParserTrace({
+    const matches = findDiagnosticMessages(result.messages || [], this.getDraft(ctx), this.config, normalized);
+    const safeIndex = clampIndex(index, matches.length);
+    this.rememberCurrentView(ctx, `technical_trace:${normalized}:${safeIndex}`);
+    await this.replaceCurrentSetupMessage(ctx, formatParserTrace({
       messages: result.messages || [],
       draft: this.getDraft(ctx),
       baseConfig: this.config,
-      mode: normalized
-    }), technicalDiagnosticsBackKeyboard(`technical_trace:${normalized}`));
+      mode: normalized,
+      index: safeIndex
+    }), technicalTraceKeyboard({ mode: normalized, index: safeIndex, total: matches.length }));
   }
 
-  async technicalRaw(ctx, mode = 'matched') {
+  async technicalRaw(ctx, mode = 'matched', index = 0) {
     const normalized = normalizeTechnicalRawMode(mode);
-    this.rememberCurrentView(ctx, `technical_raw:${normalized}`);
     const result = await this.collectSetupSample(ctx, { purpose: `raw compact ${normalized}`, includeMessages: true });
-    const found = findDiagnosticMessage(result.messages || [], this.getDraft(ctx), this.config, normalized);
-    if (!found.message) {
-      await this.replyWithKeyboard(ctx, `No message found for raw compact mode: ${normalized}.`, technicalDiagnosticsBackKeyboard(`technical_raw:${normalized}`));
-      return;
-    }
-    await ctx.reply(`Compact raw message for #${found.message.id || '?'} (${found.reason}):`);
-    await replyJsonCode(ctx, buildCompactRawMessage(found.message));
-    await this.replyWithKeyboard(ctx, 'Use Parser trace for rule-by-rule explanation, or send /raw <message_id> for full JSON file.', technicalDiagnosticsBackKeyboard(`technical_raw:${normalized}`));
+    const matches = findDiagnosticMessages(result.messages || [], this.getDraft(ctx), this.config, normalized);
+    const safeIndex = clampIndex(index, matches.length);
+    this.rememberCurrentView(ctx, `technical_raw:${normalized}:${safeIndex}`);
+    await this.replaceCurrentSetupMessage(ctx, formatCompactRawMessageScreen({
+      messages: result.messages || [],
+      draft: this.getDraft(ctx),
+      baseConfig: this.config,
+      mode: normalized,
+      index: safeIndex
+    }), technicalRawKeyboard({ mode: normalized, index: safeIndex, total: matches.length }), { parse_mode: 'HTML' });
   }
 
   async technicalMessageBrowser(ctx, page = 0) {
@@ -715,7 +725,7 @@ export class SetupAssistant {
     this.rememberCurrentView(ctx, `technical_preview:${safePage}`);
     const result = await this.collectSetupSample(ctx, { purpose: `message browser page ${safePage + 1}`, includeMessages: true });
     const messages = result.messages || [];
-    await this.replyWithKeyboard(
+    await this.replaceCurrentSetupMessage(
       ctx,
       formatMessageBrowser({ messages, draft: this.getDraft(ctx), baseConfig: this.config, page: safePage }),
       technicalMessageBrowserKeyboard(messages, { page: safePage })
@@ -728,7 +738,7 @@ export class SetupAssistant {
     const result = await this.collectSetupSample(ctx, { purpose: `message preview #${messageId}`, includeMessages: true });
     const message = (result.messages || []).find((item) => Number(item?.id || 0) === Number(messageId));
     const posts = message ? parseMessagesToPosts([message], { chatId: this.config.telegram?.sourceChatId, parsing: this.getDraft(ctx).parsing || this.config.parsing || {} }) : [];
-    await this.replyWithKeyboard(
+    await this.replaceCurrentSetupMessage(
       ctx,
       formatTechnicalMessagePreview({ message, draft: this.getDraft(ctx), baseConfig: this.config }),
       technicalMessagePreviewKeyboard(safePage, messageId, posts.length > 0)
@@ -941,7 +951,7 @@ export class SetupAssistant {
     const suggestions = buildParserSuggestions(result.messages || [], draft);
     this.setupSuggestions.set(ctx.from.id, suggestions);
     const states = markSuggestionStates(filterSuggestionsByCategory(suggestions, category), draft);
-    await this.replyWithKeyboard(
+    await this.replaceCurrentSetupMessage(
       ctx,
       formatSuggestionOptions({
         title: options.title,
@@ -1151,8 +1161,8 @@ export class SetupAssistant {
     await this.replyWithKeyboard(
       ctx,
       normalizedStep === 'confirm'
-        ? formatManualScheduleConfirm(wizard)
-        : formatManualScheduleWizard({ wizard, draft: this.getDraft(ctx), baseConfig: this.config, step: normalizedStep }),
+      ? formatManualScheduleConfirm(wizard)
+      : formatManualScheduleWizard({ wizard, draft: this.getDraft(ctx), baseConfig: this.config, step: normalizedStep }),
       manualScheduleKeyboard({ draft: this.getDraft(ctx), baseConfig: this.config, wizard, step: normalizedStep })
     );
   }
@@ -1197,8 +1207,14 @@ export class SetupAssistant {
     if (target === 'technical_shape') return this.technicalMessageShape(ctx);
     if (target === 'technical_reactions') return this.technicalReactionFields(ctx);
     if (target === 'technical_author') return this.technicalAuthorFields(ctx);
-    if (target.startsWith('technical_trace:')) return this.technicalTrace(ctx, target.slice('technical_trace:'.length));
-    if (target.startsWith('technical_raw:')) return this.technicalRaw(ctx, target.slice('technical_raw:'.length));
+    if (target.startsWith('technical_trace:')) {
+      const parts = target.slice('technical_trace:'.length).split(':');
+      return this.technicalTrace(ctx, parts[0], Number(parts[1] || 0));
+    }
+    if (target.startsWith('technical_raw:')) {
+      const parts = target.slice('technical_raw:'.length).split(':');
+      return this.technicalRaw(ctx, parts[0], Number(parts[1] || 0));
+    }
     if (target.startsWith('technical_preview_msg:')) {
       const parts = target.split(':');
       return this.technicalPreviewMessage(ctx, Number(parts[1] || 0), Number(parts[2] || 0));
@@ -1228,8 +1244,8 @@ export class SetupAssistant {
     const cache = this.getUsableSampleCache(ctx, maxMessages);
     const cachedMessages = cache?.messages?.slice(0, maxMessages) || [];
     const targetInitialLimit = forceLoadMore && cachedMessages.length
-      ? Math.min(maxMessages, cachedMessages.length + Math.max(1, Number(step || DEFAULT_SAMPLE_STEP_MESSAGES)))
-      : initialLimit;
+                               ? Math.min(maxMessages, cachedMessages.length + Math.max(1, Number(step || DEFAULT_SAMPLE_STEP_MESSAGES)))
+                               : initialLimit;
     const cachedPosts = cachedMessages.length ? parseCachedSetupPosts(cachedMessages, draft, this.config) : [];
     const cacheEnough = !forceLoadMore && cachedMessages.length > 0 && (
       cachedPosts.length >= minMatched ||
@@ -1347,11 +1363,15 @@ export class SetupAssistant {
     const afterParsing = structuredClone(draft.parsing || {});
     const detail = formatParserChanges(beforeParsing, afterParsing, { compact: false });
     this.markChanged(ctx, 'parser', `${filterToggleAction === 'removed' ? 'Removed filter suggestion' : 'Applied parser suggestion'}: ${suggestion.title}`, detail);
+    if (filterToggleAction) {
+      await this.filterOptions(ctx);
+      return;
+    }
     await this.replyWithKeyboard(
       ctx,
       [
         formatAppliedSuggestion({
-          suggestion: filterToggleAction === 'removed' ? { ...suggestion, title: `Removed ${suggestion.title}` } : suggestion,
+          suggestion,
           beforeParsing,
           afterParsing
         }),
@@ -1376,8 +1396,8 @@ export class SetupAssistant {
     this.markChanged(ctx, 'parser', 'Reset parser filters', detail);
     const suggestions = this.setupSuggestions.get(ctx.from.id) || [];
     const keyboard = suggestions.length
-      ? parserSuggestionsKeyboard(markSuggestionStates(suggestions, draft))
-      : parserMenuKeyboard();
+                     ? parserSuggestionsKeyboard(markSuggestionStates(suggestions, draft))
+                     : parserMenuKeyboard();
     await this.replyWithKeyboard(
       ctx,
       formatFiltersReset({ beforeParsing, afterParsing, hasSuggestions: suggestions.length > 0 }),
@@ -1471,8 +1491,8 @@ export class SetupAssistant {
   async test(ctx) {
     const hasExplicitLimit = Boolean(getArgument(ctx.message.text));
     const result = hasExplicitLimit
-      ? await this.scanner.previewRecent(parseLimit(ctx.message.text, DEFAULT_TEST_MESSAGES), this.getDraft(ctx))
-      : await this.collectSetupSample(ctx, { purpose: 'parser test' });
+                   ? await this.scanner.previewRecent(parseLimit(ctx.message.text, DEFAULT_TEST_MESSAGES), this.getDraft(ctx))
+                   : await this.collectSetupSample(ctx, { purpose: 'parser test' });
     await replyCode(ctx, summarizeParsedPosts(result));
     this.markTested(ctx);
   }
@@ -1645,6 +1665,26 @@ export class SetupAssistant {
     return message;
   }
 
+  async replaceCurrentSetupMessage(ctx, text, keyboard, extra = {}) {
+    const sourceMessage = ctx?.callbackQuery?.message;
+    if (!sourceMessage?.message_id || !sourceMessage?.chat?.id) {
+      return this.replyWithKeyboard(ctx, text, keyboard, extra);
+    }
+    try {
+      await ctx.telegram.editMessageText(
+        sourceMessage.chat.id,
+        sourceMessage.message_id,
+        undefined,
+        text,
+        mergeReplyOptions(extra, keyboard)
+      );
+      this.rememberSetupKeyboard(ctx, { message_id: sourceMessage.message_id, chat: sourceMessage.chat });
+      return sourceMessage;
+    } catch {
+      return this.replyWithKeyboard(ctx, text, keyboard, extra);
+    }
+  }
+
   async clearLastSetupKeyboard(ctx) {
     const previous = this.setupMessages.get(ctx.from.id);
     if (!previous) return;
@@ -1734,6 +1774,13 @@ export { stringifyForSetup } from './setup/utils.js';
 
 
 
+function clampIndex(index = 0, total = 0) {
+  if (!total) return 0;
+  const parsed = Number(index || 0);
+  if (!Number.isFinite(parsed)) return 0;
+  return Math.min(Math.max(0, parsed), total - 1);
+}
+
 function normalizeLoadMoreTarget(target, fallback = 'suggest') {
   const allowed = new Set([
     'suggest',
@@ -1806,8 +1853,8 @@ function formatSampleProgress({ purpose, scanned, matched, minMatched, maxLimit,
     '',
     `Loaded: ${scanned}/${maxLimit} message(s).`,
     hasMatchedTarget
-      ? `Matched parser filters: ${matched}/${minMatched}.`
-      : `Matched parser filters: ${matched}.`
+    ? `Matched parser filters: ${matched}/${minMatched}.`
+    : `Matched parser filters: ${matched}.`
   ];
   if (status === 'starting') lines.push('', 'Starting scan...');
   else if (status === 'using-cache') lines.push('', 'Using cached messages first. Loading more only if needed...');

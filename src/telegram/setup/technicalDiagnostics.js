@@ -1,5 +1,6 @@
 import { debugParseMessage, getReactionCount, getReactionEmoji, parseCount, parseMessagesToPosts } from '../../core/postParser.js';
-import { setupScreen } from './formattingBase.js';
+import { escapeHtml } from '../../core/html.js';
+import { setupHtmlScreen, setupScreen } from './formattingBase.js';
 import {
   analyzeMessagesForParser,
   AUTHOR_LABEL_REGEX,
@@ -180,8 +181,8 @@ export function formatAuthorFields(messages = []) {
   });
 }
 
-export function formatParserTrace({ messages = [], draft = {}, baseConfig = {}, mode = 'matched' } = {}) {
-  const found = findDiagnosticMessage(messages, draft, baseConfig, mode);
+export function formatParserTrace({ messages = [], draft = {}, baseConfig = {}, mode = 'matched', index = 0 } = {}) {
+  const found = findDiagnosticMessage(messages, draft, baseConfig, mode, index);
   if (!found.message) {
     return setupScreen({
       icon: '🧪',
@@ -211,6 +212,7 @@ export function formatParserTrace({ messages = [], draft = {}, baseConfig = {}, 
     sections: [
       ['📌 Message', [
         `#${debug.messageId || found.message?.id || '?'}`,
+        `Item: ${Number(found.index || 0) + 1}/${found.total || 1}`,
         `Reason: ${found.reason}`,
         `matched=${Boolean(debug.result?.matched)}`
       ]],
@@ -226,6 +228,39 @@ export function formatParserTrace({ messages = [], draft = {}, baseConfig = {}, 
     ]
   });
 }
+
+export function formatCompactRawMessageScreen({ messages = [], draft = {}, baseConfig = {}, mode = 'matched', index = 0 } = {}) {
+  const found = findDiagnosticMessage(messages, draft, baseConfig, mode, index);
+  if (!found.message) {
+    return setupHtmlScreen({
+      icon: '🧬',
+      title: `Raw compact · ${formatRawMode(mode)}`,
+      sections: [
+        ['📦 Sample', [`Scanned ${messages.length} loaded source message(s).`]],
+        ['⚠️ Not found', [`No message matched raw mode: ${formatRawMode(mode)}.`]],
+        ['➡️ Next', ['Load more messages or choose another raw mode.']]
+      ]
+    });
+  }
+  const compact = buildCompactRawMessage(found.message);
+  const json = JSON.stringify(compact, null, 2);
+  const clipped = json.length > 2800 ? `${json.slice(0, 2800)}
+… <clipped>` : json;
+  return setupHtmlScreen({
+    icon: '🧬',
+    title: `Raw compact · ${formatRawMode(mode)}`,
+    sections: [
+      ['📌 Message', [
+        `#${found.message?.id || '?'}`,
+        `Item: ${Number(found.index || 0) + 1}/${found.total || 1}`,
+        `Reason: ${found.reason}`
+      ]],
+      ['🧾 Compact JSON', [htmlJsonBlock(clipped)]],
+      ['➡️ Next', ['Use Next / Prev to inspect another matching message, or Message browser for manual selection.']]
+    ]
+  });
+}
+
 
 export function buildCompactRawMessage(message) {
   if (!message) return null;
@@ -249,7 +284,13 @@ export function buildCompactRawMessage(message) {
   });
 }
 
-export function findDiagnosticMessage(messages = [], draft = {}, baseConfig = {}, mode = 'matched') {
+export function findDiagnosticMessage(messages = [], draft = {}, baseConfig = {}, mode = 'matched', index = 0) {
+  const matches = findDiagnosticMessages(messages, draft, baseConfig, mode);
+  const safeIndex = clampDiagnosticIndex(index, matches.length);
+  return matches[safeIndex] || { message: null, post: null, reason: '', index: 0, total: 0 };
+}
+
+export function findDiagnosticMessages(messages = [], draft = {}, baseConfig = {}, mode = 'matched') {
   const parsingOptions = {
     chatId: baseConfig.telegram?.sourceChatId,
     parsing: draft.parsing || baseConfig.parsing || {}
@@ -261,18 +302,28 @@ export function findDiagnosticMessage(messages = [], draft = {}, baseConfig = {}
     return parsedById.get(key);
   };
 
+  const matches = [];
   for (const message of messages) {
     const posts = getPosts(message);
     const firstPost = posts[0] || null;
-    if (mode === 'matched' && firstPost) return { message, post: firstPost, reason: 'first parsed post in sample' };
-    if (mode === 'rejected' && !firstPost) return { message, post: null, reason: 'first message rejected by current parser' };
-    if (mode === 'unknown_author' && firstPost && (!firstPost.author || firstPost.author === 'unknown')) return { message, post: firstPost, reason: 'parsed post with missing/unknown author' };
-    if (mode === 'zero_likes' && firstPost && Number(firstPost.likes || 0) === 0) return { message, post: firstPost, reason: 'parsed post with zero likes' };
-    if (mode === 'buttons' && BUTTON_PATHS.some((path) => getSetupValuesByPath(message, path).length > 0)) return { message, post: firstPost, reason: 'message with reaction buttons' };
-    if (mode === 'native_reactions' && NATIVE_REACTION_PATHS.some((path) => getSetupValuesByPath(message, path).some((value) => getReactionEmoji(value)))) return { message, post: firstPost, reason: 'message with native reactions' };
-    if (mode === 'mention' && getMessageEntities(message).some((entity) => String(entity?._ || entity?.type || entity?.className || entity?.url || '').toLowerCase().includes('mention') || String(entity?.url || '').startsWith('tg://user?id='))) return { message, post: firstPost, reason: 'message with mention-like entity' };
+    let reason = '';
+    if (mode === 'matched' && firstPost) reason = 'parsed post in sample';
+    if (mode === 'rejected' && !firstPost) reason = 'message rejected by current parser';
+    if (mode === 'unknown_author' && firstPost && (!firstPost.author || firstPost.author === 'unknown')) reason = 'parsed post with missing/unknown author';
+    if (mode === 'zero_likes' && firstPost && Number(firstPost.likes || 0) === 0) reason = 'parsed post with zero likes';
+    if (mode === 'buttons' && BUTTON_PATHS.some((path) => getSetupValuesByPath(message, path).length > 0)) reason = 'message with reaction buttons';
+    if (mode === 'native_reactions' && NATIVE_REACTION_PATHS.some((path) => getSetupValuesByPath(message, path).some((value) => getReactionEmoji(value)))) reason = 'message with native reactions';
+    if (mode === 'mention' && getMessageEntities(message).some((entity) => String(entity?._ || entity?.type || entity?.className || entity?.url || '').toLowerCase().includes('mention') || String(entity?.url || '').startsWith('tg://user?id='))) reason = 'message with mention-like entity';
+    if (reason) matches.push({ message, post: firstPost, reason, index: matches.length, total: 0 });
   }
-  return { message: null, post: null, reason: '' };
+  return matches.map((item) => ({ ...item, total: matches.length }));
+}
+
+export function clampDiagnosticIndex(index = 0, total = 0) {
+  if (!total) return 0;
+  const parsed = Number(index || 0);
+  if (!Number.isFinite(parsed)) return 0;
+  return Math.min(Math.max(0, parsed), total - 1);
 }
 
 function parseDiagnosticPosts(messages, draft, baseConfig) {
@@ -351,6 +402,17 @@ export function formatTechnicalMessagePreview({ message = null, draft = {}, base
       ]]
     ]
   });
+}
+
+function formatRawMode(mode) {
+  const labels = {
+    matched: 'matched',
+    rejected: 'rejected',
+    buttons: 'reactions/buttons',
+    native_reactions: 'native reactions',
+    mention: 'mention'
+  };
+  return labels[mode] || String(mode || 'matched');
 }
 
 function formatMessageDate(message) {
@@ -485,6 +547,10 @@ function compactRule(rule = {}) {
   if (rule.invert) parts.push('invert=true');
   if (rule.regex) parts.push(`regex=${JSON.stringify(oneLine(rule.regex, 32))}`);
   return parts.join(' · ') || JSON.stringify(rule);
+}
+
+function htmlJsonBlock(value) {
+  return `<pre><code class="language-json">${escapeHtml(String(value || ''))}</code></pre>`;
 }
 
 function formatTraceMode(mode) {
