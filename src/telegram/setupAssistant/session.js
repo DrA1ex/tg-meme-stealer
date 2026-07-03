@@ -1,0 +1,242 @@
+import {
+  createSetupDraft,
+  formatDraftConfig,
+  saveDraftConfig,
+  upsertPublishSource,
+  validateSetupDraft,
+  formatLastChange,
+  formatNoLastChange,
+  formatSetupIntro,
+  formatSetupStatus,
+  lastChangeKeyboard,
+  formatPublishChanges,
+  parseCustomSourceInput,
+  mergeReplyOptions,
+  sourcesKeyboard,
+  setupMenuKeyboard,
+  replyJsonCode,
+  replaceObjectContents,
+  createSetupMeta
+} from './deps.js';
+
+export async function start(ctx) {
+  this.reloadConfig();
+  this.sessions.set(ctx.from.id, createSetupDraft(this.config));
+  this.setupMeta.set(ctx.from.id, createSetupMeta());
+  this.setupLastChange.delete(ctx.from.id);
+  this.setupTrafficPresets.delete(ctx.from.id);
+  this.setupSampleCache.delete(ctx.from.id);
+  this.setupCurrentView.delete(ctx.from.id);
+  this.setupScheduleWizards.delete(ctx.from.id);
+  this.setupTextPrompts.delete(ctx.from.id);
+  await this.replyWithKeyboard(ctx, formatSetupIntro(this.getDraft(ctx), this.getMeta(ctx)), setupMenuKeyboard());
+}
+
+export async function status(ctx) {
+  await this.replyWithKeyboard(ctx, formatSetupStatus(this.getDraft(ctx), this.config, this.getMeta(ctx)), setupMenuKeyboard());
+}
+
+export async function done(ctx) {
+  const draft = this.getDraft(ctx);
+  validateSetupDraft(draft, this.config);
+  const result = await saveDraftConfig(draft);
+  this.reloadConfig();
+  await this.clearLastSetupKeyboard(ctx);
+  await ctx.reply([
+    `Config saved: ${result.configPath}`,
+    `Backup: ${result.backupPath}`,
+    '',
+    'Final config snippet:'
+  ].join('\n'));
+  await replyJsonCode(ctx, JSON.parse(formatDraftConfig(draft)));
+  this.sessions.delete(ctx.from.id);
+  this.setupSuggestions.delete(ctx.from.id);
+  this.setupMeta.delete(ctx.from.id);
+  this.setupLastChange.delete(ctx.from.id);
+  this.setupTrafficPresets.delete(ctx.from.id);
+  this.setupSampleCache.delete(ctx.from.id);
+  this.setupCurrentView.delete(ctx.from.id);
+  this.setupScheduleWizards.delete(ctx.from.id);
+  this.setupTextPrompts.delete(ctx.from.id);
+}
+
+export async function cancel(ctx) {
+  this.sessions.delete(ctx.from.id);
+  this.setupSuggestions.delete(ctx.from.id);
+  this.setupMeta.delete(ctx.from.id);
+  this.setupLastChange.delete(ctx.from.id);
+  this.setupTrafficPresets.delete(ctx.from.id);
+  this.setupSampleCache.delete(ctx.from.id);
+  this.setupCurrentView.delete(ctx.from.id);
+  this.setupScheduleWizards.delete(ctx.from.id);
+  this.setupTextPrompts.delete(ctx.from.id);
+  await this.clearLastSetupKeyboard(ctx);
+  await ctx.reply('Setup mode cancelled.');
+}
+
+export async function handleSetupText(ctx) {
+  if (!ctx?.from?.id || !this.sessions.has(ctx.from.id)) return;
+  const text = ctx.message?.text || '';
+  if (text.startsWith('/')) return;
+  const prompt = this.setupTextPrompts.get(ctx.from.id);
+  if (!prompt) return;
+
+  if (prompt.kind === 'source_custom') {
+    try {
+      const source = parseCustomSourceInput(text);
+      const beforePublish = structuredClone(this.getDraft(ctx).publish || {});
+      upsertPublishSource(this.getDraft(ctx), source);
+      this.setupTextPrompts.delete(ctx.from.id);
+      this.markChanged(ctx, 'publishing', `Custom source added: ${source.key}`, formatPublishChanges(beforePublish, this.getDraft(ctx).publish || {}));
+      await this.replyWithKeyboard(ctx, `✅ Source added: ${source.key}\n${source.where}`, sourcesKeyboard(this.getDraft(ctx)));
+    } catch (error) {
+      await this.sourceCustomHelp(ctx, error.message);
+    }
+  }
+}
+
+export async function withSession(ctx, handler) {
+  if (!this.sessions.has(ctx.from.id)) {
+    await ctx.reply('Setup mode is not active. Run /setup first.');
+    return;
+  }
+
+  try {
+    await handler();
+  } catch (error) {
+    await this.replyWithKeyboard(ctx, `Setup error: ${error.message}`, setupMenuKeyboard());
+  }
+}
+
+export async function replyWithKeyboard(ctx, text, keyboard, extra = {}) {
+  await this.clearLastSetupKeyboard(ctx);
+  const message = await ctx.reply(text, mergeReplyOptions(extra, keyboard));
+  this.rememberSetupKeyboard(ctx, message);
+  return message;
+}
+
+export async function replaceCurrentSetupMessage(ctx, text, keyboard, extra = {}) {
+  const sourceMessage = ctx?.callbackQuery?.message;
+  if (!sourceMessage?.message_id || !sourceMessage?.chat?.id) {
+    return this.replyWithKeyboard(ctx, text, keyboard, extra);
+  }
+  try {
+    await ctx.telegram.editMessageText(
+      sourceMessage.chat.id,
+      sourceMessage.message_id,
+      undefined,
+      text,
+      mergeReplyOptions(extra, keyboard)
+    );
+    this.rememberSetupKeyboard(ctx, { message_id: sourceMessage.message_id, chat: sourceMessage.chat });
+    return sourceMessage;
+  } catch {
+    return this.replyWithKeyboard(ctx, text, keyboard, extra);
+  }
+}
+
+export async function clearLastSetupKeyboard(ctx) {
+  const previous = this.setupMessages.get(ctx.from.id);
+  if (!previous) return;
+  this.setupMessages.delete(ctx.from.id);
+
+  try {
+    await ctx.telegram.editMessageReplyMarkup(
+      previous.chatId,
+      previous.messageId,
+      undefined,
+      { inline_keyboard: [] }
+    );
+  } catch {
+    // The message can be too old, already edited, or deleted. This is only a UI cleanup.
+  }
+}
+
+export function rememberSetupKeyboard(ctx, message) {
+  if (!message?.message_id || !message?.chat?.id) return;
+  this.setupMessages.set(ctx.from.id, {
+    chatId: message.chat.id,
+    messageId: message.message_id
+  });
+}
+
+export function ensureSession(ctx) {
+  if (this.sessions.has(ctx.from.id)) return;
+  this.reloadConfig();
+  this.sessions.set(ctx.from.id, createSetupDraft(this.config));
+}
+
+export function getDraft(ctx) {
+  return this.sessions.get(ctx.from.id);
+}
+
+export function getMeta(ctx) {
+  if (!this.setupMeta.has(ctx.from.id)) this.setupMeta.set(ctx.from.id, createSetupMeta());
+  return this.setupMeta.get(ctx.from.id);
+}
+
+export function markChanged(ctx, area, title, detailLines = []) {
+  const meta = this.getMeta(ctx);
+  meta.changedAt = Date.now();
+  meta.changedArea = area;
+  meta.previewedAt = 0;
+  meta.testedAt = area === 'parser' ? 0 : meta.testedAt;
+  this.setupLastChange.set(ctx.from.id, {
+    area,
+    title,
+    detailLines: Array.isArray(detailLines) ? detailLines : [String(detailLines)]
+  });
+}
+
+export function markPreviewed(ctx) {
+  this.getMeta(ctx).previewedAt = Date.now();
+}
+
+export function markTested(ctx) {
+  this.getMeta(ctx).testedAt = Date.now();
+}
+
+export async function showLastChange(ctx) {
+  const change = this.setupLastChange.get(ctx.from.id);
+  if (!change) {
+    await this.replyWithKeyboard(ctx, formatNoLastChange(), setupMenuKeyboard());
+    return;
+  }
+  await this.replyWithKeyboard(ctx, formatLastChange(change), lastChangeKeyboard(change.area));
+}
+
+export function rememberCurrentView(ctx, view) {
+  if (!ctx?.from?.id || !view) return;
+  this.setupCurrentView.set(ctx.from.id, view);
+}
+
+export function getCurrentView(ctx) {
+  return this.setupCurrentView.get(ctx.from.id) || 'suggest';
+}
+
+export function reloadConfig() {
+  replaceObjectContents(this.config, this.configLoader());
+}
+
+export const sessionMethods = {
+  start,
+  status,
+  done,
+  cancel,
+  handleSetupText,
+  withSession,
+  replyWithKeyboard,
+  replaceCurrentSetupMessage,
+  clearLastSetupKeyboard,
+  rememberSetupKeyboard,
+  ensureSession,
+  getDraft,
+  getMeta,
+  markChanged,
+  markPreviewed,
+  markTested,
+  showLastChange,
+  rememberCurrentView,
+  getCurrentView,
+  reloadConfig
+};

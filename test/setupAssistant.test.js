@@ -77,6 +77,46 @@ test('SetupAssistant.start reloads config before creating a new draft', async ()
   assert.doesNotMatch(replies[0][0], /old/);
 });
 
+
+test('SetupAssistant routing keeps command aliases, save semantics and callback prompt cleanup', async () => {
+  const replies = [];
+  const edits = [];
+  const assistant = new SetupAssistant({
+    scanner: {
+      previewAdaptive: async () => ({
+        scanned: 1,
+        posts: [],
+        messages: [sampleMessage({ id: 40, text: 'suggest me' })],
+        exhausted: true,
+        pages: 1
+      })
+    },
+    mediaDownloader: {},
+    config: { telegram: { sourceChatId: -1001 }, parsing: {}, publish: { sources: [] }, templates: {} },
+    configLoader: () => ({ telegram: { sourceChatId: -1001 }, parsing: {}, publish: { sources: [] }, templates: {} })
+  });
+  const ctx = plainCtx({ replies, edits });
+
+  await assistant.setupCommand({ ...ctx, message: { text: '/setup save' } });
+  assert.equal(assistant.sessions.has(1), false);
+  assert.match(replies.at(-1)[0], /Setup mode is not active/);
+
+  await assistant.setupCommand({ ...ctx, message: { text: '/setup suggestions' } });
+  assert.equal(assistant.sessions.has(1), true);
+  assert.ok(Array.isArray(assistant.setupSuggestions.get(1)));
+  assert.match(replies.at(-1)[0], /Quick setup|Recommended setup/);
+
+  assistant.setupTextPrompts.set(1, { kind: 'source_custom' });
+  await assistant.setupAction({
+    ...ctx,
+    callbackQuery: { message: { message_id: 500, chat: { id: 200 } } },
+    match: ['setup:source_custom_cancel', 'source_custom_cancel'],
+    answerCbQuery: async () => {}
+  });
+  assert.equal(assistant.setupTextPrompts.has(1), false);
+  assert.match(replies.at(-1)[0], /Publish sources/);
+});
+
 test('SetupAssistant.test sends parsed table as HTML code block', async () => {
   const replies = [];
   const assistant = new SetupAssistant({
