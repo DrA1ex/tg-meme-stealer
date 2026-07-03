@@ -154,10 +154,11 @@ export function formatParserMenu(draft) {
       ]],
       ['✨ Available now', [
         'Auto suggestions scans recent messages and offers buttons for filters, author, and reaction buttons.',
-        'Test parser shows matched rows. Preview sends selected rich posts.',
+        'Parser paths shows detected text/button fields before you choose rules.',
+        'Author test, Reaction test, and Filter impact explain what the current rules actually do.',
         'Advanced JSON is still available for exact rules.'
       ]],
-      ['➡️ Next', ['Run Auto suggestions, apply useful rules, then Test parser / Preview.']]
+      ['➡️ Next', ['Run Parser paths or Auto suggestions first, then Author/Reaction test and Preview.']]
     ]
   });
 }
@@ -177,11 +178,14 @@ export function formatPublishMenu(draft, baseConfig = {}) {
       ]],
       ['🗓 Templates', formatTemplateLines(templates, { includeDisabled: true })],
       ['✨ Available now', [
-        'Presets can add/update common schedules with buttons.',
-        'Replace templates lets a preset become the full publish.template list.',
+        'Presets can add/update common schedules with buttons, including time/strictness variants.',
+        'Traffic suggestions looks at recent post times and suggests publish times.',
+        'Schedule preview shows upcoming runs and their selection windows.',
+        'Schedule doctor checks conflicts, firstSendAt shifts, and daily window gaps/overlaps.',
+        'Source test checks publish.sources[].where against stored posts.',
         'Advanced JSON still edits exact sources/templates.'
       ]],
-      ['➡️ Next', ['Choose Presets to add daily, morning/night, weekly, monthly, or controversial selections.']]
+      ['➡️ Next', ['Choose Presets or Traffic suggestions, then run Source test and Schedule doctor.']]
     ]
   });
 }

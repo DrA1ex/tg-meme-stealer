@@ -13,7 +13,9 @@ export function setupMenuKeyboard() {
 
 export function parserMenuKeyboard() {
   return inlineKeyboard([
-    [button('Auto suggestions', 'setup:suggest')],
+    [button('Auto suggestions', 'setup:suggest'), button('Filter impact', 'setup:filter_impact')],
+    [button('Parser paths', 'setup:parser_paths')],
+    [button('Author test', 'setup:author_test'), button('Reaction test', 'setup:reaction_test')],
     [button('Reset filters', 'setup:reset_filters')],
     [button('Test parser', 'setup:test'), button('Preview', 'setup:preview')],
     [button('Show parser config', 'setup:parser_config')],
@@ -32,7 +34,9 @@ export function parserAfterApplyKeyboard() {
 
 export function publishMenuKeyboard() {
   return inlineKeyboard([
-    [button('Presets', 'setup:publish_presets'), button('Show publish config', 'setup:publish_config')],
+    [button('Presets', 'setup:publish_presets'), button('Traffic suggestions', 'setup:traffic_suggestions')],
+    [button('Schedule preview', 'setup:schedule_preview'), button('Schedule doctor', 'setup:schedule_doctor')],
+    [button('Source test', 'setup:source_test'), button('Show publish config', 'setup:publish_config')],
     [button('Doctor', 'setup:doctor'), button('Preview', 'setup:preview')],
     [button('Advanced JSON', 'setup:advanced'), button('Show full config', 'setup:config')],
     [button('Back to setup', 'setup:status')]

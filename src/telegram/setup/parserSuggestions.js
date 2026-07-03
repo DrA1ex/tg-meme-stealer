@@ -330,6 +330,7 @@ export function parserSuggestionsKeyboard(suggestions) {
   }
 
   rows.push([button('Reset filters', 'setup:reset_filters')]);
+  rows.push([button('Filter impact', 'setup:filter_impact'), button('Parser paths', 'setup:parser_paths')]);
   rows.push([button('Test parser', 'setup:test'), button('Preview', 'setup:preview')]);
   rows.push([button('Show last change', 'setup:last_change'), button('Show parser config', 'setup:parser_config')]);
   rows.push([button('Advanced JSON', 'setup:advanced'), button('Back', 'setup:parser')]);

@@ -41,6 +41,17 @@ import {
   parserSuggestionsKeyboard
 } from './setup/parserSuggestions.js';
 import {
+  formatAuthorExtractionTest,
+  formatFilterImpact,
+  formatParserPaths,
+  formatReactionExtractionTest
+} from './setup/parserDiagnostics.js';
+import {
+  formatScheduleDoctor,
+  formatSchedulePreview,
+  formatTrafficScheduleSuggestions
+} from './setup/scheduleDiagnostics.js';
+import {
   applyPublishPresetToDraft,
   formatAppliedPublishPreset,
   formatConfirmReplacePublishPreset,
@@ -49,6 +60,7 @@ import {
   formatPublishPresetsMenu,
   getPublishPreset
 } from './setup/publishPresets.js';
+import { formatSourceExpressionTest } from './setup/sourceDiagnostics.js';
 import {
   advancedMenuKeyboard,
   confirmReplacePublishPresetKeyboard,
@@ -145,6 +157,26 @@ export class SetupAssistant {
       await this.suggestParser(ctx);
       return;
     }
+    if (action === 'parser_paths') {
+      this.ensureSession(ctx);
+      await this.parserPaths(ctx);
+      return;
+    }
+    if (action === 'author_test') {
+      this.ensureSession(ctx);
+      await this.authorTest(ctx);
+      return;
+    }
+    if (action === 'reaction_test') {
+      this.ensureSession(ctx);
+      await this.reactionTest(ctx);
+      return;
+    }
+    if (action === 'filter_impact') {
+      this.ensureSession(ctx);
+      await this.filterImpact(ctx);
+      return;
+    }
     if (action === 'reset_filters') {
       this.ensureSession(ctx);
       await this.confirmResetFilters(ctx);
@@ -168,6 +200,26 @@ export class SetupAssistant {
     if (action === 'publish_config') {
       this.ensureSession(ctx);
       await this.showPublishConfig(ctx);
+      return;
+    }
+    if (action === 'schedule_preview') {
+      this.ensureSession(ctx);
+      await this.schedulePreview(ctx);
+      return;
+    }
+    if (action === 'schedule_doctor') {
+      this.ensureSession(ctx);
+      await this.scheduleDoctor(ctx);
+      return;
+    }
+    if (action === 'traffic_suggestions') {
+      this.ensureSession(ctx);
+      await this.trafficSuggestions(ctx);
+      return;
+    }
+    if (action === 'source_test') {
+      this.ensureSession(ctx);
+      await this.sourceTest(ctx);
       return;
     }
     if (action === 'advanced') {
@@ -227,6 +279,14 @@ export class SetupAssistant {
         await this.showParserConfig(ctx);
       } else if (action === 'suggest') {
         await this.suggestParser(ctx);
+      } else if (action === 'parser_paths') {
+        await this.parserPaths(ctx);
+      } else if (action === 'author_test') {
+        await this.authorTest(ctx);
+      } else if (action === 'reaction_test') {
+        await this.reactionTest(ctx);
+      } else if (action === 'filter_impact') {
+        await this.filterImpact(ctx);
       } else if (action === 'reset_filters') {
         await this.confirmResetFilters(ctx);
       } else if (action === 'reset_filters_confirm') {
@@ -241,6 +301,14 @@ export class SetupAssistant {
         await this.publishPresets(ctx);
       } else if (action === 'publish_config') {
         await this.showPublishConfig(ctx);
+      } else if (action === 'schedule_preview') {
+        await this.schedulePreview(ctx);
+      } else if (action === 'schedule_doctor') {
+        await this.scheduleDoctor(ctx);
+      } else if (action === 'traffic_suggestions') {
+        await this.trafficSuggestions(ctx);
+      } else if (action === 'source_test') {
+        await this.sourceTest(ctx);
       } else if (action.startsWith('preset:')) {
         await this.showPublishPreset(ctx, action.slice('preset:'.length));
       } else if (action.startsWith('apply_preset:')) {
@@ -411,6 +479,76 @@ export class SetupAssistant {
       }),
       parserSuggestionsKeyboard(markSuggestionStates(suggestions, draft))
     );
+  }
+
+
+  async parserPaths(ctx) {
+    const draft = this.getDraft(ctx);
+    await ctx.reply(`Scanning the latest ${DEFAULT_TEST_MESSAGES} source messages for parser paths...`);
+    const result = await this.scanner.previewRecent(DEFAULT_TEST_MESSAGES, draft, { includeMessages: true });
+    await this.replyWithKeyboard(ctx, formatParserPaths(result.messages || [], draft), parserMenuKeyboard());
+  }
+
+  async authorTest(ctx) {
+    const draft = this.getDraft(ctx);
+    await ctx.reply(`Testing author extraction on the latest ${DEFAULT_TEST_MESSAGES} source messages...`);
+    const result = await this.scanner.previewRecent(DEFAULT_TEST_MESSAGES, draft, { includeMessages: true });
+    this.markTested(ctx);
+    await this.replyWithKeyboard(ctx, formatAuthorExtractionTest({
+      messages: result.messages || [],
+      draft,
+      baseConfig: this.config
+    }), parserMenuKeyboard());
+  }
+
+  async reactionTest(ctx) {
+    const draft = this.getDraft(ctx);
+    await ctx.reply(`Testing reaction extraction on the latest ${DEFAULT_TEST_MESSAGES} source messages...`);
+    const result = await this.scanner.previewRecent(DEFAULT_TEST_MESSAGES, draft, { includeMessages: true });
+    this.markTested(ctx);
+    await this.replyWithKeyboard(ctx, formatReactionExtractionTest({
+      messages: result.messages || [],
+      draft,
+      baseConfig: this.config
+    }), parserMenuKeyboard());
+  }
+
+  async filterImpact(ctx) {
+    const draft = this.getDraft(ctx);
+    await ctx.reply(`Checking filter impact on the latest ${DEFAULT_TEST_MESSAGES} source messages...`);
+    const result = await this.scanner.previewRecent(DEFAULT_TEST_MESSAGES, draft, { includeMessages: true });
+    await this.replyWithKeyboard(ctx, formatFilterImpact({
+      messages: result.messages || [],
+      draft,
+      baseConfig: this.config
+    }), parserSuggestionsKeyboard(markSuggestionStates(buildParserSuggestions(result.messages || [], draft), draft)));
+  }
+
+  async schedulePreview(ctx) {
+    await this.replyWithKeyboard(ctx, formatSchedulePreview(this.getDraft(ctx), this.config), publishMenuKeyboard());
+  }
+
+  async scheduleDoctor(ctx) {
+    await this.replyWithKeyboard(ctx, formatScheduleDoctor(this.getDraft(ctx), this.config), publishMenuKeyboard());
+  }
+
+  async trafficSuggestions(ctx) {
+    const draft = this.getDraft(ctx);
+    await ctx.reply(`Scanning the latest ${DEFAULT_PREVIEW_MESSAGES} source messages for traffic patterns...`);
+    const result = await this.scanner.previewRecent(DEFAULT_PREVIEW_MESSAGES, draft, { includeMessages: true });
+    await this.replyWithKeyboard(ctx, formatTrafficScheduleSuggestions({
+      messages: result.messages || [],
+      draft,
+      baseConfig: this.config
+    }), publishMenuKeyboard());
+  }
+
+  async sourceTest(ctx) {
+    await this.replyWithKeyboard(ctx, await formatSourceExpressionTest({
+      repository: this.scanner.repository,
+      draft: this.getDraft(ctx),
+      baseConfig: this.config
+    }), publishMenuKeyboard());
   }
 
   async applySuggestion(ctx, suggestionId) {

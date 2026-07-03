@@ -49,6 +49,150 @@ export const PUBLISH_PRESETS = [
     notes: ['Morning publishes at 11:00 for the previous 12h.', 'Night publishes at 23:00 for the previous 12h.']
   },
   {
+    id: 'daily_top_night',
+    title: 'Daily top · night digest',
+    description: 'One daily best selection late in the evening. Useful when most posts appear during the day.',
+    sources: [{ key: 'best', where: 'likes > 0' }],
+    templates: [
+      publishTemplate({
+        source: 'best',
+        key: 'daily_best',
+        schedule: { type: 'daily', time: '23:00' },
+        windowHours: 24,
+        posts: { min: 5, target: 10, max: 20 },
+        reactions: { strategy: 'likes', min: 20, includeAbove: 30 },
+        template: 'Best {{count}} posts from the last 24h'
+      })
+    ],
+    notes: ['Publishes every day at 23:00 and looks back 24 hours.']
+  },
+  {
+    id: 'daily_top_soft',
+    title: 'Daily top · soft threshold',
+    description: 'A more permissive daily digest for smaller chats or low reaction volume.',
+    sources: [{ key: 'best', where: 'likes > 0' }],
+    templates: [
+      publishTemplate({
+        source: 'best',
+        key: 'daily_best',
+        schedule: { type: 'daily', time: '23:00' },
+        windowHours: 24,
+        posts: { min: 3, target: 5, max: 10 },
+        reactions: { strategy: 'likes', min: 5, includeAbove: 20 },
+        template: 'Best {{count}} posts from the last 24h'
+      })
+    ],
+    notes: ['Soft threshold: min=5 likes, expands above 20 likes.']
+  },
+  {
+    id: 'morning_night_early',
+    title: 'Morning + night · early',
+    description: 'Two daily selections at 10:00 and 22:00 with 12h windows.',
+    sources: [{ key: 'best', where: 'likes > 0' }],
+    templates: [
+      publishTemplate({
+        source: 'best',
+        key: 'daily_morning_best',
+        schedule: { type: 'daily', time: '10:00' },
+        windowHours: 12,
+        posts: { min: 5, target: 10, max: 20 },
+        reactions: { strategy: 'likes', min: 20, includeAbove: 30 },
+        template: 'Best {{count}} morning fresh posts'
+      }),
+      publishTemplate({
+        source: 'best',
+        key: 'daily_night_best',
+        schedule: { type: 'daily', time: '22:00' },
+        windowHours: 12,
+        posts: { min: 5, target: 10, max: 20 },
+        reactions: { strategy: 'likes', min: 20, includeAbove: 30 },
+        template: 'Best {{count}} night fresh posts'
+      })
+    ],
+    notes: ['Earlier split: 10:00 / 22:00.']
+  },
+  {
+    id: 'morning_night_late',
+    title: 'Morning + night · late',
+    description: 'Two daily selections at 12:00 and 00:00 with 12h windows.',
+    sources: [{ key: 'best', where: 'likes > 0' }],
+    templates: [
+      publishTemplate({
+        source: 'best',
+        key: 'daily_morning_best',
+        schedule: { type: 'daily', time: '12:00' },
+        windowHours: 12,
+        posts: { min: 5, target: 10, max: 20 },
+        reactions: { strategy: 'likes', min: 20, includeAbove: 30 },
+        template: 'Best {{count}} morning fresh posts'
+      }),
+      publishTemplate({
+        source: 'best',
+        key: 'daily_night_best',
+        schedule: { type: 'daily', time: '00:00' },
+        windowHours: 12,
+        posts: { min: 5, target: 10, max: 20 },
+        reactions: { strategy: 'likes', min: 20, includeAbove: 30 },
+        template: 'Best {{count}} night fresh posts'
+      })
+    ],
+    notes: ['Later split: 12:00 / 00:00.']
+  },
+  {
+    id: 'morning_night_soft',
+    title: 'Morning + night · soft threshold',
+    description: 'Two daily selections for lower reaction volume.',
+    sources: [{ key: 'best', where: 'likes > 0' }],
+    templates: [
+      publishTemplate({
+        source: 'best',
+        key: 'daily_morning_best',
+        schedule: { type: 'daily', time: '11:00' },
+        windowHours: 12,
+        posts: { min: 3, target: 5, max: 10 },
+        reactions: { strategy: 'likes', min: 5, includeAbove: 20 },
+        template: 'Best {{count}} morning fresh posts'
+      }),
+      publishTemplate({
+        source: 'best',
+        key: 'daily_night_best',
+        schedule: { type: 'daily', time: '23:00' },
+        windowHours: 12,
+        posts: { min: 3, target: 5, max: 10 },
+        reactions: { strategy: 'likes', min: 5, includeAbove: 20 },
+        template: 'Best {{count}} night fresh posts'
+      })
+    ],
+    notes: ['Soft threshold: min=5 likes, expands above 20 likes.']
+  },
+  {
+    id: 'morning_night_strict',
+    title: 'Morning + night · strict threshold',
+    description: 'Two daily selections for high-volume chats where only stronger posts should pass.',
+    sources: [{ key: 'best', where: 'likes > 0' }],
+    templates: [
+      publishTemplate({
+        source: 'best',
+        key: 'daily_morning_best',
+        schedule: { type: 'daily', time: '11:00' },
+        windowHours: 12,
+        posts: { min: 5, target: 10, max: 20 },
+        reactions: { strategy: 'likes', min: 30, includeAbove: 40 },
+        template: 'Best {{count}} morning fresh posts'
+      }),
+      publishTemplate({
+        source: 'best',
+        key: 'daily_night_best',
+        schedule: { type: 'daily', time: '23:00' },
+        windowHours: 12,
+        posts: { min: 5, target: 10, max: 20 },
+        reactions: { strategy: 'likes', min: 30, includeAbove: 40 },
+        template: 'Best {{count}} night fresh posts'
+      })
+    ],
+    notes: ['Strict threshold: min=30 likes, expands above 40 likes.']
+  },
+  {
     id: 'weekly_top',
     title: 'Weekly top',
     description: 'One weekly best selection on Monday morning.',
