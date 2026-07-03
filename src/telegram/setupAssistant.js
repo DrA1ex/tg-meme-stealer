@@ -58,6 +58,8 @@ export class SetupAssistant {
     this.config = config;
     this.configLoader = configLoader;
     this.sessions = new Map();
+    this.setupMessages = new Map();
+    this.setupSuggestions = new Map();
   }
 
   register(bot) {
@@ -108,6 +110,16 @@ export class SetupAssistant {
       await this.parserMenu(ctx);
       return;
     }
+    if (action === 'parser_config') {
+      this.ensureSession(ctx);
+      await this.showParserConfig(ctx);
+      return;
+    }
+    if (action === 'suggest' || action === 'suggestions') {
+      this.ensureSession(ctx);
+      await this.suggestParser(ctx);
+      return;
+    }
     if (action === 'publish') {
       this.ensureSession(ctx);
       await this.publishMenu(ctx);
@@ -132,7 +144,8 @@ export class SetupAssistant {
       return;
     }
 
-    await ctx.reply(
+    await this.replyWithKeyboard(
+      ctx,
       `Unknown setup action: ${action}\n\nUse /setup or choose a button from the setup menu.`,
       setupMenuKeyboard()
     );
@@ -165,6 +178,12 @@ export class SetupAssistant {
         await this.testDefaults(ctx);
       } else if (action === 'parser') {
         await this.parserMenu(ctx);
+      } else if (action === 'parser_config') {
+        await this.showParserConfig(ctx);
+      } else if (action === 'suggest') {
+        await this.suggestParser(ctx);
+      } else if (action.startsWith('apply:')) {
+        await this.applySuggestion(ctx, action.slice('apply:'.length));
       } else if (action === 'publish') {
         await this.publishMenu(ctx);
       } else if (action === 'advanced') {
@@ -174,52 +193,58 @@ export class SetupAssistant {
       } else if (action === 'save') {
         await this.done(ctx);
       } else {
-        await ctx.reply(`Unknown setup button: ${action}`, setupMenuKeyboard());
+        await this.replyWithKeyboard(ctx, `Unknown setup button: ${action}`, setupMenuKeyboard());
       }
     } catch (error) {
-      await ctx.reply(`Setup error: ${error.message}`, setupMenuKeyboard());
+      await this.replyWithKeyboard(ctx, `Setup error: ${error.message}`, setupMenuKeyboard());
     }
   }
 
   async start(ctx) {
     this.reloadConfig();
     this.sessions.set(ctx.from.id, createSetupDraft(this.config));
-    await ctx.reply(formatSetupIntro(this.getDraft(ctx)), setupMenuKeyboard());
+    await this.replyWithKeyboard(ctx, formatSetupIntro(this.getDraft(ctx)), setupMenuKeyboard());
   }
 
   async status(ctx) {
-    await ctx.reply(formatSetupStatus(this.getDraft(ctx), this.config), setupMenuKeyboard());
+    await this.replyWithKeyboard(ctx, formatSetupStatus(this.getDraft(ctx), this.config), setupMenuKeyboard());
   }
 
   async parserMenu(ctx) {
-    await ctx.reply(formatParserMenu(this.getDraft(ctx)), parserMenuKeyboard());
+    await this.replyWithKeyboard(ctx, formatParserMenu(this.getDraft(ctx)), parserMenuKeyboard());
   }
 
   async publishMenu(ctx) {
-    await ctx.reply(formatPublishMenu(this.getDraft(ctx), this.config), publishMenuKeyboard());
+    await this.replyWithKeyboard(ctx, formatPublishMenu(this.getDraft(ctx), this.config), publishMenuKeyboard());
   }
 
   async advanced(ctx) {
-    await ctx.reply(ADVANCED_HELP, advancedMenuKeyboard());
+    await this.replyWithKeyboard(ctx, ADVANCED_HELP, advancedMenuKeyboard());
   }
 
   async showDraftConfig(ctx) {
     await ctx.reply('Current setup draft:');
     await replyJsonCode(ctx, JSON.parse(formatDraftConfig(this.getDraft(ctx))));
-    await ctx.reply('Use the buttons to continue setup.', setupMenuKeyboard());
+    await this.replyWithKeyboard(ctx, 'Use the buttons to continue setup.', setupMenuKeyboard());
+  }
+
+  async showParserConfig(ctx) {
+    await ctx.reply('Current parser rules:');
+    await replyJsonCode(ctx, this.getDraft(ctx).parsing || {});
+    await this.replyWithKeyboard(ctx, 'Use Test parser or Preview to check these rules against real source posts.', parserMenuKeyboard());
   }
 
   async doctor(ctx) {
     const draft = this.getDraft(ctx);
     await ctx.reply(`Running setup doctor on the latest ${DEFAULT_TEST_MESSAGES} source messages...`);
     const result = await this.scanner.previewRecent(DEFAULT_TEST_MESSAGES, draft);
-    await ctx.reply(formatSetupDoctor({ draft, baseConfig: this.config, preview: result }), setupMenuKeyboard());
+    await this.replyWithKeyboard(ctx, formatSetupDoctor({ draft, baseConfig: this.config, preview: result }), setupMenuKeyboard());
   }
 
   async testDefaults(ctx) {
     const result = await this.scanner.previewRecent(DEFAULT_TEST_MESSAGES, this.getDraft(ctx));
     await replyCode(ctx, summarizeParsedPosts(result, { maxRows: 12 }));
-    await ctx.reply('Parser test finished.', parserMenuKeyboard());
+    await this.replyWithKeyboard(ctx, 'Parser test finished.', parserMenuKeyboard());
   }
 
   async previewDefaults(ctx) {
@@ -229,41 +254,75 @@ export class SetupAssistant {
     });
   }
 
+
+  async suggestParser(ctx) {
+    const draft = this.getDraft(ctx);
+    await ctx.reply(`Scanning the latest ${DEFAULT_TEST_MESSAGES} source messages for parser suggestions...`);
+    const result = await this.scanner.previewRecent(DEFAULT_TEST_MESSAGES, draft, { includeMessages: true });
+    const suggestions = buildParserSuggestions(result.messages || [], draft);
+    this.setupSuggestions.set(ctx.from.id, suggestions);
+    await this.replyWithKeyboard(
+      ctx,
+      formatParserSuggestions({ suggestions, scanned: result.scanned, matched: result.posts.length }),
+      parserSuggestionsKeyboard(suggestions)
+    );
+  }
+
+  async applySuggestion(ctx, suggestionId) {
+    const suggestions = this.setupSuggestions.get(ctx.from.id) || [];
+    const suggestion = suggestions.find((item) => item.id === suggestionId);
+    if (!suggestion) {
+      await this.replyWithKeyboard(
+        ctx,
+        'This suggestion is no longer available. Run Auto suggestions again.',
+        parserMenuKeyboard()
+      );
+      return;
+    }
+
+    suggestion.apply(this.getDraft(ctx));
+    await this.replyWithKeyboard(
+      ctx,
+      [`Applied: ${suggestion.title}`, '', suggestion.afterApply || 'Run Test parser or Preview to check the result.'].join('\n'),
+      parserMenuKeyboard()
+    );
+  }
+
   async setRules(ctx, key) {
     const rules = parseJsonArgument(ctx.message.text);
     setParsingRules(this.getDraft(ctx), key, rules);
-    await ctx.reply(`${key} replaced. Use Test parser or Preview to check the result.`, parserMenuKeyboard());
+    await this.replyWithKeyboard(ctx, `${key} replaced. Use Test parser or Preview to check the result.`, parserMenuKeyboard());
   }
 
   async addRules(ctx, key) {
     const rules = parseJsonArgument(ctx.message.text);
     addParsingRule(this.getDraft(ctx), key, rules);
-    await ctx.reply(`${key} appended. Use Test parser or Preview to check the result.`, parserMenuKeyboard());
+    await this.replyWithKeyboard(ctx, `${key} appended. Use Test parser or Preview to check the result.`, parserMenuKeyboard());
   }
 
   async setTemplate(ctx) {
     const [key, value] = splitFirstArgument(ctx.message.text);
     if (!key || !value) throw new Error('Usage: /settemplate <key> <value>');
     setTemplateValue(this.getDraft(ctx), key, value);
-    await ctx.reply(`${key} template updated. Use Preview to check the result.`, setupMenuKeyboard());
+    await this.replyWithKeyboard(ctx, `${key} template updated. Use Preview to check the result.`, setupMenuKeyboard());
   }
 
   async setSources(ctx) {
     const sources = parseJsonArgument(ctx.message.text);
     setPublishSources(this.getDraft(ctx), sources);
-    await ctx.reply('publish.sources replaced. Run Doctor or Save when ready.', publishMenuKeyboard());
+    await this.replyWithKeyboard(ctx, 'publish.sources replaced. Run Doctor or Save when ready.', publishMenuKeyboard());
   }
 
   async setSource(ctx) {
     const source = parseJsonArgument(ctx.message.text);
     upsertPublishSource(this.getDraft(ctx), source);
-    await ctx.reply(`publish.sources.${source.key} updated. Run Doctor or Save when ready.`, publishMenuKeyboard());
+    await this.replyWithKeyboard(ctx, `publish.sources.${source.key} updated. Run Doctor or Save when ready.`, publishMenuKeyboard());
   }
 
   async setPublish(ctx) {
     const template = parseJsonArgument(ctx.message.text);
     setPublishTemplate(this.getDraft(ctx), template);
-    await ctx.reply(`publish.template.${template.key} updated. Run Doctor or Save when ready.`, publishMenuKeyboard());
+    await this.replyWithKeyboard(ctx, `publish.template.${template.key} updated. Run Doctor or Save when ready.`, publishMenuKeyboard());
   }
 
   async test(ctx) {
@@ -291,7 +350,7 @@ export class SetupAssistant {
     }
     await replyCode(ctx, summarizeParsedPosts({ scanned: 1, posts: result.posts }));
     if (!result.posts.length) {
-      await ctx.reply('Message did not match the current parser rules.');
+      await this.replyWithKeyboard(ctx, 'Message did not match the current parser rules.', parserMenuKeyboard());
       return;
     }
     await replyJsonCode(ctx, result.posts.length === 1 ? result.posts[0] : result.posts);
@@ -316,15 +375,15 @@ export class SetupAssistant {
     const result = await this.scanner.previewRecent(messageCount, this.getDraft(ctx));
     const posts = selectWeekPreviewPosts(result.posts, postCount);
     const draft = this.getDraft(ctx);
-    await ctx.reply([
+    await this.replyWithKeyboard(ctx, [
       `Preview source: ${result.posts.length} matched posts from ${result.scanned} scanned messages.`,
       `Showing ${posts.length} selected post(s).`,
       '',
-      'Phase 2 will add automatic parser suggestions here; for now use Advanced JSON if the match set is wrong.'
+      'If the match set is wrong, use Parser → Auto suggestions or Advanced JSON.'
     ].join('\n'), previewMenuKeyboard());
 
     if (!posts.length) {
-      await ctx.reply(formatPreviewPost(null, draft.templates), previewMenuKeyboard());
+      await this.replyWithKeyboard(ctx, formatPreviewPost(null, draft.templates), previewMenuKeyboard());
       return;
     }
 
@@ -345,6 +404,7 @@ export class SetupAssistant {
     validateSetupDraft(draft, this.config);
     const result = await saveDraftConfig(draft);
     this.reloadConfig();
+    await this.clearLastSetupKeyboard(ctx);
     await ctx.reply([
       `Config saved: ${result.configPath}`,
       `Backup: ${result.backupPath}`,
@@ -353,10 +413,13 @@ export class SetupAssistant {
     ].join('\n'));
     await replyJsonCode(ctx, JSON.parse(formatDraftConfig(draft)));
     this.sessions.delete(ctx.from.id);
+    this.setupSuggestions.delete(ctx.from.id);
   }
 
   async cancel(ctx) {
     this.sessions.delete(ctx.from.id);
+    this.setupSuggestions.delete(ctx.from.id);
+    await this.clearLastSetupKeyboard(ctx);
     await ctx.reply('Setup mode cancelled.');
   }
 
@@ -369,8 +432,41 @@ export class SetupAssistant {
     try {
       await handler();
     } catch (error) {
-      await ctx.reply(`Setup error: ${error.message}`, setupMenuKeyboard());
+      await this.replyWithKeyboard(ctx, `Setup error: ${error.message}`, setupMenuKeyboard());
     }
+  }
+
+
+  async replyWithKeyboard(ctx, text, keyboard, extra = {}) {
+    await this.clearLastSetupKeyboard(ctx);
+    const message = await ctx.reply(text, mergeReplyOptions(extra, keyboard));
+    this.rememberSetupKeyboard(ctx, message);
+    return message;
+  }
+
+  async clearLastSetupKeyboard(ctx) {
+    const previous = this.setupMessages.get(ctx.from.id);
+    if (!previous) return;
+    this.setupMessages.delete(ctx.from.id);
+
+    try {
+      await ctx.telegram.editMessageReplyMarkup(
+        previous.chatId,
+        previous.messageId,
+        undefined,
+        { inline_keyboard: [] }
+      );
+    } catch {
+      // The message can be too old, already edited, or deleted. This is only a UI cleanup.
+    }
+  }
+
+  rememberSetupKeyboard(ctx, message) {
+    if (!message?.message_id || !message?.chat?.id) return;
+    this.setupMessages.set(ctx.from.id, {
+      chatId: message.chat.id,
+      messageId: message.message_id
+    });
   }
 
   ensureSession(ctx) {
@@ -422,7 +518,7 @@ function formatSetupStatus(draft, baseConfig = {}) {
     'Next steps:',
     '- Doctor checks obvious config and parser issues.',
     '- Preview sends real candidate posts to this chat.',
-    '- Phase 2 will add automatic parser/reaction suggestions.',
+    '- Parser → Auto suggestions can now detect common filters, author rules, and reaction buttons.',
     '- Phase 3 will add publish presets such as daily top, morning/night, weekly and controversial.'
   ].join('\n');
 }
@@ -435,11 +531,12 @@ function formatParserMenu(draft) {
     `Current rules: ${countRules(parsing.filters)} filter(s), ${countRules(parsing.author)} author, ${countRules(parsing.likes)} likes, ${countRules(parsing.dislikes)} dislikes.`,
     '',
     'Available now:',
+    '- Auto suggestions scans recent source messages and offers buttons for common filters, author extraction, and reaction buttons.',
     '- Test parser scans recent messages and shows matched rows.',
     '- Preview sends selected rich posts.',
     '- Advanced JSON lets you edit exact rules.',
     '',
-    'Phase 2 target: detect media/text/sender filters, author lines, and reaction buttons automatically, then offer them as buttons.'
+    'Phase 3 target: button presets for publish templates. Advanced JSON remains available for exact tuning.'
   ].join('\n');
 }
 
@@ -529,6 +626,415 @@ function formatSetupDoctor({ draft, baseConfig, preview }) {
   ].join('\n');
 }
 
+
+function buildParserSuggestions(messages, draft = {}) {
+  const stats = analyzeMessagesForParser(messages);
+  const suggestions = [];
+
+  const recommendedFilters = [{ source: 'message', transform: 'hasContent' }];
+  if (stats.mediaCount > 0 && stats.mediaCount / Math.max(1, stats.scanned) >= 0.4) {
+    recommendedFilters.push({ source: 'message', transform: 'hasMedia' });
+  }
+  if (stats.topSender && stats.topSender.count / Math.max(1, stats.scanned) >= 0.5) {
+    recommendedFilters.push({ source: 'sender', path: 'id', transform: 'equals', value: stats.topSender.id });
+  }
+
+  const authorSuggestion = buildAuthorSuggestion(stats);
+  const reactionSuggestion = buildReactionSuggestion(stats);
+
+  suggestions.push({
+    id: 'rec',
+    title: 'Apply suggested parser',
+    description: [
+      `Set ${recommendedFilters.length} filter rule(s)`,
+      authorSuggestion ? 'set author detection' : 'keep current author rules',
+      reactionSuggestion ? 'set reaction button parsing' : 'keep current reaction rules'
+    ].join(', '),
+    recommended: true,
+    apply: (draftConfig) => {
+      draftConfig.parsing.filters = structuredClone(recommendedFilters);
+      if (authorSuggestion) draftConfig.parsing.author = structuredClone(authorSuggestion.rules);
+      if (reactionSuggestion) {
+        draftConfig.parsing.likes = structuredClone(reactionSuggestion.likesRules);
+        draftConfig.parsing.dislikes = structuredClone(reactionSuggestion.dislikesRules);
+      }
+    },
+    afterApply: 'Suggested filters/extractors were applied. Run Test parser, then Preview.'
+  });
+
+  suggestions.push({
+    id: 'f_content',
+    title: 'Add hasContent filter',
+    description: `${stats.contentCount}/${stats.scanned} recent messages have text or supported media`,
+    apply: (draftConfig) => addUniqueParsingRule(draftConfig, 'filters', { source: 'message', transform: 'hasContent' })
+  });
+
+  if (stats.mediaCount > 0) {
+    suggestions.push({
+      id: 'f_media',
+      title: 'Add hasMedia filter',
+      description: `${stats.mediaCount}/${stats.scanned} recent messages have photo/video media`,
+      apply: (draftConfig) => addUniqueParsingRule(draftConfig, 'filters', { source: 'message', transform: 'hasMedia' })
+    });
+  }
+
+  if (stats.topSender) {
+    suggestions.push({
+      id: 'f_sender',
+      title: `Add top sender filter`,
+      description: `sender ${stats.topSender.id} appears in ${stats.topSender.count}/${stats.scanned} recent messages${stats.topSender.label ? ` (${stats.topSender.label})` : ''}`,
+      apply: (draftConfig) => addUniqueParsingRule(draftConfig, 'filters', {
+        source: 'sender',
+        path: 'id',
+        transform: 'equals',
+        value: stats.topSender.id
+      })
+    });
+  }
+
+  if (authorSuggestion) {
+    suggestions.push({
+      id: 'a_line',
+      title: authorSuggestion.title,
+      description: authorSuggestion.description,
+      apply: (draftConfig) => {
+        draftConfig.parsing.author = structuredClone(authorSuggestion.rules);
+      }
+    });
+  }
+
+  if (stats.senderNameCount > 0) {
+    suggestions.push({
+      id: 'a_name',
+      title: 'Use sender first name as author',
+      description: `${stats.senderNameCount}/${stats.scanned} recent messages have sender.firstName`,
+      apply: (draftConfig) => {
+        draftConfig.parsing.author = [{ source: 'sender', path: 'firstName', transform: 'trim' }];
+      }
+    });
+  }
+
+  if (stats.senderUsernameCount > 0) {
+    suggestions.push({
+      id: 'a_user',
+      title: 'Use sender username as author',
+      description: `${stats.senderUsernameCount}/${stats.scanned} recent messages have sender.username`,
+      apply: (draftConfig) => {
+        draftConfig.parsing.author = [{ source: 'sender', path: 'username', regex: '(.+)', group: 1, transform: 'telegramUsername' }];
+      }
+    });
+  }
+
+  if (reactionSuggestion) {
+    suggestions.push({
+      id: 'r_buttons',
+      title: reactionSuggestion.title,
+      description: reactionSuggestion.description,
+      apply: (draftConfig) => {
+        draftConfig.parsing.likes = structuredClone(reactionSuggestion.likesRules);
+        draftConfig.parsing.dislikes = structuredClone(reactionSuggestion.dislikesRules);
+      }
+    });
+  }
+
+  return suggestions.filter((suggestion) => isSuggestionUseful(suggestion, draft));
+}
+
+function analyzeMessagesForParser(messages) {
+  const stats = {
+    scanned: messages.length,
+    contentCount: 0,
+    mediaCount: 0,
+    senderNameCount: 0,
+    senderUsernameCount: 0,
+    senderCounts: new Map(),
+    senderLabels: new Map(),
+    authorLines: [],
+    buttonPaths: new Map()
+  };
+
+  for (const message of messages) {
+    if (hasSetupContent(message)) stats.contentCount += 1;
+    if (hasSetupMedia(message)) stats.mediaCount += 1;
+
+    const sender = message?.sender || null;
+    const senderId = getSetupSenderId(message);
+    if (senderId) {
+      stats.senderCounts.set(senderId, (stats.senderCounts.get(senderId) || 0) + 1);
+      const label = formatSetupSenderLabel(sender);
+      if (label) stats.senderLabels.set(senderId, label);
+    }
+    if (sender?.firstName) stats.senderNameCount += 1;
+    if (sender?.username) stats.senderUsernameCount += 1;
+
+    const textValues = [
+      { path: 'text', value: message?.text || '' },
+      { path: 'message', value: message?.message || '' }
+    ];
+    for (const item of textValues) {
+      for (const pattern of getAuthorLinePatterns()) {
+        if (pattern.regex.test(item.value)) {
+          stats.authorLines.push({ path: item.path, label: pattern.label, regex: pattern.ruleRegex });
+        }
+      }
+    }
+
+    for (const path of ['markup.buttons[].text', 'replyMarkup.rows[].buttons[].text']) {
+      const values = getSetupValuesByPath(message, path).filter((value) => String(value || '').trim());
+      if (!values.length) continue;
+      const current = stats.buttonPaths.get(path) || [];
+      current.push(...values.map(String));
+      stats.buttonPaths.set(path, current);
+    }
+  }
+
+  stats.topSender = getTopSender(stats.senderCounts, stats.senderLabels);
+  return stats;
+}
+
+function buildAuthorSuggestion(stats) {
+  const counts = new Map();
+  for (const item of stats.authorLines) {
+    const key = `${item.path}\t${item.label}\t${item.regex}`;
+    counts.set(key, (counts.get(key) || 0) + 1);
+  }
+  const best = [...counts.entries()].sort((a, b) => b[1] - a[1])[0];
+  if (!best) return null;
+
+  const [path, label, regex] = best[0].split('\t');
+  const count = best[1];
+  return {
+    title: `Use "${label}" line as author`,
+    description: `${count}/${stats.scanned} recent messages contain this author line on message.${path}`,
+    rules: [{ source: 'message', path, regex, group: 1, transform: 'trim' }]
+  };
+}
+
+function buildReactionSuggestion(stats) {
+  const bestPath = [...stats.buttonPaths.entries()].sort((a, b) => b[1].length - a[1].length)[0];
+  if (!bestPath) return null;
+
+  const [path, texts] = bestPath;
+  const likeMarkers = getDetectedMarkers(texts, ['👍', '❤', '❤️', '🔥', '+']);
+  const dislikeMarkers = getDetectedMarkers(texts, ['👎', '-']);
+  if (!likeMarkers.length && !dislikeMarkers.length) return null;
+
+  const likesRules = likeMarkers.length ? buildReactionRules(path, likeMarkers) : [];
+  const dislikesRules = dislikeMarkers.length ? buildReactionRules(path, dislikeMarkers) : [];
+  return {
+    title: 'Use detected reaction buttons',
+    description: `path=${path}, likes=${likeMarkers.join(' ') || 'none'}, dislikes=${dislikeMarkers.join(' ') || 'none'}, button texts=${texts.length}`,
+    likesRules,
+    dislikesRules
+  };
+}
+
+function buildReactionRules(path, markers) {
+  const markerRegex = markers.map(escapeRegex).join('|');
+  return [
+    {
+      source: 'message',
+      path,
+      regex: `(?:${markerRegex})\\s*([\\d\\s,.]+[km]?)`,
+      group: 1,
+      transform: 'count',
+      aggregate: 'sum'
+    },
+    {
+      source: 'message',
+      path,
+      regex: `\\s*([\\d\\s,.]+[km]?)\\s*(?:${markerRegex})`,
+      group: 1,
+      transform: 'count',
+      aggregate: 'sum'
+    }
+  ];
+}
+
+function formatAppliedSuggestion({ suggestion, beforeParsing, afterParsing }) {
+  const changes = formatParserChanges(beforeParsing, afterParsing);
+  const lines = [
+    `Applied: ${suggestion.title}`,
+    '',
+    'Changed parser rules:',
+    ...changes,
+    '',
+    suggestion.afterApply || 'Run Test parser or Preview to check the result.'
+  ];
+  return lines.join('\n');
+}
+
+function formatParserChanges(beforeParsing, afterParsing) {
+  const sections = ['filters', 'author', 'likes', 'dislikes'];
+  const lines = [];
+  for (const section of sections) {
+    const before = Array.isArray(beforeParsing?.[section]) ? beforeParsing[section] : [];
+    const after = Array.isArray(afterParsing?.[section]) ? afterParsing[section] : [];
+    if (JSON.stringify(before) === JSON.stringify(after)) continue;
+    const action = before.length && after.length ? 'updated' : before.length ? 'cleared' : 'added';
+    lines.push(`- ${section}: ${before.length} → ${after.length} rule(s), ${action}.`);
+    for (const rule of after.slice(0, 4)) {
+      lines.push(`  ${compactRule(rule)}`);
+    }
+    if (after.length > 4) lines.push(`  ...and ${after.length - 4} more rule(s)`);
+  }
+  return lines.length ? lines : ['- No parser changes.'];
+}
+
+function compactRule(rule) {
+  const parts = [];
+  if (rule.source) parts.push(String(rule.source));
+  if (rule.path) parts.push(String(rule.path));
+  if (rule.transform) parts.push(`transform=${rule.transform}`);
+  if (rule.value !== undefined) parts.push(`value=${JSON.stringify(rule.value)}`);
+  if (Array.isArray(rule.values)) parts.push(`values=${JSON.stringify(rule.values)}`);
+  if (rule.regex) parts.push(`regex=${JSON.stringify(rule.regex)}`);
+  return parts.join(' · ') || JSON.stringify(rule);
+}
+
+function formatParserSuggestions({ suggestions, scanned, matched }) {
+  const lines = [
+    'Parser auto-suggestions',
+    '',
+    `Scanned ${scanned} recent source message(s). Current parser matched ${matched}.`,
+    '',
+    'Suggestions:'
+  ];
+
+  if (!suggestions.length) {
+    lines.push('- No useful suggestions found. Use Advanced JSON with /raw or /debug for this source shape.');
+  } else {
+    for (const suggestion of suggestions) {
+      lines.push(`- ${suggestion.title}: ${suggestion.description}`);
+    }
+  }
+
+  lines.push('', 'Choose a button, then run Test parser and Preview before saving.');
+  return lines.join('\n');
+}
+
+function parserSuggestionsKeyboard(suggestions) {
+  if (!suggestions.length) {
+    return inlineKeyboard([
+      [button('Advanced JSON', 'setup:advanced'), button('Back', 'setup:parser')]
+    ]);
+  }
+
+  const rows = [];
+  const recommended = suggestions.find((suggestion) => suggestion.recommended);
+  if (recommended) rows.push([button(recommended.title, `setup:apply:${recommended.id}`)]);
+
+  const regular = suggestions.filter((suggestion) => !suggestion.recommended);
+  for (let index = 0; index < regular.length; index += 2) {
+    rows.push(regular.slice(index, index + 2).map((suggestion) => button(shortSuggestionTitle(suggestion.title), `setup:apply:${suggestion.id}`)));
+  }
+  rows.push([button('Test parser', 'setup:test'), button('Preview', 'setup:preview')]);
+  rows.push([button('Show parser config', 'setup:parser_config')]);
+  rows.push([button('Advanced JSON', 'setup:advanced'), button('Back', 'setup:parser')]);
+  return inlineKeyboard(rows);
+}
+
+function shortSuggestionTitle(title) {
+  return String(title)
+    .replace('Add ', '+ ')
+    .replace('Use ', 'Use ')
+    .replace(' as author', '')
+    .replace('detected ', '')
+    .slice(0, 32);
+}
+
+function isSuggestionUseful(suggestion, draft) {
+  const clone = structuredClone(draft || {});
+  const before = JSON.stringify(clone.parsing || {});
+  suggestion.apply(clone);
+  const after = JSON.stringify(clone.parsing || {});
+  return before !== after;
+}
+
+function addUniqueParsingRule(draft, key, rule) {
+  draft.parsing[key] = Array.isArray(draft.parsing[key]) ? draft.parsing[key] : [];
+  const normalized = JSON.stringify(rule);
+  if (!draft.parsing[key].some((item) => JSON.stringify(item) === normalized)) {
+    draft.parsing[key].push(structuredClone(rule));
+  }
+}
+
+function getAuthorLinePatterns() {
+  return [
+    { label: 'От ...', regex: /(?:^|\n)\s*От\s+(.+?)(?:\n|$)/i, ruleRegex: '(?:^|\\n)\\s*От\\s+(.+?)(?:\\n|$)' },
+    { label: 'By ...', regex: /(?:^|\n)\s*By\s+(.+?)(?:\n|$)/i, ruleRegex: '(?:^|\\n)\\s*By\\s+(.+?)(?:\\n|$)' }
+  ];
+}
+
+function hasSetupContent(message) {
+  return hasSetupMedia(message) || String(message?.text || message?.message || '').trim().length > 0;
+}
+
+function hasSetupMedia(message) {
+  return getSetupMediaKind(message) !== 'text';
+}
+
+function getSetupMediaKind(message) {
+  if (message?.media?.type === 'photo' || message?.photo || message?.media?.photo || message?.media?.className === 'MessageMediaPhoto') return 'photo';
+  const document = message?.document || message?.media?.document || message?.media;
+  const mimeType = document?.mimeType || '';
+  if (message?.media?.type === 'video' || message?.video || message?.media?.video || message?.media?.className === 'MessageMediaDocument' && mimeType.startsWith('video/')) return 'video';
+  return 'text';
+}
+
+function getSetupSenderId(message) {
+  const raw = message?.sender?.id?.value ?? message?.sender?.id ?? message?.senderId?.value ?? message?.senderId ?? message?.fromId?.userId?.value ?? message?.fromId?.userId;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+}
+
+function formatSetupSenderLabel(sender) {
+  if (!sender) return '';
+  const name = [sender.firstName, sender.lastName].filter(Boolean).join(' ').trim();
+  if (name && sender.username) return `${name} / @${sender.username}`;
+  if (name) return name;
+  if (sender.username) return `@${sender.username}`;
+  return '';
+}
+
+function getTopSender(senderCounts, senderLabels) {
+  const best = [...senderCounts.entries()].sort((a, b) => b[1] - a[1])[0];
+  if (!best) return null;
+  return { id: best[0], count: best[1], label: senderLabels.get(best[0]) || '' };
+}
+
+function getSetupValuesByPath(root, path) {
+  if (!path) return [root];
+  let values = [root];
+  for (const part of path.split('.')) {
+    values = resolveSetupPathPart(values, part);
+  }
+  return values.filter((value) => value !== undefined && value !== null);
+}
+
+function resolveSetupPathPart(values, part) {
+  const match = String(part).match(/^([^\[]*)((?:\[\])*)$/);
+  const key = match?.[1] || '';
+  const arrayDepth = (match?.[2]?.match(/\[\]/g) || []).length;
+  let next = values.flatMap((value) => {
+    if (!key) return [value];
+    if (Array.isArray(value)) return value.flatMap((item) => item?.[key]);
+    return [value?.[key]];
+  });
+  for (let index = 0; index < arrayDepth; index += 1) {
+    next = next.flatMap((value) => Array.isArray(value) ? value : []);
+  }
+  return next;
+}
+
+function getDetectedMarkers(texts, markers) {
+  return markers.filter((marker) => texts.some((text) => String(text).includes(marker)));
+}
+
+function escapeRegex(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 function setupMenuKeyboard() {
   return inlineKeyboard([
     [button('Status', 'setup:status'), button('Doctor', 'setup:doctor')],
@@ -541,9 +1047,19 @@ function setupMenuKeyboard() {
 
 function parserMenuKeyboard() {
   return inlineKeyboard([
+    [button('Auto suggestions', 'setup:suggest')],
     [button('Test parser', 'setup:test'), button('Preview', 'setup:preview')],
+    [button('Show parser config', 'setup:parser_config')],
     [button('Advanced JSON', 'setup:advanced'), button('Status', 'setup:status')],
     [button('Back to setup', 'setup:status')]
+  ]);
+}
+
+function parserAfterApplyKeyboard() {
+  return inlineKeyboard([
+    [button('Test parser', 'setup:test'), button('Preview', 'setup:preview')],
+    [button('Show parser config', 'setup:parser_config')],
+    [button('More suggestions', 'setup:suggest'), button('Back', 'setup:parser')]
   ]);
 }
 
@@ -569,6 +1085,17 @@ function advancedMenuKeyboard() {
     [button('Test parser', 'setup:test'), button('Preview', 'setup:preview')],
     [button('Back to setup', 'setup:status')]
   ]);
+}
+
+function mergeReplyOptions(extra, keyboard) {
+  return {
+    ...(extra || {}),
+    ...(keyboard || {}),
+    reply_markup: {
+      ...(extra?.reply_markup || {}),
+      ...(keyboard?.reply_markup || {})
+    }
+  };
 }
 
 function inlineKeyboard(inlineKeyboardRows) {

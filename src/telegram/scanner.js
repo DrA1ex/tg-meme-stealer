@@ -261,7 +261,7 @@ export class TelegramScanner {
     return { seenIds, pages, fetched, matched, added, updated, skippedExistingOld, skippedOld };
   }
 
-  async previewRecent(limit = 30, draft = {}) {
+  async previewRecent(limit = 30, draft = {}, options = {}) {
     const messages = [];
     let offset = undefined;
     let pages = 0;
@@ -286,7 +286,11 @@ export class TelegramScanner {
 
     this.logger.info('Preview scan finished', { pages, scanned: messages.length, matched: posts.length });
 
-    return { scanned: messages.length, posts };
+    return {
+      scanned: messages.length,
+      posts,
+      ...(options.includeMessages ? { messages } : {})
+    };
   }
 
   async getMessageById(messageId) {
