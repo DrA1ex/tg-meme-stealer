@@ -75,12 +75,28 @@ export class Scheduler {
   }
 
   schedulePublication(key, schedule, now = new Date(), firstSendAtIso = null) {
+    const unrestrictedNextRunAt = getNextScheduledRunAsDate({
+      now,
+      schedule,
+      timezone: this.config.schedule.timezone
+    });
     const nextRunAt = getNextEligibleScheduledRunAsDate({
       now,
       schedule,
       timezone: this.config.schedule.timezone,
       firstSendAtIso
     });
+    if (nextRunAt.getTime() !== unrestrictedNextRunAt.getTime()) {
+      this.logger.info('Publication timer shifted by first send gate', {
+        key,
+        scheduleType: schedule.type,
+        time: schedule.time,
+        timezone: this.config.schedule.timezone,
+        skippedNextRunAt: unrestrictedNextRunAt,
+        blockedUntil: firstSendAtIso,
+        nextRunAt
+      });
+    }
     const delayMs = nextRunAt.getTime() - now.getTime();
     this.logTimerScheduled({
       timer: 'publication',
@@ -88,7 +104,6 @@ export class Scheduler {
       scheduleType: schedule.type,
       time: schedule.time,
       timezone: this.config.schedule.timezone,
-      firstSendAt: firstSendAtIso || '',
       delayMs,
       nextRunAt
     });
@@ -113,10 +128,10 @@ export class Scheduler {
       });
       const ageMs = now.getTime() - scheduledAt.getTime();
       if (isBeforeFirstSendAt(scheduledAt, entry.firstSendAtIso)) {
-        this.logger.debug('Missed publication skipped before first send time', {
+        this.logger.info('Catch-up publication skipped before first send gate', {
           key: entry.key,
           scheduledAt,
-          firstSendAt: entry.firstSendAtIso
+          blockedUntil: entry.firstSendAtIso
         });
         continue;
       }
