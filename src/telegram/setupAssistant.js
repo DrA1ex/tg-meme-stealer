@@ -64,6 +64,16 @@ import {
   formatReactionExtractionTest
 } from './setup/parserDiagnostics.js';
 import {
+  buildCompactRawMessage,
+  findDiagnosticMessage,
+  formatAuthorFields,
+  formatFieldScan,
+  formatMessageShape,
+  formatParserTrace,
+  formatReactionFields,
+  formatTechnicalDiagnosticsOverview
+} from './setup/technicalDiagnostics.js';
+import {
   buildDatabaseTrafficScheduleSuggestions,
   buildRecentTrafficScheduleSuggestions,
   formatScheduleDoctor,
@@ -97,6 +107,7 @@ import {
   filtersMenuKeyboard,
   reactionsMenuKeyboard,
   technicalDiagnosticsKeyboard,
+  technicalDiagnosticsBackKeyboard,
   confirmReplacePublishPresetKeyboard,
   confirmRemoveTemplateKeyboard,
   manageTemplatesKeyboard,
@@ -136,6 +147,7 @@ export class SetupAssistant {
     this.setupLastChange = new Map();
     this.setupTrafficPresets = new Map();
     this.setupSampleCache = new Map();
+    this.setupCurrentView = new Map();
   }
 
   register(bot) {
@@ -216,9 +228,24 @@ export class SetupAssistant {
       await this.reactionOptions(ctx);
       return;
     }
+    if (action.startsWith('load_more:')) {
+      this.ensureSession(ctx);
+      await this.loadMoreMessages(ctx, action.slice('load_more:'.length));
+      return;
+    }
     if (action === 'technical') {
       this.ensureSession(ctx);
       await this.technicalDiagnostics(ctx);
+      return;
+    }
+    if (action.startsWith('technical_')) {
+      this.ensureSession(ctx);
+      await this.technicalAction(ctx, action);
+      return;
+    }
+    if (action.startsWith('refresh_sample')) {
+      this.ensureSession(ctx);
+      await this.refreshSample(ctx, action.includes(':') ? action.split(':').slice(1).join(':') : 'technical');
       return;
     }
     if (action === 'reset_author') {
@@ -391,8 +418,14 @@ export class SetupAssistant {
         await this.reactionsMenu(ctx);
       } else if (action === 'reaction_options') {
         await this.reactionOptions(ctx);
+      } else if (action.startsWith('load_more:')) {
+        await this.loadMoreMessages(ctx, action.slice('load_more:'.length));
       } else if (action === 'technical') {
         await this.technicalDiagnostics(ctx);
+      } else if (action.startsWith('technical_')) {
+        await this.technicalAction(ctx, action);
+      } else if (action.startsWith('refresh_sample')) {
+        await this.refreshSample(ctx, action.includes(':') ? action.split(':').slice(1).join(':') : 'technical');
       } else if (action === 'reset_author') {
         await this.resetAuthor(ctx);
       } else if (action === 'reset_reactions') {
@@ -476,6 +509,7 @@ export class SetupAssistant {
     this.setupLastChange.delete(ctx.from.id);
     this.setupTrafficPresets.delete(ctx.from.id);
     this.setupSampleCache.delete(ctx.from.id);
+    this.setupCurrentView.delete(ctx.from.id);
     await this.replyWithKeyboard(ctx, formatSetupIntro(this.getDraft(ctx), this.getMeta(ctx)), setupMenuKeyboard());
   }
 
@@ -484,26 +518,112 @@ export class SetupAssistant {
   }
 
   async parserMenu(ctx) {
+    this.rememberCurrentView(ctx, 'parser');
     await this.replyWithKeyboard(ctx, formatParserMenu(this.getDraft(ctx)), parserMenuKeyboard());
   }
   async filtersMenu(ctx) {
+    this.rememberCurrentView(ctx, 'filters');
     await this.replyWithKeyboard(ctx, formatFiltersMenu(this.getDraft(ctx)), filtersMenuKeyboard());
   }
 
   async authorMenu(ctx) {
+    this.rememberCurrentView(ctx, 'author');
     await this.replyWithKeyboard(ctx, formatAuthorMenu(this.getDraft(ctx)), authorMenuKeyboard());
   }
 
   async reactionsMenu(ctx) {
+    this.rememberCurrentView(ctx, 'reactions');
     await this.replyWithKeyboard(ctx, formatReactionsMenu(this.getDraft(ctx)), reactionsMenuKeyboard());
   }
 
   async technicalDiagnostics(ctx) {
-    await this.replyWithKeyboard(ctx, formatTechnicalDiagnosticsMenu(), technicalDiagnosticsKeyboard());
+    this.rememberCurrentView(ctx, 'technical');
+    const result = await this.collectSetupSample(ctx, { purpose: 'technical diagnostics', includeMessages: true });
+    await this.replyWithKeyboard(ctx, formatTechnicalDiagnosticsOverview({
+      messages: result.messages || [],
+      draft: this.getDraft(ctx),
+      baseConfig: this.config,
+      sample: this.getSampleStatus(ctx, result)
+    }), technicalDiagnosticsKeyboard());
+  }
+
+  async technicalAction(ctx, action) {
+    const target = String(action || '').replace(/^technical_/, '');
+    if (target.startsWith('trace:')) {
+      await this.technicalTrace(ctx, target.slice('trace:'.length));
+      return;
+    }
+    if (target.startsWith('raw:')) {
+      await this.technicalRaw(ctx, target.slice('raw:'.length));
+      return;
+    }
+    const mapping = {
+      field_scan: () => this.technicalFieldScan(ctx),
+      shape: () => this.technicalMessageShape(ctx),
+      reactions: () => this.technicalReactionFields(ctx),
+      author: () => this.technicalAuthorFields(ctx)
+    };
+    const handler = mapping[target];
+    if (handler) {
+      await handler();
+      return;
+    }
+    await this.technicalDiagnostics(ctx);
+  }
+
+  async technicalFieldScan(ctx) {
+    this.rememberCurrentView(ctx, 'technical_field_scan');
+    const result = await this.collectSetupSample(ctx, { purpose: 'field scan', includeMessages: true });
+    await this.replyWithKeyboard(ctx, formatFieldScan(result.messages || []), technicalDiagnosticsBackKeyboard('technical_field_scan'));
+  }
+
+  async technicalMessageShape(ctx) {
+    this.rememberCurrentView(ctx, 'technical_shape');
+    const result = await this.collectSetupSample(ctx, { purpose: 'message shape diagnostics', includeMessages: true });
+    await this.replyWithKeyboard(ctx, formatMessageShape(result.messages || []), technicalDiagnosticsBackKeyboard('technical_shape'));
+  }
+
+  async technicalReactionFields(ctx) {
+    this.rememberCurrentView(ctx, 'technical_reactions');
+    const result = await this.collectSetupSample(ctx, { purpose: 'reaction field diagnostics', includeMessages: true });
+    await this.replyWithKeyboard(ctx, formatReactionFields(result.messages || []), technicalDiagnosticsBackKeyboard('technical_reactions'));
+  }
+
+  async technicalAuthorFields(ctx) {
+    this.rememberCurrentView(ctx, 'technical_author');
+    const result = await this.collectSetupSample(ctx, { purpose: 'author field diagnostics', includeMessages: true });
+    await this.replyWithKeyboard(ctx, formatAuthorFields(result.messages || []), technicalDiagnosticsBackKeyboard('technical_author'));
+  }
+
+  async technicalTrace(ctx, mode = 'matched') {
+    const normalized = normalizeTechnicalTraceMode(mode);
+    this.rememberCurrentView(ctx, `technical_trace:${normalized}`);
+    const result = await this.collectSetupSample(ctx, { purpose: `parser trace ${normalized}`, includeMessages: true });
+    await this.replyWithKeyboard(ctx, formatParserTrace({
+      messages: result.messages || [],
+      draft: this.getDraft(ctx),
+      baseConfig: this.config,
+      mode: normalized
+    }), technicalDiagnosticsBackKeyboard(`technical_trace:${normalized}`));
+  }
+
+  async technicalRaw(ctx, mode = 'matched') {
+    const normalized = normalizeTechnicalRawMode(mode);
+    this.rememberCurrentView(ctx, `technical_raw:${normalized}`);
+    const result = await this.collectSetupSample(ctx, { purpose: `raw compact ${normalized}`, includeMessages: true });
+    const found = findDiagnosticMessage(result.messages || [], this.getDraft(ctx), this.config, normalized);
+    if (!found.message) {
+      await this.replyWithKeyboard(ctx, `No message found for raw compact mode: ${normalized}.`, technicalDiagnosticsBackKeyboard(`technical_raw:${normalized}`));
+      return;
+    }
+    await ctx.reply(`Compact raw message for #${found.message.id || '?'} (${found.reason}):`);
+    await replyJsonCode(ctx, buildCompactRawMessage(found.message));
+    await this.replyWithKeyboard(ctx, 'Use Parser trace for rule-by-rule explanation, or send /raw <message_id> for full JSON file.', technicalDiagnosticsBackKeyboard(`technical_raw:${normalized}`));
   }
 
 
   async publishMenu(ctx) {
+    this.rememberCurrentView(ctx, 'publish');
     await this.replyWithKeyboard(ctx, formatPublishMenu(this.getDraft(ctx), this.config), publishMenuKeyboard());
   }
 
@@ -621,6 +741,7 @@ export class SetupAssistant {
   }
 
   async suggestParser(ctx) {
+    this.rememberCurrentView(ctx, 'suggest');
     const draft = this.getDraft(ctx);
     const result = await this.collectSetupSample(ctx, { purpose: 'parser suggestions', includeMessages: true });
     const suggestions = buildParserSuggestions(result.messages || [], draft);
@@ -637,6 +758,7 @@ export class SetupAssistant {
   }
 
   async filterOptions(ctx) {
+    this.rememberCurrentView(ctx, 'filters_options');
     await this.suggestionOptions(ctx, 'filters', {
       purpose: 'filter options',
       title: 'Filter options',
@@ -648,6 +770,7 @@ export class SetupAssistant {
   }
 
   async authorOptions(ctx) {
+    this.rememberCurrentView(ctx, 'author_options');
     await this.suggestionOptions(ctx, 'author', {
       purpose: 'author options',
       title: 'Author options',
@@ -659,6 +782,7 @@ export class SetupAssistant {
   }
 
   async reactionOptions(ctx) {
+    this.rememberCurrentView(ctx, 'reaction_options');
     await this.suggestionOptions(ctx, 'reactions', {
       purpose: 'reaction options',
       title: 'Reaction options',
@@ -686,17 +810,19 @@ export class SetupAssistant {
         matched: result.posts.length,
         next: options.next
       }),
-      suggestionOptionsKeyboard(states, { back: options.back, extraRows: getCategoryExtraRows(category) })
+      suggestionOptionsKeyboard(states, { back: options.back, extraRows: getCategoryExtraRows(category), loadMoreTarget: options.loadMoreTarget || `${category}_options` })
     );
   }
 
   async parserPaths(ctx) {
+    this.rememberCurrentView(ctx, 'parser_paths');
     const draft = this.getDraft(ctx);
     const result = await this.collectSetupSample(ctx, { purpose: 'parser paths', includeMessages: true });
     await this.replyWithKeyboard(ctx, formatParserPaths(result.messages || [], draft), technicalDiagnosticsKeyboard());
   }
 
   async authorTest(ctx) {
+    this.rememberCurrentView(ctx, 'author_test');
     const draft = this.getDraft(ctx);
     const result = await this.collectSetupSample(ctx, { purpose: 'author extraction test', includeMessages: true });
     this.markTested(ctx);
@@ -708,6 +834,7 @@ export class SetupAssistant {
   }
 
   async reactionTest(ctx) {
+    this.rememberCurrentView(ctx, 'reaction_test');
     const draft = this.getDraft(ctx);
     const result = await this.collectSetupSample(ctx, { purpose: 'reaction extraction test', includeMessages: true });
     this.markTested(ctx);
@@ -719,13 +846,14 @@ export class SetupAssistant {
   }
 
   async filterImpact(ctx) {
+    this.rememberCurrentView(ctx, 'filter_impact');
     const draft = this.getDraft(ctx);
     const result = await this.collectSetupSample(ctx, { purpose: 'filter impact', includeMessages: true });
     await this.replyWithKeyboard(ctx, formatFilterImpact({
       messages: result.messages || [],
       draft,
       baseConfig: this.config
-    }), suggestionOptionsKeyboard(markSuggestionStates(filterSuggestionsByCategory(buildParserSuggestions(result.messages || [], draft), 'filters'), draft), { back: 'setup:filters', extraRows: getCategoryExtraRows('filters') }));
+    }), suggestionOptionsKeyboard(markSuggestionStates(filterSuggestionsByCategory(buildParserSuggestions(result.messages || [], draft), 'filters'), draft), { back: 'setup:filters', extraRows: getCategoryExtraRows('filters'), loadMoreTarget: 'filter_impact' }));
   }
 
   async schedulePreview(ctx) {
@@ -832,20 +960,60 @@ export class SetupAssistant {
     }), publishMenuKeyboard());
   }
 
+  async loadMoreMessages(ctx, target = '') {
+    const normalizedTarget = normalizeLoadMoreTarget(target, this.getCurrentView(ctx));
+    await this.collectSetupSample(ctx, {
+      purpose: `load more for ${formatLoadMoreTarget(normalizedTarget)}`,
+      includeMessages: true,
+      forceLoadMore: true,
+      minMatched: Number.POSITIVE_INFINITY
+    });
+    await this.showLoadMoreTarget(ctx, normalizedTarget);
+  }
+
+  async showLoadMoreTarget(ctx, target) {
+    if (target === 'filters_options') return this.filterOptions(ctx);
+    if (target === 'author_options') return this.authorOptions(ctx);
+    if (target === 'reaction_options') return this.reactionOptions(ctx);
+    if (target === 'filter_impact') return this.filterImpact(ctx);
+    if (target === 'author_test') return this.authorTest(ctx);
+    if (target === 'reaction_test') return this.reactionTest(ctx);
+    if (target === 'parser_paths') return this.parserPaths(ctx);
+    if (target === 'technical') return this.technicalDiagnostics(ctx);
+    if (target === 'technical_field_scan') return this.technicalFieldScan(ctx);
+    if (target === 'technical_shape') return this.technicalMessageShape(ctx);
+    if (target === 'technical_reactions') return this.technicalReactionFields(ctx);
+    if (target === 'technical_author') return this.technicalAuthorFields(ctx);
+    if (target.startsWith('technical_trace:')) return this.technicalTrace(ctx, target.slice('technical_trace:'.length));
+    if (target.startsWith('technical_raw:')) return this.technicalRaw(ctx, target.slice('technical_raw:'.length));
+    if (target === 'test') return this.testDefaults(ctx);
+    return this.suggestParser(ctx);
+  }
+
+  async refreshSample(ctx, target = '') {
+    const normalizedTarget = normalizeLoadMoreTarget(target, this.getCurrentView(ctx));
+    this.setupSampleCache.delete(ctx.from.id);
+    await this.showLoadMoreTarget(ctx, normalizedTarget);
+  }
+
   async collectSetupSample(ctx, {
     purpose = 'setup sample',
     initialLimit = DEFAULT_TEST_MESSAGES,
     minMatched = DEFAULT_SAMPLE_MIN_MATCHED,
     step = DEFAULT_SAMPLE_STEP_MESSAGES,
     maxLimit = DEFAULT_SAMPLE_MAX_MESSAGES,
-    includeMessages = false
+    includeMessages = false,
+    forceLoadMore = false
   } = {}) {
     const draft = this.getDraft(ctx);
     const maxMessages = Math.max(1, Number(maxLimit || initialLimit || DEFAULT_TEST_MESSAGES));
     const cache = this.getUsableSampleCache(ctx, maxMessages);
     const cachedMessages = cache?.messages?.slice(0, maxMessages) || [];
+    const targetInitialLimit = forceLoadMore && cachedMessages.length
+      ? Math.min(maxMessages, cachedMessages.length + Math.max(1, Number(step || DEFAULT_SAMPLE_STEP_MESSAGES)))
+      : initialLimit;
     const cachedPosts = cachedMessages.length ? parseCachedSetupPosts(cachedMessages, draft, this.config) : [];
-    const cacheEnough = cachedMessages.length > 0 && (
+    const cacheEnough = !forceLoadMore && cachedMessages.length > 0 && (
       cachedPosts.length >= minMatched ||
       cache.exhausted ||
       cachedMessages.length >= maxMessages ||
@@ -879,8 +1047,8 @@ export class SetupAssistant {
 
     const result = await this.scanner.previewAdaptive({
       draft,
-      initialLimit,
-      minMatched,
+      initialLimit: targetInitialLimit,
+      minMatched: forceLoadMore ? Number.POSITIVE_INFINITY : minMatched,
       step,
       maxLimit: maxMessages,
       includeMessages: true,
@@ -910,6 +1078,15 @@ export class SetupAssistant {
     })).catch(() => {});
 
     return includeMessages ? result : { ...result, messages: undefined };
+  }
+
+  getSampleStatus(ctx, result = {}) {
+    const cache = this.setupSampleCache.get(ctx.from.id);
+    return {
+      maxLimit: DEFAULT_SAMPLE_MAX_MESSAGES,
+      exhausted: Boolean(result.exhausted ?? cache?.exhausted),
+      cacheAgeMs: cache?.loadedAt ? Date.now() - Number(cache.loadedAt) : null
+    };
   }
 
   getUsableSampleCache(ctx, maxMessages) {
@@ -956,7 +1133,7 @@ export class SetupAssistant {
       [
         formatAppliedSuggestion({ suggestion, beforeParsing, afterParsing }),
         '',
-        'You can apply another suggestion from the same list, or run Test parser / Preview.'
+        'You can apply another suggestion from the same list, or run Test content / Preview.'
       ].join('\n'),
       parserSuggestionsKeyboard(markSuggestionStates(suggestions, draft))
     );
@@ -1177,6 +1354,7 @@ export class SetupAssistant {
     this.setupLastChange.delete(ctx.from.id);
     this.setupTrafficPresets.delete(ctx.from.id);
     this.setupSampleCache.delete(ctx.from.id);
+    this.setupCurrentView.delete(ctx.from.id);
   }
 
   async cancel(ctx) {
@@ -1186,6 +1364,7 @@ export class SetupAssistant {
     this.setupLastChange.delete(ctx.from.id);
     this.setupTrafficPresets.delete(ctx.from.id);
     this.setupSampleCache.delete(ctx.from.id);
+    this.setupCurrentView.delete(ctx.from.id);
     await this.clearLastSetupKeyboard(ctx);
     await ctx.reply('Setup mode cancelled.');
   }
@@ -1281,6 +1460,15 @@ export class SetupAssistant {
     await this.replyWithKeyboard(ctx, formatLastChange(change), lastChangeKeyboard(change.area));
   }
 
+  rememberCurrentView(ctx, view) {
+    if (!ctx?.from?.id || !view) return;
+    this.setupCurrentView.set(ctx.from.id, view);
+  }
+
+  getCurrentView(ctx) {
+    return this.setupCurrentView.get(ctx.from.id) || 'suggest';
+  }
+
   reloadConfig() {
     replaceObjectContents(this.config, this.configLoader());
   }
@@ -1291,10 +1479,48 @@ export { stringifyForSetup } from './setup/utils.js';
 
 
 
+function normalizeLoadMoreTarget(target, fallback = 'suggest') {
+  const allowed = new Set([
+    'suggest',
+    'filters_options',
+    'author_options',
+    'reaction_options',
+    'filter_impact',
+    'author_test',
+    'reaction_test',
+    'parser_paths',
+    'technical',
+    'technical_field_scan',
+    'technical_shape',
+    'technical_reactions',
+    'technical_author',
+    'test'
+  ]);
+  const normalized = String(target || '').trim();
+  if (allowed.has(normalized) || normalized.startsWith('technical_trace:') || normalized.startsWith('technical_raw:')) return normalized;
+  const fallbackValue = String(fallback || '').trim();
+  if (allowed.has(fallbackValue) || fallbackValue.startsWith('technical_trace:') || fallbackValue.startsWith('technical_raw:')) return fallbackValue;
+  return 'suggest';
+}
+
+function normalizeTechnicalTraceMode(mode) {
+  const normalized = String(mode || 'matched').trim();
+  return ['matched', 'rejected', 'unknown_author', 'zero_likes'].includes(normalized) ? normalized : 'matched';
+}
+
+function normalizeTechnicalRawMode(mode) {
+  const normalized = String(mode || 'matched').trim();
+  return ['matched', 'rejected', 'buttons', 'native_reactions', 'mention'].includes(normalized) ? normalized : 'matched';
+}
+
+function formatLoadMoreTarget(target) {
+  return String(target || 'suggest').replace(/_/g, ' ');
+}
+
 function getCategoryExtraRows(category) {
   if (category === 'filters') return [[button('Filter impact', 'setup:filter_impact'), button('Test content', 'setup:test')]];
   if (category === 'author') return [[button('Test author', 'setup:author_test')]];
-  if (category === 'reactions') return [[button('Test reactions', 'setup:reaction_test'), button('Detected paths', 'setup:parser_paths')]];
+  if (category === 'reactions') return [[button('Test reactions', 'setup:reaction_test'), button('Reaction diagnostics', 'setup:technical_reactions')]];
   return [];
 }
 
@@ -1317,19 +1543,23 @@ function parseCachedSetupPosts(messages, draft, config) {
 }
 
 function formatSampleProgress({ purpose, scanned, matched, minMatched, maxLimit, exhausted = false, status = 'loading' }) {
+  const hasMatchedTarget = Number.isFinite(Number(minMatched));
   const lines = [
     `🔎 Collecting sample · ${purpose}`,
     '',
     `Loaded: ${scanned}/${maxLimit} message(s).`,
-    `Matched parser filters: ${matched}/${minMatched}.`
+    hasMatchedTarget
+      ? `Matched parser filters: ${matched}/${minMatched}.`
+      : `Matched parser filters: ${matched}.`
   ];
   if (status === 'starting') lines.push('', 'Starting scan...');
   else if (status === 'using-cache') lines.push('', 'Using cached messages first. Loading more only if needed...');
   else if (status === 'done') {
-    if (matched >= minMatched) lines.push('', 'Done. Enough matched posts for a reliable sample.');
+    if (!hasMatchedTarget) lines.push('', exhausted ? 'Done. Source history ended.' : 'Done. Loaded one more sample page.');
+    else if (matched >= minMatched) lines.push('', 'Done. Enough matched posts for a reliable sample.');
     else if (exhausted) lines.push('', 'Done. Source history ended before enough matched posts were found.');
     else lines.push('', 'Done. Sample is still small; parser filters may be strict.');
-  } else if (matched < minMatched) {
+  } else if (!hasMatchedTarget || matched < minMatched) {
     lines.push('', 'Loading more messages...');
   }
   return lines.join('\n');

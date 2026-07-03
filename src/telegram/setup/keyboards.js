@@ -17,18 +17,15 @@ export function parserMenuKeyboard() {
     [button('Content filters', 'setup:filters'), button('Author', 'setup:author')],
     [button('Reactions', 'setup:reactions'), button('Technical diagnostics', 'setup:technical')],
     [button('Test content', 'setup:test'), button('Preview', 'setup:preview')],
-    [button('Show content config', 'setup:parser_config')],
-    [button('Advanced JSON', 'setup:advanced'), button('Status', 'setup:status')],
-    [button('Back to setup', 'setup:status')]
+    [button('Content config', 'setup:parser_config'), button('Setup home', 'setup:status')]
   ]);
 }
 
 export function filtersMenuKeyboard() {
   return inlineKeyboard([
     [button('Filter options', 'setup:filters_options'), button('Filter impact', 'setup:filter_impact')],
-    [button('Rejected examples', 'setup:filter_impact'), button('Reset filters', 'setup:reset_filters')],
-    [button('Test content', 'setup:test'), button('Preview', 'setup:preview')],
-    [button('Back', 'setup:parser'), button('Status', 'setup:status')]
+    [button('Test content', 'setup:test'), button('Reset filters', 'setup:reset_filters')],
+    [button('Content setup', 'setup:parser'), button('Setup home', 'setup:status')]
   ]);
 }
 
@@ -36,34 +33,44 @@ export function authorMenuKeyboard() {
   return inlineKeyboard([
     [button('Author options', 'setup:author_options'), button('Test author', 'setup:author_test')],
     [button('Reset author', 'setup:reset_author')],
-    [button('Preview', 'setup:preview'), button('Show content config', 'setup:parser_config')],
-    [button('Back', 'setup:parser'), button('Status', 'setup:status')]
+    [button('Content setup', 'setup:parser'), button('Setup home', 'setup:status')]
   ]);
 }
 
 export function reactionsMenuKeyboard() {
   return inlineKeyboard([
     [button('Reaction options', 'setup:reaction_options'), button('Test reactions', 'setup:reaction_test')],
-    [button('Detected paths', 'setup:parser_paths'), button('Reset reactions', 'setup:reset_reactions')],
-    [button('Preview', 'setup:preview'), button('Show content config', 'setup:parser_config')],
-    [button('Back', 'setup:parser'), button('Status', 'setup:status')]
+    [button('Reaction diagnostics', 'setup:technical_reactions'), button('Reset reactions', 'setup:reset_reactions')],
+    [button('Content setup', 'setup:parser'), button('Setup home', 'setup:status')]
   ]);
 }
 
 export function technicalDiagnosticsKeyboard() {
   return inlineKeyboard([
-    [button('Parser paths', 'setup:parser_paths'), button('Show content config', 'setup:parser_config')],
-    [button('Author test', 'setup:author_test'), button('Reaction test', 'setup:reaction_test')],
-    [button('Filter impact', 'setup:filter_impact'), button('Advanced JSON', 'setup:advanced')],
-    [button('Back', 'setup:parser'), button('Status', 'setup:status')]
+    [button('Field scan', 'setup:technical_field_scan'), button('Message shape', 'setup:technical_shape')],
+    [button('Reaction fields', 'setup:technical_reactions'), button('Author fields', 'setup:technical_author')],
+    [button('Trace matched', 'setup:technical_trace:matched'), button('Trace rejected', 'setup:technical_trace:rejected')],
+    [button('Trace unknown author', 'setup:technical_trace:unknown_author'), button('Trace zero likes', 'setup:technical_trace:zero_likes')],
+    [button('Raw matched', 'setup:technical_raw:matched'), button('Raw reactions', 'setup:technical_raw:buttons')],
+    [button('Load more messages', 'setup:load_more:technical'), button('Refresh sample', 'setup:refresh_sample:technical')],
+    [button('Content config', 'setup:parser_config'), button('Advanced JSON', 'setup:advanced')],
+    [button('Content setup', 'setup:parser'), button('Setup home', 'setup:status')]
+  ]);
+}
+
+export function technicalDiagnosticsBackKeyboard(target = 'technical') {
+  return inlineKeyboard([
+    [button('Load more messages', `setup:load_more:${target}`), button('Refresh sample', `setup:refresh_sample:${target}`)],
+    [button('Technical diagnostics', 'setup:technical'), button('Content setup', 'setup:parser')],
+    [button('Setup home', 'setup:status')]
   ]);
 }
 
 export function parserAfterApplyKeyboard() {
   return inlineKeyboard([
-    [button('Test parser', 'setup:test'), button('Preview', 'setup:preview')],
-    [button('Show parser config', 'setup:parser_config')],
-    [button('More suggestions', 'setup:suggest'), button('Back', 'setup:parser')]
+    [button('Test content', 'setup:test'), button('Preview', 'setup:preview')],
+    [button('Content config', 'setup:parser_config')],
+    [button('More suggestions', 'setup:suggest'), button('Content setup', 'setup:parser')]
   ]);
 }
 
@@ -162,7 +169,7 @@ export function previewMenuKeyboard() {
 export function advancedMenuKeyboard() {
   return inlineKeyboard([
     [button('Status', 'setup:status'), button('Show config', 'setup:config')],
-    [button('Test parser', 'setup:test'), button('Preview', 'setup:preview')],
+    [button('Test content', 'setup:test'), button('Preview', 'setup:preview')],
     [button('Back to setup', 'setup:status')]
   ]);
 }

@@ -209,7 +209,7 @@ export function formatTechnicalDiagnosticsMenu() {
     icon: '🧭',
     title: 'Technical diagnostics',
     sections: [
-      ['📌 Tools', ['Parser paths shows raw message fields found in Telegram objects.', 'Author/Reaction tests show current extraction output.', 'Advanced JSON remains available for exact tuning.']],
+      ['📌 Tools', ['Field scan shows raw Telegram object paths and coverage.', 'Message shape, Reaction fields, Author fields, and Parser trace explain why normal options may not appear.', 'Advanced JSON remains available for exact tuning.']],
       ['➡️ Next', ['Use this when normal Filters / Author / Reactions screens do not explain enough.']]
     ]
   });

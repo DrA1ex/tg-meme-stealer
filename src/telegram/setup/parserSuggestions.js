@@ -25,9 +25,12 @@ export function buildParserSuggestions(messages, draft = {}) {
 
   const authorOptions = buildAuthorSuggestions(stats);
   const authorSuggestion = authorOptions.find((item) => item.recommended) || authorOptions[0] || null;
-  const buttonReactionSuggestion = buildReactionSuggestion(stats);
+  const buttonReactionSuggestions = buildButtonReactionSuggestions(stats);
   const nativeReactionSuggestions = buildNativeReactionSuggestions(stats);
-  const reactionSuggestion = buttonReactionSuggestion || nativeReactionSuggestions[0];
+  const reactionSuggestion = buttonReactionSuggestions.find((item) => item.recommended)
+    || nativeReactionSuggestions.find((item) => item.recommended)
+    || buttonReactionSuggestions[0]
+    || nativeReactionSuggestions[0];
 
   suggestions.push({
     id: 'rec',
@@ -91,11 +94,12 @@ export function buildParserSuggestions(messages, draft = {}) {
     });
   }
 
-  if (buttonReactionSuggestion) {
+  for (const buttonReactionSuggestion of buttonReactionSuggestions) {
     suggestions.push({
-      id: 'r_buttons',
+      id: buttonReactionSuggestion.id,
       title: buttonReactionSuggestion.title,
       description: buttonReactionSuggestion.description,
+      recommended: Boolean(buttonReactionSuggestion.recommended),
       apply: (draftConfig) => {
         draftConfig.parsing.likes = structuredClone(buttonReactionSuggestion.likesRules);
         draftConfig.parsing.dislikes = structuredClone(buttonReactionSuggestion.dislikesRules);
@@ -261,23 +265,107 @@ export function buildAuthorSuggestions(stats) {
 }
 
 export function buildReactionSuggestion(stats) {
-  const bestPath = [...stats.buttonPaths.entries()].sort((a, b) => b[1].length - a[1].length)[0];
-  if (!bestPath) return null;
+  return buildButtonReactionSuggestions(stats)[0] || null;
+}
 
-  const [path, texts] = bestPath;
-  const likeMarkers = getDetectedMarkers(texts, ['👍', '❤', '❤️', '🔥', '+']);
-  const dislikeMarkers = getDetectedMarkers(texts, ['👎', '-']);
-  if (!likeMarkers.length && !dislikeMarkers.length) return null;
+export function buildButtonReactionSuggestions(stats) {
+  const suggestions = [];
+  for (const [path, texts] of [...stats.buttonPaths.entries()].sort((a, b) => b[1].length - a[1].length)) {
+    const variants = buildButtonReactionVariants(path, texts);
+    suggestions.push(...variants);
+  }
+  return suggestions;
+}
 
-  const likesRules = likeMarkers.length ? buildReactionRules(path, likeMarkers) : [];
-  const dislikesRules = dislikeMarkers.length ? buildReactionRules(path, dislikeMarkers) : [];
-  return {
-    kind: 'reaction button',
+export function buildButtonReactionVariants(path, texts = []) {
+  const variants = [];
+  const detectedMarkers = getDetectedReactionMarkers(texts);
+  const detectedLikeMarkers = detectedMarkers.filter((marker) => !NEGATIVE_ONLY_EMOJIS.includes(marker) && marker !== '-' && marker !== '👎');
+  const detectedDislikeMarkers = detectedMarkers.filter((marker) => NEGATIVE_ONLY_EMOJIS.includes(marker) || marker === '-' || marker === '👎');
+  const conservativeLikeMarkers = getDetectedMarkers(texts, CONSERVATIVE_LIKE_EMOJIS.concat('+'));
+  const conservativeDislikeMarkers = getDetectedMarkers(texts, CONSERVATIVE_DISLIKE_EMOJIS.concat('-'));
+  const broadLikeMarkers = getDetectedMarkers(texts, BROAD_LIKE_EMOJIS.concat('+'));
+  const broadDislikeMarkers = getDetectedMarkers(texts, BROAD_DISLIKE_EMOJIS.concat('-'));
+
+  addButtonReactionVariant(variants, {
+    id: 'r_buttons_detected',
+    path,
+    texts,
     title: 'Reactions · button counters · detected markers',
-    description: `path=${path}, likes=${likeMarkers.join(' ') || 'none'}, dislikes=${dislikeMarkers.join(' ') || 'none'}, button texts=${texts.length}`,
-    likesRules,
-    dislikesRules
-  };
+    likeMarkers: detectedLikeMarkers,
+    dislikeMarkers: detectedDislikeMarkers,
+    recommended: true,
+    details: `detected=${detectedMarkers.join(' ') || 'none'}`
+  });
+  addButtonReactionVariant(variants, {
+    id: 'r_buttons_conservative',
+    path,
+    texts,
+    title: 'Reactions · button counters · conservative',
+    likeMarkers: conservativeLikeMarkers,
+    dislikeMarkers: conservativeDislikeMarkers,
+    details: `likes=${conservativeLikeMarkers.join(' ') || 'none'}, dislikes=${conservativeDislikeMarkers.join(' ') || 'none'}`
+  });
+  addButtonReactionVariant(variants, {
+    id: 'r_buttons_broad',
+    path,
+    texts,
+    title: 'Reactions · button counters · broad',
+    likeMarkers: broadLikeMarkers,
+    dislikeMarkers: broadDislikeMarkers,
+    details: `likes=${broadLikeMarkers.join(' ') || 'none'}, dislikes=${broadDislikeMarkers.join(' ') || 'none'}`
+  });
+  addButtonReactionVariant(variants, {
+    id: 'r_buttons_except_negative',
+    path,
+    texts,
+    title: 'Reactions · button counters · except 👎💩🤡 is like',
+    likeMarkers: detectedMarkers.filter((marker) => !NEGATIVE_ONLY_EMOJIS.includes(marker) && marker !== '-' && marker !== '👎'),
+    dislikeMarkers: detectedMarkers.filter((marker) => NEGATIVE_ONLY_EMOJIS.includes(marker) || marker === '-' || marker === '👎'),
+    details: `likes=detected non-negative markers, dislikes=${NEGATIVE_ONLY_EMOJIS.join(' ')} -`
+  });
+
+  return dedupeButtonReactionVariants(variants);
+}
+
+function addButtonReactionVariant(variants, { id, path, texts, title, likeMarkers = [], dislikeMarkers = [], recommended = false, details = '' }) {
+  const uniqueLikeMarkers = unique(likeMarkers);
+  const uniqueDislikeMarkers = unique(dislikeMarkers);
+  if (!uniqueLikeMarkers.length && !uniqueDislikeMarkers.length) return;
+  variants.push({
+    id,
+    kind: 'reaction button',
+    title,
+    description: `path=${path}, ${details}, button texts=${texts.length}`,
+    recommended,
+    likesRules: uniqueLikeMarkers.length ? buildReactionRules(path, uniqueLikeMarkers) : [],
+    dislikesRules: uniqueDislikeMarkers.length ? buildReactionRules(path, uniqueDislikeMarkers) : []
+  });
+}
+
+function dedupeButtonReactionVariants(variants) {
+  const seen = new Set();
+  const result = [];
+  for (const variant of variants) {
+    const key = JSON.stringify({ likes: variant.likesRules, dislikes: variant.dislikesRules });
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(variant);
+  }
+  return result;
+}
+
+function getDetectedReactionMarkers(texts = []) {
+  const markerCandidates = unique([
+    ...CONSERVATIVE_LIKE_EMOJIS,
+    ...CONSERVATIVE_DISLIKE_EMOJIS,
+    ...BROAD_LIKE_EMOJIS,
+    ...BROAD_DISLIKE_EMOJIS,
+    ...NEGATIVE_ONLY_EMOJIS,
+    '+',
+    '-'
+  ]);
+  return markerCandidates.filter((marker) => texts.some((text) => String(text).includes(marker)));
 }
 
 export function buildReactionRules(path, markers) {
@@ -320,6 +408,7 @@ export function buildNativeReactionSuggestions(stats) {
       kind: 'native reaction',
       title: 'Reactions · native · conservative',
       description: `${baseDescription}; likes=${CONSERVATIVE_LIKE_EMOJIS.join(' ')}, dislikes=${CONSERVATIVE_DISLIKE_EMOJIS.join(' ')}`,
+      recommended: false,
       ...buildNativeReactionRules(path, {
         likeEmojis: CONSERVATIVE_LIKE_EMOJIS,
         dislikeEmojis: CONSERVATIVE_DISLIKE_EMOJIS
@@ -330,6 +419,7 @@ export function buildNativeReactionSuggestions(stats) {
       kind: 'native reaction',
       title: 'Reactions · native · broad',
       description: `${baseDescription}; broad positive/negative emoji sets`,
+      recommended: false,
       ...buildNativeReactionRules(path, {
         likeEmojis: BROAD_LIKE_EMOJIS,
         dislikeEmojis: BROAD_DISLIKE_EMOJIS
@@ -340,6 +430,7 @@ export function buildNativeReactionSuggestions(stats) {
       kind: 'native reaction',
       title: 'Reactions · native · except 👎💩🤡 is like',
       description: `${baseDescription}; likes=all native emoji except ${NEGATIVE_ONLY_EMOJIS.join(' ')}, dislikes=${NEGATIVE_ONLY_EMOJIS.join(' ')}`,
+      recommended: true,
       ...buildNativeReactionRules(path, {
         likeEmojis: NEGATIVE_ONLY_EMOJIS,
         likeInvert: true,
@@ -476,6 +567,7 @@ export function parserSuggestionsKeyboard(suggestions) {
   rows.push([button('Review filters', 'setup:filters_options'), button('Review author', 'setup:author_options')]);
   rows.push([button('Review reactions', 'setup:reaction_options')]);
   rows.push([button('Test content', 'setup:test'), button('Preview', 'setup:preview')]);
+  rows.push([button('Load more messages', 'setup:load_more:suggest')]);
   rows.push([button('Technical diagnostics', 'setup:technical'), button('Show config', 'setup:parser_config')]);
   rows.push([button('Back', 'setup:parser')]);
   return inlineKeyboard(rows);
@@ -562,13 +654,14 @@ export function formatSuggestionStateMarker(suggestion) {
   return suggestion.actionable ? '•' : '✓';
 }
 
-export function suggestionOptionsKeyboard(suggestions, { back = 'setup:parser', extraRows = [] } = {}) {
+export function suggestionOptionsKeyboard(suggestions, { back = 'setup:parser', extraRows = [], loadMoreTarget = '' } = {}) {
   const rows = [];
   for (let index = 0; index < suggestions.length; index += 2) {
     rows.push(suggestions.slice(index, index + 2).map((suggestion) => suggestionButton(suggestion)));
   }
   for (const row of extraRows) rows.push(row);
-  rows.push([button('Show last change', 'setup:last_change'), button('Show parser config', 'setup:parser_config')]);
+  if (loadMoreTarget) rows.push([button('Load more messages', `setup:load_more:${loadMoreTarget}`)]);
+  rows.push([button('Show last change', 'setup:last_change')]);
   rows.push([button('Back', back), button('Content setup', 'setup:parser')]);
   return inlineKeyboard(rows);
 }
