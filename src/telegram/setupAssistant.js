@@ -31,6 +31,10 @@ import {
   formatLastChange,
   formatNoLastChange,
   formatParserMenu,
+  formatFiltersMenu,
+  formatAuthorMenu,
+  formatReactionsMenu,
+  formatTechnicalDiagnosticsMenu,
   formatPublishMenu,
   formatSetupDoctor,
   formatSetupIntro,
@@ -43,11 +47,15 @@ import {
   formatNoopSuggestion,
   formatParserChanges,
   formatParserSuggestions,
+  formatSuggestionOptions,
+  filterSuggestionsByCategory,
+  getSuggestionCategory,
   formatFiltersReset,
   confirmResetFiltersKeyboard,
   isSuggestionUseful,
   markSuggestionStates,
-  parserSuggestionsKeyboard
+  parserSuggestionsKeyboard,
+  suggestionOptionsKeyboard
 } from './setup/parserSuggestions.js';
 import {
   formatAuthorExtractionTest,
@@ -84,6 +92,11 @@ import {
 import { formatSourceExpressionTest } from './setup/sourceDiagnostics.js';
 import {
   advancedMenuKeyboard,
+  button,
+  authorMenuKeyboard,
+  filtersMenuKeyboard,
+  reactionsMenuKeyboard,
+  technicalDiagnosticsKeyboard,
   confirmReplacePublishPresetKeyboard,
   confirmRemoveTemplateKeyboard,
   manageTemplatesKeyboard,
@@ -171,6 +184,51 @@ export class SetupAssistant {
     if (action === 'parser') {
       this.ensureSession(ctx);
       await this.parserMenu(ctx);
+      return;
+    }
+    if (action === 'filters') {
+      this.ensureSession(ctx);
+      await this.filtersMenu(ctx);
+      return;
+    }
+    if (action === 'filters_options') {
+      this.ensureSession(ctx);
+      await this.filterOptions(ctx);
+      return;
+    }
+    if (action === 'author') {
+      this.ensureSession(ctx);
+      await this.authorMenu(ctx);
+      return;
+    }
+    if (action === 'author_options') {
+      this.ensureSession(ctx);
+      await this.authorOptions(ctx);
+      return;
+    }
+    if (action === 'reactions') {
+      this.ensureSession(ctx);
+      await this.reactionsMenu(ctx);
+      return;
+    }
+    if (action === 'reaction_options') {
+      this.ensureSession(ctx);
+      await this.reactionOptions(ctx);
+      return;
+    }
+    if (action === 'technical') {
+      this.ensureSession(ctx);
+      await this.technicalDiagnostics(ctx);
+      return;
+    }
+    if (action === 'reset_author') {
+      this.ensureSession(ctx);
+      await this.resetAuthor(ctx);
+      return;
+    }
+    if (action === 'reset_reactions') {
+      this.ensureSession(ctx);
+      await this.resetReactions(ctx);
       return;
     }
     if (action === 'parser_config') {
@@ -321,6 +379,24 @@ export class SetupAssistant {
         await this.testDefaults(ctx);
       } else if (action === 'parser') {
         await this.parserMenu(ctx);
+      } else if (action === 'filters') {
+        await this.filtersMenu(ctx);
+      } else if (action === 'filters_options') {
+        await this.filterOptions(ctx);
+      } else if (action === 'author') {
+        await this.authorMenu(ctx);
+      } else if (action === 'author_options') {
+        await this.authorOptions(ctx);
+      } else if (action === 'reactions') {
+        await this.reactionsMenu(ctx);
+      } else if (action === 'reaction_options') {
+        await this.reactionOptions(ctx);
+      } else if (action === 'technical') {
+        await this.technicalDiagnostics(ctx);
+      } else if (action === 'reset_author') {
+        await this.resetAuthor(ctx);
+      } else if (action === 'reset_reactions') {
+        await this.resetReactions(ctx);
       } else if (action === 'parser_config') {
         await this.showParserConfig(ctx);
       } else if (action === 'suggest') {
@@ -410,6 +486,22 @@ export class SetupAssistant {
   async parserMenu(ctx) {
     await this.replyWithKeyboard(ctx, formatParserMenu(this.getDraft(ctx)), parserMenuKeyboard());
   }
+  async filtersMenu(ctx) {
+    await this.replyWithKeyboard(ctx, formatFiltersMenu(this.getDraft(ctx)), filtersMenuKeyboard());
+  }
+
+  async authorMenu(ctx) {
+    await this.replyWithKeyboard(ctx, formatAuthorMenu(this.getDraft(ctx)), authorMenuKeyboard());
+  }
+
+  async reactionsMenu(ctx) {
+    await this.replyWithKeyboard(ctx, formatReactionsMenu(this.getDraft(ctx)), reactionsMenuKeyboard());
+  }
+
+  async technicalDiagnostics(ctx) {
+    await this.replyWithKeyboard(ctx, formatTechnicalDiagnosticsMenu(), technicalDiagnosticsKeyboard());
+  }
+
 
   async publishMenu(ctx) {
     await this.replyWithKeyboard(ctx, formatPublishMenu(this.getDraft(ctx), this.config), publishMenuKeyboard());
@@ -505,7 +597,7 @@ export class SetupAssistant {
   async showParserConfig(ctx) {
     await ctx.reply('Current parser rules:');
     await replyJsonCode(ctx, this.getDraft(ctx).parsing || {});
-    await this.replyWithKeyboard(ctx, 'Use Test parser or Preview to check these rules against real source posts.', parserMenuKeyboard());
+    await this.replyWithKeyboard(ctx, 'Use Test content or Preview to check these rules against real source posts.', parserMenuKeyboard());
   }
 
   async doctor(ctx) {
@@ -518,7 +610,7 @@ export class SetupAssistant {
     const result = await this.collectSetupSample(ctx, { purpose: 'parser test' });
     await replyCode(ctx, summarizeParsedPosts(result, { maxRows: 12 }));
     this.markTested(ctx);
-    await this.replyWithKeyboard(ctx, 'Parser test finished.', parserMenuKeyboard());
+    await this.replyWithKeyboard(ctx, 'Content test finished.', parserMenuKeyboard());
   }
 
   async previewDefaults(ctx) {
@@ -544,10 +636,64 @@ export class SetupAssistant {
     );
   }
 
+  async filterOptions(ctx) {
+    await this.suggestionOptions(ctx, 'filters', {
+      purpose: 'filter options',
+      title: 'Filter options',
+      icon: '🔎',
+      categoryTitle: '✨ Filter options',
+      back: 'setup:filters',
+      next: 'Choose filters, then run Filter impact or Test content.'
+    });
+  }
+
+  async authorOptions(ctx) {
+    await this.suggestionOptions(ctx, 'author', {
+      purpose: 'author options',
+      title: 'Author options',
+      icon: '👤',
+      categoryTitle: '✨ Author options',
+      back: 'setup:author',
+      next: 'Choose one author mode, then run Test author.'
+    });
+  }
+
+  async reactionOptions(ctx) {
+    await this.suggestionOptions(ctx, 'reactions', {
+      purpose: 'reaction options',
+      title: 'Reaction options',
+      icon: '👍',
+      categoryTitle: '✨ Reaction options',
+      back: 'setup:reactions',
+      next: 'Choose one reaction mode, then run Test reactions.'
+    });
+  }
+
+  async suggestionOptions(ctx, category, options) {
+    const draft = this.getDraft(ctx);
+    const result = await this.collectSetupSample(ctx, { purpose: options.purpose, includeMessages: true });
+    const suggestions = buildParserSuggestions(result.messages || [], draft);
+    this.setupSuggestions.set(ctx.from.id, suggestions);
+    const states = markSuggestionStates(filterSuggestionsByCategory(suggestions, category), draft);
+    await this.replyWithKeyboard(
+      ctx,
+      formatSuggestionOptions({
+        title: options.title,
+        icon: options.icon,
+        categoryTitle: options.categoryTitle,
+        suggestions: states,
+        scanned: result.scanned,
+        matched: result.posts.length,
+        next: options.next
+      }),
+      suggestionOptionsKeyboard(states, { back: options.back, extraRows: getCategoryExtraRows(category) })
+    );
+  }
+
   async parserPaths(ctx) {
     const draft = this.getDraft(ctx);
     const result = await this.collectSetupSample(ctx, { purpose: 'parser paths', includeMessages: true });
-    await this.replyWithKeyboard(ctx, formatParserPaths(result.messages || [], draft), parserMenuKeyboard());
+    await this.replyWithKeyboard(ctx, formatParserPaths(result.messages || [], draft), technicalDiagnosticsKeyboard());
   }
 
   async authorTest(ctx) {
@@ -558,7 +704,7 @@ export class SetupAssistant {
       messages: result.messages || [],
       draft,
       baseConfig: this.config
-    }), parserMenuKeyboard());
+    }), authorMenuKeyboard());
   }
 
   async reactionTest(ctx) {
@@ -569,7 +715,7 @@ export class SetupAssistant {
       messages: result.messages || [],
       draft,
       baseConfig: this.config
-    }), parserMenuKeyboard());
+    }), reactionsMenuKeyboard());
   }
 
   async filterImpact(ctx) {
@@ -579,7 +725,7 @@ export class SetupAssistant {
       messages: result.messages || [],
       draft,
       baseConfig: this.config
-    }), parserSuggestionsKeyboard(markSuggestionStates(buildParserSuggestions(result.messages || [], draft), draft)));
+    }), suggestionOptionsKeyboard(markSuggestionStates(filterSuggestionsByCategory(buildParserSuggestions(result.messages || [], draft), 'filters'), draft), { back: 'setup:filters', extraRows: getCategoryExtraRows('filters') }));
   }
 
   async schedulePreview(ctx) {
@@ -839,12 +985,41 @@ export class SetupAssistant {
     );
   }
 
+  async resetAuthor(ctx) {
+    const draft = this.getDraft(ctx);
+    const beforeParsing = structuredClone(draft.parsing || {});
+    draft.parsing.author = [];
+    const afterParsing = structuredClone(draft.parsing || {});
+    const detail = formatParserChanges(beforeParsing, afterParsing, { compact: false });
+    this.markChanged(ctx, 'parser', 'Reset author extraction', detail);
+    await this.replyWithKeyboard(ctx, [
+      '✅ Author rules reset.',
+      '',
+      'Open Author options to choose a new author extraction mode.'
+    ].join('\n'), authorMenuKeyboard());
+  }
+
+  async resetReactions(ctx) {
+    const draft = this.getDraft(ctx);
+    const beforeParsing = structuredClone(draft.parsing || {});
+    draft.parsing.likes = [];
+    draft.parsing.dislikes = [];
+    const afterParsing = structuredClone(draft.parsing || {});
+    const detail = formatParserChanges(beforeParsing, afterParsing, { compact: false });
+    this.markChanged(ctx, 'parser', 'Reset reaction parsing', detail);
+    await this.replyWithKeyboard(ctx, [
+      '✅ Reaction rules reset.',
+      '',
+      'Open Reaction options to choose button counters or native reactions.'
+    ].join('\n'), reactionsMenuKeyboard());
+  }
+
   async setRules(ctx, key) {
     const beforeParsing = structuredClone(this.getDraft(ctx).parsing || {});
     const rules = parseJsonArgument(ctx.message.text);
     setParsingRules(this.getDraft(ctx), key, rules);
     this.markChanged(ctx, 'parser', `${key} replaced`, formatParserChanges(beforeParsing, this.getDraft(ctx).parsing || {}, { compact: false }));
-    await this.replyWithKeyboard(ctx, `${key} replaced. Use Test parser or Preview to check the result.`, parserMenuKeyboard());
+    await this.replyWithKeyboard(ctx, `${key} replaced. Use Test content or Preview to check the result.`, parserMenuKeyboard());
   }
 
   async addRules(ctx, key) {
@@ -852,7 +1027,7 @@ export class SetupAssistant {
     const rules = parseJsonArgument(ctx.message.text);
     addParsingRule(this.getDraft(ctx), key, rules);
     this.markChanged(ctx, 'parser', `${key} appended`, formatParserChanges(beforeParsing, this.getDraft(ctx).parsing || {}, { compact: false }));
-    await this.replyWithKeyboard(ctx, `${key} appended. Use Test parser or Preview to check the result.`, parserMenuKeyboard());
+    await this.replyWithKeyboard(ctx, `${key} appended. Use Test content or Preview to check the result.`, parserMenuKeyboard());
   }
 
   async setTemplate(ctx) {
@@ -945,7 +1120,7 @@ export class SetupAssistant {
       `Preview source: ${result.posts.length} matched posts from ${result.scanned} scanned messages.`,
       `Showing ${posts.length} selected post(s).`,
       '',
-      'If the match set is wrong, use Parser → Auto suggestions or Advanced JSON.'
+      'If the match set is wrong, use Content setup → Quick setup or Advanced JSON.'
     ].join('\n'), previewMenuKeyboard());
 
     if (!posts.length) {
@@ -1114,6 +1289,14 @@ export class SetupAssistant {
 export { stringifyForSetup } from './setup/utils.js';
 
 
+
+
+function getCategoryExtraRows(category) {
+  if (category === 'filters') return [[button('Filter impact', 'setup:filter_impact'), button('Test content', 'setup:test')]];
+  if (category === 'author') return [[button('Test author', 'setup:author_test')]];
+  if (category === 'reactions') return [[button('Test reactions', 'setup:reaction_test'), button('Detected paths', 'setup:parser_paths')]];
+  return [];
+}
 
 function formatPreviewProgress({ total, sent, current = null }) {
   const lines = [

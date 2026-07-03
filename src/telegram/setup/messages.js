@@ -16,7 +16,7 @@ export function formatNoLastChange() {
     icon: 'ℹ️',
     title: 'No last change details',
     sections: [
-      ['📌 State', ['No parser or publishing changes were recorded in this setup session yet.']],
+      ['📌 State', ['No content or publishing changes were recorded in this setup session yet.']],
       ['➡️ Next', ['Apply a suggestion or preset, then use Show last change.']]
     ]
   });
@@ -45,7 +45,7 @@ export function lastChangeKeyboard(area) {
 export function formatConfirmResetFilters(filters) {
   return setupScreen({
     icon: '⚠️',
-    title: 'Reset parser filters?',
+    title: 'Reset content filters?',
     sections: [
       ['🗑 What will happen', [
         `Current filter rules: ${Array.isArray(filters) ? filters.length : 0}.`,
@@ -65,7 +65,7 @@ export function formatSetupStatusLines(draft = {}, baseConfig = {}, meta = creat
   const enabledTemplates = templates.filter((template) => template.enabled !== false);
   const firstSendAt = getEffectiveGlobalFirstSendAt(publish);
   const lines = [
-    `Parser: ${countRules(parsing.filters)} filter(s), ${countRules(parsing.author)} author rule(s), ${countRules(parsing.likes)} like rule(s), ${countRules(parsing.dislikes)} dislike rule(s).`,
+    `Content: ${countRules(parsing.filters)} filter(s), ${countRules(parsing.author)} author rule(s), ${countRules(parsing.likes)} like rule(s), ${countRules(parsing.dislikes)} dislike rule(s).`,
     `Publishing: ${templates.length} template(s), ${enabledTemplates.length} enabled, ${sources.length} source(s).`,
     `dryRun=${Boolean(publish.dryRun)}, timezone=${baseConfig.schedule?.timezone || 'default'}.`
   ];
@@ -81,12 +81,12 @@ export function formatSetupIntro(draft, meta = createSetupMeta()) {
     title: 'Setup mode',
     sections: [
       ['🎛 Flow', [
-        'Use buttons for the common path: Status → Doctor → Parser/Publishing → Preview → Save.',
+        'Use buttons for the common path: Status → Doctor → Content setup/Publishing → Preview → Save.',
         'Advanced JSON commands still work, but they are a fallback for exact tuning.'
       ]],
       ['📌 Current draft', formatSetupStatusLines(draft, {}, meta)],
       ['➡️ Next', [
-        'Run Doctor for obvious issues, or start with Parser → Auto suggestions.'
+        'Run Doctor for obvious issues, or start with Content setup → Quick setup.'
       ]]
     ]
   });
@@ -97,14 +97,14 @@ export function formatSetupStatus(draft, baseConfig = {}, meta = createSetupMeta
     icon: '📌',
     title: 'Setup status',
     sections: [
-      ['🧩 Parser', formatParserStatusLines(draft.parsing || {}, meta)],
+      ['🧩 Content setup', formatParserStatusLines(draft.parsing || {}, meta)],
       ['📣 Publishing', formatPublishingStatusLines(draft.publish || {}, baseConfig)],
       ['🧪 Validation', formatValidationStatusLines(draft, meta)],
       ['➡️ Next', [
         isPreviewStale(meta)
           ? 'Preview is stale after changes. Run Preview before Save.'
           : 'Run Doctor or Preview before saving if you changed the draft.',
-        'Parser suggestions and Publishing presets are available from their screens.'
+        'Quick setup and Publishing presets are available from their screens.'
       ]]
     ]
   });
@@ -112,9 +112,11 @@ export function formatSetupStatus(draft, baseConfig = {}, meta = createSetupMeta
 
 export function formatParserStatusLines(parsing, meta = createSetupMeta()) {
   const lines = [
-    `${countRules(parsing.filters)} filter(s), ${countRules(parsing.author)} author rule(s), ${countRules(parsing.likes)} like rule(s), ${countRules(parsing.dislikes)} dislike rule(s).`
+    `Filters: ${countRules(parsing.filters)} rule(s).`,
+    `Author: ${countRules(parsing.author)} rule(s).`,
+    `Reactions: ${countRules(parsing.likes)} like rule(s), ${countRules(parsing.dislikes)} dislike rule(s).`
   ];
-  if (meta.changedArea === 'parser') lines.push('⚠️ Parser changed after the last test/preview.');
+  if (meta.changedArea === 'parser') lines.push('⚠️ Content setup changed after the last test/preview.');
   return lines;
 }
 
@@ -137,7 +139,7 @@ export function formatPublishingStatusLines(publish, baseConfig = {}) {
 export function formatValidationStatusLines(draft, meta = createSetupMeta()) {
   const lines = [];
   if (meta.changedAt) lines.push(`Last change: ${meta.changedArea || 'draft'} · ${formatRelativeSetupTime(meta.changedAt)}.`);
-  lines.push(meta.testedAt ? `Parser test: ${formatRelativeSetupTime(meta.testedAt)}.` : 'Parser test: not run in this setup session.');
+  lines.push(meta.testedAt ? `Content test: ${formatRelativeSetupTime(meta.testedAt)}.` : 'Content test: not run in this setup session.');
   lines.push(meta.previewedAt ? `Preview: ${formatRelativeSetupTime(meta.previewedAt)}.` : 'Preview: not run in this setup session.');
   if (isPreviewStale(meta)) lines.push('⚠️ Preview is stale after draft changes.');
   return lines;
@@ -147,18 +149,68 @@ export function formatParserMenu(draft) {
   const parsing = draft.parsing || {};
   return setupScreen({
     icon: '🧩',
-    title: 'Parser setup',
+    title: 'Content setup',
     sections: [
-      ['📌 Current rules', [
-        `${countRules(parsing.filters)} filter(s), ${countRules(parsing.author)} author, ${countRules(parsing.likes)} likes, ${countRules(parsing.dislikes)} dislikes.`
+      ['📌 Current content rules', [
+        `Filters: ${countRules(parsing.filters)} rule(s).`,
+        `Author: ${countRules(parsing.author)} rule(s).`,
+        `Reactions: ${countRules(parsing.likes)} like rule(s), ${countRules(parsing.dislikes)} dislike rule(s).`
       ]],
-      ['✨ Available now', [
-        'Auto suggestions scans recent messages and offers buttons for filters, author, and reaction buttons.',
-        'Parser paths shows detected text/button fields before you choose rules.',
-        'Author test, Reaction test, and Filter impact explain what the current rules actually do.',
-        'Advanced JSON is still available for exact rules.'
+      ['✨ Quick path', [
+        'Quick setup suggests filters, author extraction, and reaction parsing in one place.',
+        'Review screens keep each concern separate: filters decide which posts are stored; author decides caption author; reactions decide ranking scores.'
       ]],
-      ['➡️ Next', ['Run Parser paths or Auto suggestions first, then Author/Reaction test and Preview.']]
+      ['➡️ Next', ['Use Quick setup for the recommended path, or open Filters / Author / Reactions to choose explicitly.']]
+    ]
+  });
+}
+
+export function formatFiltersMenu(draft) {
+  const filters = draft.parsing?.filters || [];
+  return setupScreen({
+    icon: '🔎',
+    title: 'Content filters',
+    sections: [
+      ['📌 Current filters', [`${countRules(filters)} filter rule(s).`]],
+      ['🎯 Purpose', ['Filters decide which Telegram messages become candidate posts.', 'They do not decide author names or reaction scores.']],
+      ['➡️ Next', ['Open Filter options or Filter impact, then run Test content.']]
+    ]
+  });
+}
+
+export function formatAuthorMenu(draft) {
+  const author = draft.parsing?.author || [];
+  return setupScreen({
+    icon: '👤',
+    title: 'Author setup',
+    sections: [
+      ['📌 Current author extraction', [`${countRules(author)} author rule(s).`]],
+      ['🎯 Purpose', ['Author rules decide what {{author}} means in published captions.', 'Good options are label lines, Telegram mentions, @username, or sender fallback.']],
+      ['➡️ Next', ['Open Author options, choose one method, then run Test author.']]
+    ]
+  });
+}
+
+export function formatReactionsMenu(draft) {
+  const parsing = draft.parsing || {};
+  return setupScreen({
+    icon: '👍',
+    title: 'Reaction setup',
+    sections: [
+      ['📌 Current reaction parsing', [`${countRules(parsing.likes)} like rule(s), ${countRules(parsing.dislikes)} dislike rule(s).`]],
+      ['🎯 Purpose', ['Reaction rules decide likes/dislikes and ranking scores.', 'Options include button counters and native Telegram reactions.']],
+      ['➡️ Next', ['Open Reaction options, choose a mode, then run Test reactions.']]
+    ]
+  });
+}
+
+export function formatTechnicalDiagnosticsMenu() {
+  return setupScreen({
+    icon: '🧭',
+    title: 'Technical diagnostics',
+    sections: [
+      ['📌 Tools', ['Parser paths shows raw message fields found in Telegram objects.', 'Author/Reaction tests show current extraction output.', 'Advanced JSON remains available for exact tuning.']],
+      ['➡️ Next', ['Use this when normal Filters / Author / Reactions screens do not explain enough.']]
     ]
   });
 }
@@ -208,13 +260,13 @@ export function formatSetupDoctor({ draft, baseConfig, preview }) {
   }
 
   const matchRatio = preview.scanned > 0 ? preview.posts.length / preview.scanned : 0;
-  notes.push(`Parser preview: ${preview.posts.length} matched post(s) from ${preview.scanned} scanned message(s).`);
+  notes.push(`Content preview: ${preview.posts.length} matched post(s) from ${preview.scanned} scanned message(s).`);
   if (preview.scanned > 0 && preview.posts.length === 0) {
-    warnings.push('Parser matched nothing in recent messages. Filters may be too strict or paths may be wrong.');
+    warnings.push('Content filters matched nothing in recent messages. Filters may be too strict or paths may be wrong.');
   } else if (preview.scanned >= 10 && matchRatio < 0.1) {
-    warnings.push('Parser matched less than 10% of recent messages. This can be fine for strict channels, but check rejected messages if selection looks empty.');
+    warnings.push('Content filters matched less than 10% of recent messages. This can be fine for strict channels, but check rejected messages if selection looks empty.');
   } else if (preview.scanned >= 10 && matchRatio > 0.9) {
-    warnings.push('Parser matched more than 90% of recent messages. This can be too broad if the source chat contains non-post messages.');
+    warnings.push('Content filters matched more than 90% of recent messages. This can be too broad if the source chat contains non-post messages.');
   }
 
   for (const template of templates) {

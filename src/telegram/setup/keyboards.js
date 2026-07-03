@@ -3,8 +3,8 @@ import { PUBLISH_PRESETS } from './publishPresets.js';
 export function setupMenuKeyboard() {
   return inlineKeyboard([
     [button('Status', 'setup:status'), button('Doctor', 'setup:doctor')],
-    [button('Preview', 'setup:preview'), button('Test parser', 'setup:test')],
-    [button('Parser', 'setup:parser'), button('Publishing', 'setup:publish')],
+    [button('Preview', 'setup:preview'), button('Test content', 'setup:test')],
+    [button('Content setup', 'setup:parser'), button('Publishing', 'setup:publish')],
     [button('Show last change', 'setup:last_change'), button('Show config', 'setup:config')],
     [button('Advanced JSON', 'setup:advanced')],
     [button('Save', 'setup:save'), button('Cancel', 'setup:cancel')]
@@ -13,14 +13,49 @@ export function setupMenuKeyboard() {
 
 export function parserMenuKeyboard() {
   return inlineKeyboard([
-    [button('Auto suggestions', 'setup:suggest'), button('Filter impact', 'setup:filter_impact')],
-    [button('Parser paths', 'setup:parser_paths')],
-    [button('Author test', 'setup:author_test'), button('Reaction test', 'setup:reaction_test')],
-    [button('Reset filters', 'setup:reset_filters')],
-    [button('Test parser', 'setup:test'), button('Preview', 'setup:preview')],
-    [button('Show parser config', 'setup:parser_config')],
+    [button('Quick setup', 'setup:suggest')],
+    [button('Content filters', 'setup:filters'), button('Author', 'setup:author')],
+    [button('Reactions', 'setup:reactions'), button('Technical diagnostics', 'setup:technical')],
+    [button('Test content', 'setup:test'), button('Preview', 'setup:preview')],
+    [button('Show content config', 'setup:parser_config')],
     [button('Advanced JSON', 'setup:advanced'), button('Status', 'setup:status')],
     [button('Back to setup', 'setup:status')]
+  ]);
+}
+
+export function filtersMenuKeyboard() {
+  return inlineKeyboard([
+    [button('Filter options', 'setup:filters_options'), button('Filter impact', 'setup:filter_impact')],
+    [button('Rejected examples', 'setup:filter_impact'), button('Reset filters', 'setup:reset_filters')],
+    [button('Test content', 'setup:test'), button('Preview', 'setup:preview')],
+    [button('Back', 'setup:parser'), button('Status', 'setup:status')]
+  ]);
+}
+
+export function authorMenuKeyboard() {
+  return inlineKeyboard([
+    [button('Author options', 'setup:author_options'), button('Test author', 'setup:author_test')],
+    [button('Reset author', 'setup:reset_author')],
+    [button('Preview', 'setup:preview'), button('Show content config', 'setup:parser_config')],
+    [button('Back', 'setup:parser'), button('Status', 'setup:status')]
+  ]);
+}
+
+export function reactionsMenuKeyboard() {
+  return inlineKeyboard([
+    [button('Reaction options', 'setup:reaction_options'), button('Test reactions', 'setup:reaction_test')],
+    [button('Detected paths', 'setup:parser_paths'), button('Reset reactions', 'setup:reset_reactions')],
+    [button('Preview', 'setup:preview'), button('Show content config', 'setup:parser_config')],
+    [button('Back', 'setup:parser'), button('Status', 'setup:status')]
+  ]);
+}
+
+export function technicalDiagnosticsKeyboard() {
+  return inlineKeyboard([
+    [button('Parser paths', 'setup:parser_paths'), button('Show content config', 'setup:parser_config')],
+    [button('Author test', 'setup:author_test'), button('Reaction test', 'setup:reaction_test')],
+    [button('Filter impact', 'setup:filter_impact'), button('Advanced JSON', 'setup:advanced')],
+    [button('Back', 'setup:parser'), button('Status', 'setup:status')]
   ]);
 }
 
@@ -119,7 +154,7 @@ export function trafficSuggestionsKeyboard(presets = [], options = {}) {
 export function previewMenuKeyboard() {
   return inlineKeyboard([
     [button('Looks good / Save', 'setup:save'), button('Run doctor', 'setup:doctor')],
-    [button('Parser', 'setup:parser'), button('Publishing', 'setup:publish')],
+    [button('Content setup', 'setup:parser'), button('Publishing', 'setup:publish')],
     [button('Back to setup', 'setup:status')]
   ]);
 }

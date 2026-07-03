@@ -9,6 +9,7 @@ export const CONSERVATIVE_DISLIKE_EMOJIS = ['👎'];
 export const BROAD_LIKE_EMOJIS = ['👍', '❤', '❤️', '🔥', '😂', '😁', '😍', '🥰', '👏', '🎉'];
 export const BROAD_DISLIKE_EMOJIS = ['👎', '💩', '🤡', '🤮', '😡'];
 export const NEGATIVE_ONLY_EMOJIS = ['👎', '💩', '🤡'];
+export const AUTHOR_LABEL_REGEX = '(?:^|\\n)\\s*(?:от|by|author|автор|from|via|source|источник)\\s*:?\\s*(.+?)(?:\\n|$)';
 
 export function buildParserSuggestions(messages, draft = {}) {
   const stats = analyzeMessagesForParser(messages);
@@ -22,18 +23,19 @@ export function buildParserSuggestions(messages, draft = {}) {
     recommendedFilters.push({ source: 'sender', path: 'id', transform: 'equals', value: stats.topSender.id });
   }
 
-  const authorSuggestion = buildAuthorSuggestion(stats);
+  const authorOptions = buildAuthorSuggestions(stats);
+  const authorSuggestion = authorOptions.find((item) => item.recommended) || authorOptions[0] || null;
   const buttonReactionSuggestion = buildReactionSuggestion(stats);
   const nativeReactionSuggestions = buildNativeReactionSuggestions(stats);
   const reactionSuggestion = buttonReactionSuggestion || nativeReactionSuggestions[0];
 
   suggestions.push({
     id: 'rec',
-    title: 'Apply suggested parser',
+    title: 'Apply suggested content setup',
     description: [
-      `Set ${recommendedFilters.length} filter rule(s)`,
-      authorSuggestion ? 'set author detection' : 'keep current author rules',
-      reactionSuggestion ? `set ${reactionSuggestion.kind || 'reaction'} parsing` : 'keep current reaction rules'
+      `filters: ${recommendedFilters.length} rule(s)`,
+      authorSuggestion ? `author: ${authorSuggestion.title.replace('Author · ', '')}` : 'author: keep current',
+      reactionSuggestion ? `reactions: ${reactionSuggestion.title.replace('Use ', '')}` : 'reactions: keep current'
     ].join(', '),
     recommended: true,
     apply: (draftConfig) => {
@@ -44,7 +46,7 @@ export function buildParserSuggestions(messages, draft = {}) {
         draftConfig.parsing.dislikes = structuredClone(reactionSuggestion.dislikesRules);
       }
     },
-    afterApply: 'Suggested filters/extractors were applied. Run Test parser, then Preview.'
+    afterApply: 'Suggested filters, author, and reaction rules were applied. Run Test content, then Preview.'
   });
 
   suggestions.push({
@@ -77,35 +79,14 @@ export function buildParserSuggestions(messages, draft = {}) {
     });
   }
 
-  if (authorSuggestion) {
+  for (const option of authorOptions) {
     suggestions.push({
-      id: 'a_line',
-      title: authorSuggestion.title,
-      description: authorSuggestion.description,
+      id: option.id,
+      title: option.title,
+      description: option.description,
+      recommended: Boolean(option.recommended),
       apply: (draftConfig) => {
-        draftConfig.parsing.author = structuredClone(authorSuggestion.rules);
-      }
-    });
-  }
-
-  if (stats.senderNameCount > 0) {
-    suggestions.push({
-      id: 'a_name',
-      title: 'Use sender first name as author',
-      description: `${stats.senderNameCount}/${stats.scanned} recent messages have sender.firstName`,
-      apply: (draftConfig) => {
-        draftConfig.parsing.author = [{ source: 'sender', path: 'firstName', transform: 'trim' }];
-      }
-    });
-  }
-
-  if (stats.senderUsernameCount > 0) {
-    suggestions.push({
-      id: 'a_user',
-      title: 'Use sender username as author',
-      description: `${stats.senderUsernameCount}/${stats.scanned} recent messages have sender.username`,
-      apply: (draftConfig) => {
-        draftConfig.parsing.author = [{ source: 'sender', path: 'username', regex: '(.+)', group: 1, transform: 'telegramUsername' }];
+        draftConfig.parsing.author = structuredClone(option.rules);
       }
     });
   }
@@ -147,6 +128,10 @@ export function analyzeMessagesForParser(messages) {
     senderCounts: new Map(),
     senderLabels: new Map(),
     authorLines: [],
+    mentionNameCount: 0,
+    usernameMentionCount: 0,
+    mentionExamples: [],
+    usernameExamples: [],
     buttonPaths: new Map(),
     nativeReactionPaths: new Map()
   };
@@ -170,11 +155,20 @@ export function analyzeMessagesForParser(messages) {
       { path: 'message', value: message?.message || '' }
     ];
     for (const item of textValues) {
-      for (const pattern of getAuthorLinePatterns()) {
-        if (pattern.regex.test(item.value)) {
-          stats.authorLines.push({ path: item.path, label: pattern.label, regex: pattern.ruleRegex });
-        }
+      const match = String(item.value || '').match(new RegExp(AUTHOR_LABEL_REGEX, 'i'));
+      if (match) {
+        stats.authorLines.push({ path: item.path, label: 'label line · multilingual', regex: AUTHOR_LABEL_REGEX, example: match[0].trim() });
       }
+    }
+
+    const entitySummary = detectAuthorEntities(message);
+    if (entitySummary.mentionName) {
+      stats.mentionNameCount += 1;
+      if (entitySummary.mentionNameExample) stats.mentionExamples.push(entitySummary.mentionNameExample);
+    }
+    if (entitySummary.username) {
+      stats.usernameMentionCount += 1;
+      if (entitySummary.usernameExample) stats.usernameExamples.push(entitySummary.usernameExample);
     }
 
     for (const path of ['markup.buttons[].text', 'replyMarkup.rows[].buttons[].text']) {
@@ -199,21 +193,71 @@ export function analyzeMessagesForParser(messages) {
 }
 
 export function buildAuthorSuggestion(stats) {
+  const options = buildAuthorSuggestions(stats);
+  return options.find((item) => item.recommended) || options[0] || null;
+}
+
+export function buildAuthorSuggestions(stats) {
+  const suggestions = [];
   const counts = new Map();
   for (const item of stats.authorLines) {
-    const key = `${item.path}\t${item.label}\t${item.regex}`;
+    const key = `${item.path}\t${item.regex}`;
     counts.set(key, (counts.get(key) || 0) + 1);
   }
   const best = [...counts.entries()].sort((a, b) => b[1] - a[1])[0];
-  if (!best) return null;
+  if (best) {
+    const [path, regex] = best[0].split('\t');
+    const count = best[1];
+    suggestions.push({
+      id: 'a_label_multilingual',
+      title: 'Author · label line multilingual',
+      description: `${count}/${stats.scanned} messages contain labels like От, By, Author, Автор, From, Via, Source`,
+      recommended: count / Math.max(1, stats.scanned) >= 0.45,
+      rules: [{ source: 'message', path, regex, group: 1, transform: 'trim', flags: 'i' }]
+    });
+  }
 
-  const [path, label, regex] = best[0].split('\t');
-  const count = best[1];
-  return {
-    title: `Use "${label}" line as author`,
-    description: `${count}/${stats.scanned} recent messages contain this author line on message.${path}`,
-    rules: [{ source: 'message', path, regex, group: 1, transform: 'trim' }]
-  };
+  if (stats.mentionNameCount > 0) {
+    suggestions.push({
+      id: 'a_mention_name',
+      title: 'Author · Telegram mention / tg://user',
+      description: `${stats.mentionNameCount}/${stats.scanned} messages have text_mention, mentionName, or tg://user?id=...${stats.mentionExamples.length ? `; examples: ${unique(stats.mentionExamples).slice(0, 3).join(', ')}` : ''}`,
+      recommended: !best && stats.mentionNameCount / Math.max(1, stats.scanned) >= 0.25,
+      rules: [{ source: 'message', transform: 'mentionAuthor', values: ['mentionName', 'tgUser'] }]
+    });
+  }
+
+  if (stats.usernameMentionCount > 0) {
+    suggestions.push({
+      id: 'a_username_mention',
+      title: 'Author · @username mention',
+      description: `${stats.usernameMentionCount}/${stats.scanned} messages have @username mention entities${stats.usernameExamples.length ? `; examples: ${unique(stats.usernameExamples).slice(0, 4).join(', ')}` : ''}`,
+      recommended: !best && !stats.mentionNameCount && stats.usernameMentionCount / Math.max(1, stats.scanned) >= 0.25,
+      rules: [{ source: 'message', transform: 'mentionAuthor', values: ['username'] }]
+    });
+  }
+
+  if (stats.senderNameCount > 0) {
+    suggestions.push({
+      id: 'a_name',
+      title: 'Author · sender first name',
+      description: `${stats.senderNameCount}/${stats.scanned} messages have sender.firstName; often this is the source bot, not the real author`,
+      recommended: !best && !stats.mentionNameCount && !stats.usernameMentionCount,
+      rules: [{ source: 'sender', path: 'firstName', transform: 'trim' }]
+    });
+  }
+
+  if (stats.senderUsernameCount > 0) {
+    suggestions.push({
+      id: 'a_user',
+      title: 'Author · sender username',
+      description: `${stats.senderUsernameCount}/${stats.scanned} messages have sender.username; fallback option`,
+      recommended: false,
+      rules: [{ source: 'sender', path: 'username', regex: '(.+)', group: 1, transform: 'telegramUsername' }]
+    });
+  }
+
+  return suggestions;
 }
 
 export function buildReactionSuggestion(stats) {
@@ -229,7 +273,7 @@ export function buildReactionSuggestion(stats) {
   const dislikesRules = dislikeMarkers.length ? buildReactionRules(path, dislikeMarkers) : [];
   return {
     kind: 'reaction button',
-    title: 'Use detected reaction buttons',
+    title: 'Reactions · button counters · detected markers',
     description: `path=${path}, likes=${likeMarkers.join(' ') || 'none'}, dislikes=${dislikeMarkers.join(' ') || 'none'}, button texts=${texts.length}`,
     likesRules,
     dislikesRules
@@ -274,7 +318,7 @@ export function buildNativeReactionSuggestions(stats) {
     {
       id: 'r_native_conservative',
       kind: 'native reaction',
-      title: 'Use native reactions · conservative',
+      title: 'Reactions · native · conservative',
       description: `${baseDescription}; likes=${CONSERVATIVE_LIKE_EMOJIS.join(' ')}, dislikes=${CONSERVATIVE_DISLIKE_EMOJIS.join(' ')}`,
       ...buildNativeReactionRules(path, {
         likeEmojis: CONSERVATIVE_LIKE_EMOJIS,
@@ -284,7 +328,7 @@ export function buildNativeReactionSuggestions(stats) {
     {
       id: 'r_native_broad',
       kind: 'native reaction',
-      title: 'Use native reactions · broad',
+      title: 'Reactions · native · broad',
       description: `${baseDescription}; broad positive/negative emoji sets`,
       ...buildNativeReactionRules(path, {
         likeEmojis: BROAD_LIKE_EMOJIS,
@@ -294,7 +338,7 @@ export function buildNativeReactionSuggestions(stats) {
     {
       id: 'r_native_except_negative',
       kind: 'native reaction',
-      title: 'Use native reactions · except 👎💩🤡',
+      title: 'Reactions · native · except 👎💩🤡 is like',
       description: `${baseDescription}; likes=all native emoji except ${NEGATIVE_ONLY_EMOJIS.join(' ')}, dislikes=${NEGATIVE_ONLY_EMOJIS.join(' ')}`,
       ...buildNativeReactionRules(path, {
         likeEmojis: NEGATIVE_ONLY_EMOJIS,
@@ -341,7 +385,7 @@ export function formatAppliedSuggestion({ suggestion, beforeParsing, afterParsin
     sections: [
       ['✨ Applied', [suggestion.title]],
       ['📌 Changed', formatParserChanges(beforeParsing, afterParsing, { compact: true })],
-      ['➡️ Next', [suggestion.afterApply || 'Run Test parser or Preview to check the result.', 'Use Show last change for technical details.']]
+      ['➡️ Next', [suggestion.afterApply || 'Run Test content or Preview to check the result.', 'Use Show last change for technical details.']]
     ]
   });
 }
@@ -349,11 +393,11 @@ export function formatAppliedSuggestion({ suggestion, beforeParsing, afterParsin
 export function formatNoopSuggestion(suggestion) {
   return setupScreen({
     icon: '✓',
-    title: 'No parser changes',
+    title: 'No content rule changes',
     sections: [
       ['💡 Suggestion', [suggestion.title]],
-      ['📌 State', ['This suggestion is already reflected in the current parser draft.']],
-      ['➡️ Next', ['Apply another • suggestion, or run Test parser / Preview.']]
+      ['📌 State', ['This suggestion is already reflected in the current content draft.']],
+      ['➡️ Next', ['Apply another • suggestion, or run Test content / Preview.']]
     ]
   });
 }
@@ -366,7 +410,7 @@ export function formatFiltersReset({ beforeParsing, afterParsing, hasSuggestions
       ['📌 Changed', formatParserChanges(beforeParsing, afterParsing, { compact: true })],
       ['➡️ Next', [
         hasSuggestions
-          ? 'Apply filter suggestions again from this screen, or run Test parser / Preview.'
+          ? 'Apply filter suggestions again from this screen, or run Test content / Preview.'
           : 'Run Auto suggestions to add filters again.'
       ]]
     ]
@@ -388,7 +432,7 @@ export function formatParserChanges(beforeParsing, afterParsing, { compact = fal
     }
     if (after.length > 4) lines.push(`  ...and ${after.length - 4} more rule(s)`);
   }
-  return lines.length ? lines : ['- No parser changes.'];
+  return lines.length ? lines : ['- No content rule changes.'];
 }
 
 export function compactRule(rule) {
@@ -415,36 +459,25 @@ export function formatParserSuggestions({ suggestions, scanned, matched }) {
 
   return setupScreen({
     icon: '✨',
-    title: 'Parser auto-suggestions',
+    title: 'Quick setup',
     sections: [
-      ['🔎 Scan', [`Scanned ${scanned} recent source message(s).`, `Current parser matched ${matched}.`]],
-      ['💡 Suggestions', suggestionLines],
-      ['ℹ️ Legend', ['• changes the parser draft.', '✓ already matches the current draft and does nothing when clicked.']],
-      ['➡️ Next', ['Apply several suggestions from this screen, then run Test parser and Preview before saving.']]
+      ['🔎 Scan', [`Scanned ${scanned} recent source message(s).`, `Current filters matched ${matched}.`]],
+      ['💡 Recommended setup and available options', suggestionLines],
+      ['ℹ️ Legend', ['• changes the content draft.', '✓ already matches the current draft and does nothing when clicked.']],
+      ['➡️ Next', ['Apply the recommended setup, or review Filters / Author / Reactions separately. Then run Test content and Preview before saving.']]
     ]
   });
 }
 
 export function parserSuggestionsKeyboard(suggestions) {
   const rows = [];
-
-  if (suggestions.length) {
-    const recommended = suggestions.find((suggestion) => suggestion.recommended);
-    if (recommended) rows.push([suggestionButton(recommended, { fullTitle: true })]);
-
-    const regular = suggestions.filter((suggestion) => !suggestion.recommended);
-    for (let index = 0; index < regular.length; index += 2) {
-      rows.push(regular.slice(index, index + 2).map((suggestion) => suggestionButton(suggestion)));
-    }
-  } else {
-    rows.push([button('Advanced JSON', 'setup:advanced')]);
-  }
-
-  rows.push([button('Reset filters', 'setup:reset_filters')]);
-  rows.push([button('Filter impact', 'setup:filter_impact'), button('Parser paths', 'setup:parser_paths')]);
-  rows.push([button('Test parser', 'setup:test'), button('Preview', 'setup:preview')]);
-  rows.push([button('Show last change', 'setup:last_change'), button('Show parser config', 'setup:parser_config')]);
-  rows.push([button('Advanced JSON', 'setup:advanced'), button('Back', 'setup:parser')]);
+  const recommended = suggestions.find((suggestion) => suggestion.id === 'rec');
+  if (recommended) rows.push([suggestionButton(recommended, { fullTitle: true })]);
+  rows.push([button('Review filters', 'setup:filters_options'), button('Review author', 'setup:author_options')]);
+  rows.push([button('Review reactions', 'setup:reaction_options')]);
+  rows.push([button('Test content', 'setup:test'), button('Preview', 'setup:preview')]);
+  rows.push([button('Technical diagnostics', 'setup:technical'), button('Show config', 'setup:parser_config')]);
+  rows.push([button('Back', 'setup:parser')]);
   return inlineKeyboard(rows);
 }
 
@@ -494,10 +527,84 @@ export function addUniqueParsingRule(draft, key, rule) {
   }
 }
 
+
+export function getSuggestionCategory(suggestion) {
+  const id = String(suggestion?.id || '');
+  if (id === 'rec') return 'quick';
+  if (id.startsWith('f_')) return 'filters';
+  if (id.startsWith('a_')) return 'author';
+  if (id.startsWith('r_')) return 'reactions';
+  return 'other';
+}
+
+export function filterSuggestionsByCategory(suggestions = [], category) {
+  return suggestions.filter((suggestion) => getSuggestionCategory(suggestion) === category);
+}
+
+export function formatSuggestionOptions({ title, icon, categoryTitle, suggestions, scanned, matched, next }) {
+  const states = suggestions || [];
+  const lines = states.length
+    ? states.map((suggestion) => `- ${formatSuggestionStateMarker(suggestion)} ${suggestion.title}${suggestion.recommended ? ' · ★ suggested' : ''}: ${suggestion.description}${suggestion.actionable ? '' : ' — current / no change'}`)
+    : ['- No options found for this sample.'];
+  return setupScreen({
+    icon,
+    title,
+    sections: [
+      ['🔎 Sample', [`Scanned ${scanned} recent source message(s).`, `Current filters matched ${matched}.`]],
+      [categoryTitle, lines],
+      ['ℹ️ Legend', ['★ suggested = best guess from current sample.', '• can apply, ✓ already current.']],
+      ['➡️ Next', [next || 'Choose an option, then run the related test and Preview.']]
+    ]
+  });
+}
+
+export function formatSuggestionStateMarker(suggestion) {
+  return suggestion.actionable ? '•' : '✓';
+}
+
+export function suggestionOptionsKeyboard(suggestions, { back = 'setup:parser', extraRows = [] } = {}) {
+  const rows = [];
+  for (let index = 0; index < suggestions.length; index += 2) {
+    rows.push(suggestions.slice(index, index + 2).map((suggestion) => suggestionButton(suggestion)));
+  }
+  for (const row of extraRows) rows.push(row);
+  rows.push([button('Show last change', 'setup:last_change'), button('Show parser config', 'setup:parser_config')]);
+  rows.push([button('Back', back), button('Content setup', 'setup:parser')]);
+  return inlineKeyboard(rows);
+}
+
+export function detectAuthorEntities(message) {
+  const result = { mentionName: false, username: false, mentionNameExample: '', usernameExample: '' };
+  const text = String(message?.text || message?.message || '');
+  for (const entity of getMessageEntities(message)) {
+    const type = String(entity?._ || entity?.type || entity?.className || entity?.kind || '').toLowerCase();
+    const offset = Number(entity?.offset ?? 0);
+    const length = Number(entity?.length ?? 0);
+    const slice = Number.isFinite(offset) && Number.isFinite(length) && length > 0 ? text.slice(offset, offset + length).trim() : '';
+    const url = String(entity?.url || '');
+    const hasUser = entity?.user || entity?.userId || entity?.user_id;
+    if (type.includes('mentionname') || type.includes('text_mention') || hasUser || /^tg:\/\/user\?id=\d+/i.test(url)) {
+      result.mentionName = true;
+      if (!result.mentionNameExample && (slice || url)) result.mentionNameExample = slice || url;
+    } else if (type.includes('mention') || /^@[A-Za-z0-9_]{5,32}$/.test(slice)) {
+      result.username = true;
+      if (!result.usernameExample && slice) result.usernameExample = slice;
+    }
+  }
+  return result;
+}
+
+export function getMessageEntities(message) {
+  const entities = [];
+  if (Array.isArray(message?.entities)) entities.push(...message.entities);
+  if (Array.isArray(message?.messageEntities)) entities.push(...message.messageEntities);
+  if (Array.isArray(message?.raw?.entities)) entities.push(...message.raw.entities);
+  return entities;
+}
+
 export function getAuthorLinePatterns() {
   return [
-    { label: 'От ...', regex: /(?:^|\n)\s*От\s+(.+?)(?:\n|$)/i, ruleRegex: '(?:^|\\n)\\s*От\\s+(.+?)(?:\\n|$)' },
-    { label: 'By ...', regex: /(?:^|\n)\s*By\s+(.+?)(?:\n|$)/i, ruleRegex: '(?:^|\\n)\\s*By\\s+(.+?)(?:\\n|$)' }
+    { label: 'label line · multilingual', regex: new RegExp(AUTHOR_LABEL_REGEX, 'i'), ruleRegex: AUTHOR_LABEL_REGEX }
   ];
 }
 
@@ -568,4 +675,8 @@ export function getDetectedMarkers(texts, markers) {
 
 export function escapeRegex(value) {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function unique(values) {
+  return [...new Set((values || []).map((value) => String(value)).filter(Boolean))];
 }

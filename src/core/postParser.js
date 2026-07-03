@@ -97,6 +97,110 @@ export function parseReactionCountDetails(value, rule = {}) {
   };
 }
 
+
+export function extractMentionAuthor(value, rule = {}) {
+  return extractMentionAuthorDetails(value, rule).result;
+}
+
+export function extractMentionAuthorDetails(value, rule = {}) {
+  const message = value && typeof value === 'object' && (value.text !== undefined || value.message !== undefined || value.entities || value.messageEntities)
+    ? value
+    : null;
+  const text = message ? String(message.text || message.message || '') : '';
+  const candidates = message ? getMessageEntitiesForAuthor(message) : [value].filter(Boolean);
+  const allowedKinds = getConfiguredValues(rule).map((item) => String(item));
+  const accepted = [];
+
+  for (const entity of candidates) {
+    const candidate = entityToAuthorCandidate(entity, text);
+    if (!candidate.value) continue;
+    if (allowedKinds.length && !allowedKinds.includes(candidate.kind)) continue;
+    accepted.push(candidate);
+  }
+
+  const selected = accepted[0] || null;
+  return {
+    input: serializeDebugValue(value),
+    allowedKinds,
+    candidates: accepted.slice(0, 5).map((candidate) => ({
+      kind: candidate.kind,
+      type: candidate.type,
+      value: candidate.value,
+      userId: candidate.userId || null,
+      url: candidate.url || ''
+    })),
+    result: selected?.value || ''
+  };
+}
+
+function getMessageEntitiesForAuthor(message) {
+  const entities = [];
+  for (const key of ['entities', 'messageEntities']) {
+    const value = message?.[key];
+    if (Array.isArray(value)) entities.push(...value);
+  }
+  if (message?.raw && Array.isArray(message.raw.entities)) entities.push(...message.raw.entities);
+  return entities;
+}
+
+function entityToAuthorCandidate(entity, text) {
+  if (!entity || typeof entity !== 'object') {
+    return { kind: '', type: '', value: '', userId: null, url: '' };
+  }
+
+  const type = String(entity._ || entity.type || entity.className || entity.kind || entity.constructor?.name || '').toLowerCase();
+  const offset = Number(entity.offset ?? entity.start ?? 0);
+  const length = Number(entity.length ?? 0);
+  const slice = Number.isFinite(offset) && Number.isFinite(length) && length > 0
+    ? text.slice(offset, offset + length).trim()
+    : '';
+  const url = String(entity.url || entity.href || '');
+  const user = entity.user || entity.inputUser || entity.peer || null;
+  const userIdRaw = entity.userId ?? entity.user_id ?? user?.id ?? user?.userId ?? user?.user_id ?? null;
+  const userId = userIdRaw?.value ?? userIdRaw ?? null;
+  const userName = formatMentionUser(user);
+
+  if (type.includes('mentionname') || type.includes('text_mention') || userId) {
+    return {
+      kind: 'mentionName',
+      type,
+      value: slice || userName || (userId ? `tg://user?id=${userId}` : ''),
+      userId,
+      url
+    };
+  }
+
+  if (url && /^tg:\/\/user\?id=\d+/i.test(url)) {
+    return {
+      kind: 'tgUser',
+      type,
+      value: slice || url,
+      userId: url.match(/id=(\d+)/i)?.[1] || null,
+      url
+    };
+  }
+
+  if (type.includes('mention') || /^@[A-Za-z0-9_]{5,32}$/.test(slice)) {
+    return {
+      kind: 'username',
+      type,
+      value: slice.startsWith('@') ? slice : (slice ? `@${slice}` : ''),
+      userId: null,
+      url
+    };
+  }
+
+  return { kind: '', type, value: '', userId: null, url };
+}
+
+function formatMentionUser(user) {
+  if (!user || typeof user !== 'object') return '';
+  const name = [user.firstName, user.lastName, user.first_name, user.last_name].filter(Boolean).join(' ').trim();
+  if (name) return name;
+  const username = user.username || user.userName;
+  return username ? `@${username}` : '';
+}
+
 function getRuleEmojis(rule = {}) {
   const raw = rule.emojis ?? rule.emoji ?? rule.values ?? rule.value;
   if (raw === undefined || raw === null) return [];
@@ -538,6 +642,7 @@ function applyRegex(value, extractor) {
 function transformValue(value, transform, rule = {}) {
   if (transform === 'count') return parseCount(value);
   if (transform === 'reactionCount') return parseReactionCount(value, rule);
+  if (transform === 'mentionAuthor') return extractMentionAuthor(value, rule);
   if (transform === 'telegramUsername') return String(value).startsWith('@') ? String(value) : `@${value}`;
   if (transform === 'exists') return value !== undefined && value !== null && String(value).trim() !== '';
   if (transform === 'notEmpty') return String(value).trim().length > 0;
@@ -560,6 +665,7 @@ function getTransformDetails(value, transform, rule = {}) {
   if (value === undefined || value === null) return null;
   if (transform === 'count') return parseCountDetails(value);
   if (transform === 'reactionCount') return parseReactionCountDetails(value, rule);
+  if (transform === 'mentionAuthor') return extractMentionAuthorDetails(value, rule);
   if (transform === 'telegramUsername') {
     return {
       input: serializeDebugValue(value),

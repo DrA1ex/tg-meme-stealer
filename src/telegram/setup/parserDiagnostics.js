@@ -14,6 +14,7 @@ import {
 
 const TEXT_PATHS = ['text', 'message'];
 const BUTTON_PATHS = ['markup.buttons[].text', 'replyMarkup.rows[].buttons[].text'];
+const ENTITY_PATHS = ['entities[]', 'messageEntities[]'];
 
 export function formatParserPaths(messages = [], draft = {}) {
   const stats = analyzeMessagesForParser(messages);
@@ -23,6 +24,14 @@ export function formatParserPaths(messages = [], draft = {}) {
     const marker = count ? '•' : '✓';
     const authorSuffix = authorCount ? `; author marker in ${authorCount}/${stats.scanned}` : '';
     return `- ${marker} message.${path}: ${count}/${stats.scanned} non-empty${authorSuffix}`;
+  });
+
+  const entityLines = ENTITY_PATHS.map((path) => {
+    const values = messages.flatMap((message) => getSetupValuesByPath(message, path));
+    const mentions = values.filter((entity) => String(entity?._ || entity?.type || entity?.className || '').toLowerCase().includes('mention') || String(entity?.url || '').startsWith('tg://user?id='));
+    const examples = mentions.slice(0, 4).map((entity) => String(entity?._ || entity?.type || entity?.className || entity?.url || 'entity')).join(' · ') || 'none';
+    const marker = mentions.length ? '•' : '✓';
+    return `- ${marker} message.${path}: ${mentions.length} mention-like entities; examples: ${examples}`;
   });
 
   const buttonLines = BUTTON_PATHS.map((path) => {
@@ -57,14 +66,15 @@ export function formatParserPaths(messages = [], draft = {}) {
     sections: [
       ['🔎 Scan', [`Scanned ${stats.scanned} recent source message(s).`]],
       ['📝 Text fields', textLines],
+      ['👤 Author entity fields', entityLines],
       ['👍 Reaction button fields', buttonLines],
       ['🧡 Native reaction fields', nativeReactionLines],
       ['💡 Recommended', [
-        recommendedTextPath?.count ? `Use message.${recommendedTextPath.path} for text/author rules.` : 'No reliable text field detected.',
+        recommendedTextPath?.count ? `Use message.${recommendedTextPath.path} for label-line author rules.` : 'No reliable text field detected.',
         recommendedButtonPath ? `Use message.${recommendedButtonPath.path} for reaction buttons.` : 'No reaction button path detected.',
         recommendedNativeReactionPath ? `Use message.${recommendedNativeReactionPath.path} for native reaction counters.` : 'No native reaction path detected.'
       ]],
-      ['➡️ Next', ['Use Author test / Reaction test to verify the current rules, or Auto suggestions to apply detected paths.']]
+      ['➡️ Next', ['Use Author / Reactions screens for normal setup; this screen is technical diagnostics.']]
     ]
   });
 }
@@ -80,11 +90,11 @@ export function formatAuthorExtractionTest({ messages = [], draft = {}, baseConf
 
   return setupScreen({
     icon: '👤',
-    title: 'Author extraction test',
+    title: 'Author test',
     sections: [
       ['🔎 Scan', [`Matched ${posts.length} post(s) from ${messages.length} scanned message(s).`, `Missing/unknown authors: ${missing}.`]],
       ['🧪 Extracted authors', lines.length ? lines : ['- No matched posts. Check filters first.']],
-      ['➡️ Next', ['If authors look wrong, use Parser paths or Auto suggestions, then test again.']]
+      ['➡️ Next', ['If authors look wrong, open Author options and choose another mode.']]
     ]
   });
 }
@@ -106,12 +116,12 @@ export function formatReactionExtractionTest({ messages = [], draft = {}, baseCo
 
   return setupScreen({
     icon: '👍',
-    title: 'Reaction extraction test',
+    title: 'Reaction test',
     sections: [
       ['🔎 Scan', [`Matched ${posts.length} post(s) from ${messages.length} scanned message(s).`, `Posts with 0 likes: ${zeroLikes}.`]],
       ['🧪 Extracted reactions', lines.length ? lines : ['- No matched posts. Check filters first.']],
       ...(warnings.length ? [['⚠️ Warnings', warnings.map((item) => `- ${item}`)]] : []),
-      ['➡️ Next', ['If values look wrong, open Parser paths and check detected button fields.']]
+      ['➡️ Next', ['If values look wrong, open Reaction options or Technical diagnostics.']]
     ]
   });
 }
@@ -119,7 +129,7 @@ export function formatReactionExtractionTest({ messages = [], draft = {}, baseCo
 export function formatFilterImpact({ messages = [], draft = {}, baseConfig = {} }) {
   const currentPosts = parseDiagnosticPosts(messages, draft, baseConfig);
   const suggestions = markSuggestionStates(buildParserSuggestions(messages, draft), draft)
-    .filter((suggestion) => suggestion.id === 'rec' || suggestion.id.startsWith('f_'));
+    .filter((suggestion) => suggestion.id.startsWith('f_'));
   const suggestionLines = suggestions.map((suggestion) => {
     const clone = structuredClone(draft || {});
     suggestion.apply(clone);
@@ -142,7 +152,7 @@ export function formatFilterImpact({ messages = [], draft = {}, baseConfig = {} 
       ['📌 Current filters', [`Current parser matches ${currentPosts.length}/${messages.length} recent message(s).`]],
       ['✨ Suggestion impact', suggestionLines.length ? suggestionLines : ['- No filter suggestions available.']],
       ['🚫 Rejected examples', rejected.length ? rejected : ['- none in this sample']],
-      ['➡️ Next', ['Use Auto suggestions to apply filters, then run Test parser / Preview.']]
+      ['➡️ Next', ['Use Filter options to apply filters, then run Test content / Preview.']]
     ]
   });
 }
