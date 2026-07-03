@@ -484,11 +484,11 @@ function traceNumberExtractors(context, extractors = [], fallback = 0) {
   }
 
   return {
-    selected: found ? total : 0,
-    fallbackUsed: false,
+    selected: found ? total : fallback,
+    fallbackUsed: !found,
     fallback,
-    fallbackReason: found ? null : 'extractor rules produced no numeric values; selected value is 0 because extractor rules are configured',
-    fallbackSource: null,
+    fallbackReason: found ? null : 'extractor rules produced no numeric values',
+    fallbackSource: found ? null : 'parseReactions(message.markup || message.replyMarkup)',
     rules
   };
 }
@@ -525,7 +525,7 @@ export function extractNumber(context, extractors = [], fallback = 0) {
     if (found && extractor.aggregate !== 'sum') break;
   }
 
-  return found ? total : 0;
+  return found ? total : fallback;
 }
 
 export function getValuesByPath(root, path) {

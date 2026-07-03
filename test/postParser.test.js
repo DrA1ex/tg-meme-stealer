@@ -128,6 +128,27 @@ test('parseMessagesToPosts supports mtcute-shaped messages', () => {
   assert.equal(posts[0].data.media[0].mediaKind, 'photo');
 });
 
+test('parseMessagesToPosts should do reaction fallback', () => {
+  const posts = parseMessagesToPosts(
+    [message({ id: 52, text: 'By Eve', buttons: [['👍 31']] })],
+    {
+      chatId: -1001,
+      parsing: {
+        likes: [{
+          source: 'message',
+          path: 'missing.rows[].buttons[].text',
+          regex: '👍\\s*(\\d+)',
+          group: 1,
+          transform: 'count',
+          aggregate: 'sum'
+        }]
+      }
+    }
+  );
+
+  assert.equal(posts[0].likes, 31);
+});
+
 test('passesFilters supports regex and bool transforms', () => {
   assert.equal(
     passesFilters(

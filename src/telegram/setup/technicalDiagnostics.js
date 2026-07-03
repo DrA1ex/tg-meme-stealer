@@ -396,7 +396,7 @@ export function formatTechnicalMessagePreview({ message = null, draft = {}, base
       ['👎 Dislikes', formatNumberTrace(debug.extractors?.dislikes, 'dislikes')],
       ['🧬 Compact fields', [
         `sender=${JSON.stringify(compact.sender || {})}`,
-        `buttons=${JSON.stringify(compact.markup?.buttons || compact.replyMarkup?.buttons || [])}`,
+        `buttons=${JSON.stringify(compact.markup?.buttons || compact.markup?.rows || compact.replyMarkup?.buttons || compact.replyMarkup?.rows || [])}`,
         `nativeReactions=${JSON.stringify(compact.nativeReactions || compact.reactionCounts || compact.messageReactions || [])}`,
         `entities=${JSON.stringify(compact.entities || compact.messageEntities || [])}`
       ]]

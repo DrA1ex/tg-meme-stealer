@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import os from 'node:os';
 import {
   addParsingRule,
   createSetupDraft,
@@ -172,7 +173,7 @@ test('summarizeParsedPosts and preview select best weekly post', () => {
 });
 
 test('saveDraftConfig creates config when missing', async () => {
-  const dir = await fs.mkdtemp('/private/tmp/tg-memes-config-');
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'tg-memes-config-'));
   const configPath = path.join(dir, 'config.json');
   const draft = createSetupDraft({ parsing: { filters: [] }, templates: {} });
 
@@ -185,7 +186,7 @@ test('saveDraftConfig creates config when missing', async () => {
 });
 
 test('saveDraftConfig backs up and deep-merges existing config', async () => {
-  const dir = await fs.mkdtemp('/private/tmp/tg-memes-config-');
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'tg-memes-config-'));
   const configPath = path.join(dir, 'config.json');
   await fs.writeFile(configPath, JSON.stringify({ publish: { dryRun: true }, sync: { pageSize: 50 } }, null, 2));
   const draft = createSetupDraft({ parsing: { filters: [] }, templates: {} });

@@ -51,14 +51,15 @@ export function toggleSourcePreset(draft, preset) {
   draft.publish = draft.publish || {};
   const beforePublish = structuredClone(draft.publish || {});
   const current = getDraftSources(draft);
-  if (current.some((source) => source.key === preset.key)) {
+  const existed = current.some((source) => source.key === preset.key);
+  if (existed) {
     setPublishSources(draft, current.filter((source) => source.key !== preset.key));
   } else {
     upsertPublishSource(draft, { key: preset.key, where: preset.where });
   }
   const afterPublish = structuredClone(draft.publish || {});
   return {
-    action: current.some((source) => source.key === preset.key) ? 'removed' : 'added',
+    action: existed ? 'removed' : 'added',
     beforePublish,
     afterPublish,
     lines: formatPublishChanges(beforePublish, afterPublish, { compact: true })
