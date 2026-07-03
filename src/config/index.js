@@ -181,8 +181,8 @@ export function applyEnv(config, env) {
 export function deepMerge(base, override, pathParts = []) {
   const result = { ...base };
   for (const [key, value] of Object.entries(override || {})) {
-    if (isPublishTemplatePath(pathParts, key) && Array.isArray(value) && Array.isArray(base?.[key])) {
-      result[key] = mergePublishTemplates(base[key], value);
+    if (isPublishTemplatePath(pathParts, key) && Array.isArray(value)) {
+      result[key] = value;
       continue;
     }
     if (isPublishSourcesPath(pathParts, key) && Array.isArray(value) && Array.isArray(base?.[key])) {
@@ -204,10 +204,6 @@ function isPublishTemplatePath(pathParts, key) {
 
 function isPublishSourcesPath(pathParts, key) {
   return pathParts.length === 1 && pathParts[0] === 'publish' && key === 'sources';
-}
-
-function mergePublishTemplates(baseTemplates, overrideTemplates) {
-  return mergeKeyedObjects(baseTemplates, overrideTemplates);
 }
 
 function mergeKeyedObjects(baseItems, overrideItems) {

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { applyEnv, deepMerge, migrateOldPublishSelections, validateConfig } from '../src/config/index.js';
 
-test('deepMerge preserves defaults and overrides nested values', () => {
+test('deepMerge preserves object defaults and replaces user-defined publish templates', () => {
   const result = deepMerge(
     {
       telegram: { apiId: 1, apiHash: 'default' },
@@ -31,9 +31,95 @@ test('deepMerge preserves defaults and overrides nested values', () => {
     publish: {
       dryRun: true,
       template: [
-        { source: 'best', key: 'week', enabled: true, limit: 20 },
-        { source: 'best', key: 'day', enabled: true, limit: 5 },
+        { source: 'best', key: 'week', limit: 20 },
         { source: 'custom', key: 'night', enabled: false, limit: 3 }
+      ]
+    }
+  });
+});
+
+test('deepMerge keeps default publish templates when user config omits templates', () => {
+  const result = deepMerge(
+    {
+      publish: {
+        dryRun: false,
+        workerIntervalMinutes: 10,
+        template: [
+          { source: 'best', key: 'week', enabled: true, limit: 10 },
+          { source: 'best', key: 'day', enabled: true, limit: 5 }
+        ]
+      }
+    },
+    {
+      publish: {
+        dryRun: true
+      }
+    }
+  );
+
+  assert.deepEqual(result, {
+    publish: {
+      dryRun: true,
+      workerIntervalMinutes: 10,
+      template: [
+        { source: 'best', key: 'week', enabled: true, limit: 10 },
+        { source: 'best', key: 'day', enabled: true, limit: 5 }
+      ]
+    }
+  });
+});
+
+test('deepMerge allows user config to clear default publish templates', () => {
+  const result = deepMerge(
+    {
+      publish: {
+        dryRun: false,
+        template: [
+          { source: 'best', key: 'week', enabled: true, limit: 10 }
+        ]
+      }
+    },
+    {
+      publish: {
+        template: []
+      }
+    }
+  );
+
+  assert.deepEqual(result, {
+    publish: {
+      dryRun: false,
+      template: []
+    }
+  });
+});
+
+test('deepMerge still merges publish sources by key', () => {
+  const result = deepMerge(
+    {
+      publish: {
+        sources: [
+          { key: 'best', where: 'true' },
+          { key: 'controversial', where: 'abs(likes - dislikes) < max(likes, dislikes) * 0.3' }
+        ]
+      }
+    },
+    {
+      publish: {
+        sources: [
+          { key: 'best', where: 'likes > 0' },
+          { key: 'positive', where: 'likes > dislikes' }
+        ]
+      }
+    }
+  );
+
+  assert.deepEqual(result, {
+    publish: {
+      sources: [
+        { key: 'best', where: 'likes > 0' },
+        { key: 'controversial', where: 'abs(likes - dislikes) < max(likes, dislikes) * 0.3' },
+        { key: 'positive', where: 'likes > dislikes' }
       ]
     }
   });
@@ -223,6 +309,20 @@ test('validateConfig rejects invalid publish template settings', () => {
     }),
     /publish\.firstSendAt: expected valid date string[\s\S]*publish\.template\.0\.source: unknown publish source[\s\S]*publish\.template\.0\.windowHours: expected number greater than 0[\s\S]*publish\.template\.0\.posts: expected min <= target <= max[\s\S]*publish\.template\.0\.reactions\.strategy: expected likes, dislikes, sum, or max[\s\S]*publish\.template\.0\.schedule\.time: expected HH:mm[\s\S]*publish\.template\.0\.schedule\.dayOfMonth: expected integer from 1 to 28[\s\S]*publish\.template\.0\.firstSendAt: expected valid date string/
   );
+});
+
+
+test('validateConfig accepts a user-defined template set without default template keys', () => {
+  assert.doesNotThrow(() => validateConfig({
+    ...validConfig(),
+    publish: {
+      ...validConfig().publish,
+      template: [
+        template('daily_morning_best', 'best', { type: 'daily', time: '11:00' }, 12, 'Morning {{count}}'),
+        template('daily_night_best', 'best', { type: 'daily', time: '23:00' }, 12, 'Night {{count}}')
+      ]
+    }
+  }));
 });
 
 test('validateConfig allows custom publish sources and rejects unsafe source expressions', () => {
