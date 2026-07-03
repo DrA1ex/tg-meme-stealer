@@ -35,6 +35,7 @@ export function parserAfterApplyKeyboard() {
 export function publishMenuKeyboard() {
   return inlineKeyboard([
     [button('Presets', 'setup:publish_presets'), button('Traffic suggestions', 'setup:traffic_suggestions')],
+    [button('Manage templates', 'setup:manage_templates')],
     [button('Schedule preview', 'setup:schedule_preview'), button('Schedule doctor', 'setup:schedule_doctor')],
     [button('Source test', 'setup:source_test'), button('Show publish config', 'setup:publish_config')],
     [button('Doctor', 'setup:doctor'), button('Preview', 'setup:preview')],
@@ -69,10 +70,47 @@ export function confirmReplacePublishPresetKeyboard(preset) {
 export function publishAfterPresetKeyboard() {
   return inlineKeyboard([
     [button('Show last change', 'setup:last_change'), button('Show publish config', 'setup:publish_config')],
+    [button('Schedule preview', 'setup:schedule_preview'), button('Manage templates', 'setup:manage_templates')],
     [button('Presets', 'setup:publish_presets')],
     [button('Doctor', 'setup:doctor'), button('Preview', 'setup:preview')],
     [button('Save', 'setup:save'), button('Publishing', 'setup:publish')]
   ]);
+}
+
+export function manageTemplatesKeyboard(templates = []) {
+  const rows = [];
+  for (const template of templates.slice(0, 18)) {
+    const key = template.key;
+    if (!key) continue;
+    rows.push([
+      template.enabled === false
+        ? button(`Enable ${key}`, `setup:template_enable:${key}`)
+        : button(`Disable ${key}`, `setup:template_disable:${key}`)
+    ]);
+    rows.push([button(`Remove ${key}`, `setup:template_remove:${key}`)]);
+  }
+  rows.push([button('Show publish config', 'setup:publish_config')]);
+  rows.push([button('Back', 'setup:publish')]);
+  return inlineKeyboard(rows);
+}
+
+export function confirmRemoveTemplateKeyboard(key) {
+  return inlineKeyboard([
+    [button('Yes, remove template', `setup:template_remove_confirm:${key}`)],
+    [button('Back to templates', 'setup:manage_templates'), button('Publishing', 'setup:publish')]
+  ]);
+}
+
+export function trafficSuggestionsKeyboard(presets = [], options = {}) {
+  const rows = [];
+  for (const preset of presets.slice(0, 4)) {
+    rows.push([button(preset.title, `setup:traffic_apply:${preset.id}`)]);
+  }
+  rows.push([button('Recent scan', 'setup:traffic_suggestions')]);
+  rows.push([button('Extended · week', 'setup:traffic_extended:7'), button('Extended · month', 'setup:traffic_extended:30')]);
+  if (options.maxDays && options.maxDays > 30) rows.push([button(`Extended · max ${options.maxDays}d`, `setup:traffic_extended:${options.maxDays}`)]);
+  rows.push([button('Schedule preview', 'setup:schedule_preview'), button('Publishing', 'setup:publish')]);
+  return inlineKeyboard(rows);
 }
 
 export function previewMenuKeyboard() {

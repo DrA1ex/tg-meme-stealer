@@ -16,7 +16,15 @@ import {
 } from '../core/setupConfig.js';
 import { loadConfig } from '../config/index.js';
 import { sendRichPost } from './richPost.js';
-import { ADVANCED_HELP, DEFAULT_PREVIEW_MESSAGES, DEFAULT_PREVIEW_POSTS, DEFAULT_TEST_MESSAGES } from './setup/constants.js';
+import {
+  ADVANCED_HELP,
+  DEFAULT_PREVIEW_MESSAGES,
+  DEFAULT_PREVIEW_POSTS,
+  DEFAULT_SAMPLE_MAX_MESSAGES,
+  DEFAULT_SAMPLE_MIN_MATCHED,
+  DEFAULT_SAMPLE_STEP_MESSAGES,
+  DEFAULT_TEST_MESSAGES
+} from './setup/constants.js';
 import {
   formatConfirmResetFilters,
   formatLastChange,
@@ -47,9 +55,12 @@ import {
   formatReactionExtractionTest
 } from './setup/parserDiagnostics.js';
 import {
+  buildDatabaseTrafficScheduleSuggestions,
+  buildRecentTrafficScheduleSuggestions,
   formatScheduleDoctor,
   formatSchedulePreview,
-  formatTrafficScheduleSuggestions
+  formatTrafficScheduleSuggestions,
+  getMaxTrafficDays
 } from './setup/scheduleDiagnostics.js';
 import {
   applyPublishPresetToDraft,
@@ -60,10 +71,21 @@ import {
   formatPublishPresetsMenu,
   getPublishPreset
 } from './setup/publishPresets.js';
+import {
+  findPublishTemplate,
+  formatConfirmRemovePublishTemplate,
+  formatManagePublishTemplates,
+  formatPublishTemplateChanged,
+  getPublishTemplates,
+  removePublishTemplate,
+  setPublishTemplateEnabled
+} from './setup/publishTemplates.js';
 import { formatSourceExpressionTest } from './setup/sourceDiagnostics.js';
 import {
   advancedMenuKeyboard,
   confirmReplacePublishPresetKeyboard,
+  confirmRemoveTemplateKeyboard,
+  manageTemplatesKeyboard,
   mergeReplyOptions,
   parserMenuKeyboard,
   previewMenuKeyboard,
@@ -71,7 +93,8 @@ import {
   publishMenuKeyboard,
   publishPresetDetailsKeyboard,
   publishPresetsKeyboard,
-  setupMenuKeyboard
+  setupMenuKeyboard,
+  trafficSuggestionsKeyboard
 } from './setup/keyboards.js';
 import {
   getArgument,
@@ -97,6 +120,7 @@ export class SetupAssistant {
     this.setupSuggestions = new Map();
     this.setupMeta = new Map();
     this.setupLastChange = new Map();
+    this.setupTrafficPresets = new Map();
   }
 
   register(bot) {
@@ -217,6 +241,26 @@ export class SetupAssistant {
       await this.trafficSuggestions(ctx);
       return;
     }
+    if (action === 'traffic_week') {
+      this.ensureSession(ctx);
+      await this.extendedTrafficSuggestions(ctx, 7);
+      return;
+    }
+    if (action === 'traffic_month') {
+      this.ensureSession(ctx);
+      await this.extendedTrafficSuggestions(ctx, 30);
+      return;
+    }
+    if (action === 'traffic_max') {
+      this.ensureSession(ctx);
+      await this.extendedTrafficSuggestions(ctx, getMaxTrafficDays(this.config));
+      return;
+    }
+    if (action === 'manage_templates') {
+      this.ensureSession(ctx);
+      await this.manageTemplates(ctx);
+      return;
+    }
     if (action === 'source_test') {
       this.ensureSession(ctx);
       await this.sourceTest(ctx);
@@ -307,6 +351,20 @@ export class SetupAssistant {
         await this.scheduleDoctor(ctx);
       } else if (action === 'traffic_suggestions') {
         await this.trafficSuggestions(ctx);
+      } else if (action.startsWith('traffic_extended:')) {
+        await this.extendedTrafficSuggestions(ctx, Number(action.slice('traffic_extended:'.length)));
+      } else if (action.startsWith('traffic_apply:')) {
+        await this.applyTrafficPreset(ctx, action.slice('traffic_apply:'.length));
+      } else if (action === 'manage_templates') {
+        await this.manageTemplates(ctx);
+      } else if (action.startsWith('template_enable:')) {
+        await this.setTemplateEnabled(ctx, action.slice('template_enable:'.length), true);
+      } else if (action.startsWith('template_disable:')) {
+        await this.setTemplateEnabled(ctx, action.slice('template_disable:'.length), false);
+      } else if (action.startsWith('template_remove:')) {
+        await this.confirmRemoveTemplate(ctx, action.slice('template_remove:'.length));
+      } else if (action.startsWith('template_remove_confirm:')) {
+        await this.removeTemplate(ctx, action.slice('template_remove_confirm:'.length));
       } else if (action === 'source_test') {
         await this.sourceTest(ctx);
       } else if (action.startsWith('preset:')) {
@@ -338,6 +396,7 @@ export class SetupAssistant {
     this.sessions.set(ctx.from.id, createSetupDraft(this.config));
     this.setupMeta.set(ctx.from.id, createSetupMeta());
     this.setupLastChange.delete(ctx.from.id);
+    this.setupTrafficPresets.delete(ctx.from.id);
     await this.replyWithKeyboard(ctx, formatSetupIntro(this.getDraft(ctx), this.getMeta(ctx)), setupMenuKeyboard());
   }
 
@@ -378,6 +437,10 @@ export class SetupAssistant {
       return;
     }
 
+    await this.applyPublishPresetObject(ctx, preset, { replace, validationKeyboard: publishPresetDetailsKeyboard(preset) });
+  }
+
+  async applyPublishPresetObject(ctx, preset, { replace = false, validationKeyboard = publishMenuKeyboard() } = {}) {
     const draft = this.getDraft(ctx);
     const beforePublish = structuredClone(draft.publish || {});
     applyPublishPresetToDraft(draft, preset, { replace });
@@ -389,8 +452,8 @@ export class SetupAssistant {
       draft.publish = beforePublish;
       await this.replyWithKeyboard(
         ctx,
-        [`Preset was not applied: ${preset.title}`, '', `Validation error: ${error.message}`].join('\n'),
-        publishPresetDetailsKeyboard(preset)
+        [`Preset was not applied: ${preset.title}`, '', `Validation error: ${error.message}`].join(''),
+        validationKeyboard
       );
       return;
     }
@@ -444,13 +507,12 @@ export class SetupAssistant {
 
   async doctor(ctx) {
     const draft = this.getDraft(ctx);
-    await ctx.reply(`Running setup doctor on the latest ${DEFAULT_TEST_MESSAGES} source messages...`);
-    const result = await this.scanner.previewRecent(DEFAULT_TEST_MESSAGES, draft);
+    const result = await this.collectSetupSample(ctx, { purpose: 'setup doctor', includeMessages: true });
     await this.replyWithKeyboard(ctx, formatSetupDoctor({ draft, baseConfig: this.config, preview: result }), setupMenuKeyboard());
   }
 
   async testDefaults(ctx) {
-    const result = await this.scanner.previewRecent(DEFAULT_TEST_MESSAGES, this.getDraft(ctx));
+    const result = await this.collectSetupSample(ctx, { purpose: 'parser test' });
     await replyCode(ctx, summarizeParsedPosts(result, { maxRows: 12 }));
     this.markTested(ctx);
     await this.replyWithKeyboard(ctx, 'Parser test finished.', parserMenuKeyboard());
@@ -463,11 +525,9 @@ export class SetupAssistant {
     });
   }
 
-
   async suggestParser(ctx) {
     const draft = this.getDraft(ctx);
-    await ctx.reply(`Scanning the latest ${DEFAULT_TEST_MESSAGES} source messages for parser suggestions...`);
-    const result = await this.scanner.previewRecent(DEFAULT_TEST_MESSAGES, draft, { includeMessages: true });
+    const result = await this.collectSetupSample(ctx, { purpose: 'parser suggestions', includeMessages: true });
     const suggestions = buildParserSuggestions(result.messages || [], draft);
     this.setupSuggestions.set(ctx.from.id, suggestions);
     await this.replyWithKeyboard(
@@ -481,18 +541,15 @@ export class SetupAssistant {
     );
   }
 
-
   async parserPaths(ctx) {
     const draft = this.getDraft(ctx);
-    await ctx.reply(`Scanning the latest ${DEFAULT_TEST_MESSAGES} source messages for parser paths...`);
-    const result = await this.scanner.previewRecent(DEFAULT_TEST_MESSAGES, draft, { includeMessages: true });
+    const result = await this.collectSetupSample(ctx, { purpose: 'parser paths', includeMessages: true });
     await this.replyWithKeyboard(ctx, formatParserPaths(result.messages || [], draft), parserMenuKeyboard());
   }
 
   async authorTest(ctx) {
     const draft = this.getDraft(ctx);
-    await ctx.reply(`Testing author extraction on the latest ${DEFAULT_TEST_MESSAGES} source messages...`);
-    const result = await this.scanner.previewRecent(DEFAULT_TEST_MESSAGES, draft, { includeMessages: true });
+    const result = await this.collectSetupSample(ctx, { purpose: 'author extraction test', includeMessages: true });
     this.markTested(ctx);
     await this.replyWithKeyboard(ctx, formatAuthorExtractionTest({
       messages: result.messages || [],
@@ -503,8 +560,7 @@ export class SetupAssistant {
 
   async reactionTest(ctx) {
     const draft = this.getDraft(ctx);
-    await ctx.reply(`Testing reaction extraction on the latest ${DEFAULT_TEST_MESSAGES} source messages...`);
-    const result = await this.scanner.previewRecent(DEFAULT_TEST_MESSAGES, draft, { includeMessages: true });
+    const result = await this.collectSetupSample(ctx, { purpose: 'reaction extraction test', includeMessages: true });
     this.markTested(ctx);
     await this.replyWithKeyboard(ctx, formatReactionExtractionTest({
       messages: result.messages || [],
@@ -515,8 +571,7 @@ export class SetupAssistant {
 
   async filterImpact(ctx) {
     const draft = this.getDraft(ctx);
-    await ctx.reply(`Checking filter impact on the latest ${DEFAULT_TEST_MESSAGES} source messages...`);
-    const result = await this.scanner.previewRecent(DEFAULT_TEST_MESSAGES, draft, { includeMessages: true });
+    const result = await this.collectSetupSample(ctx, { purpose: 'filter impact', includeMessages: true });
     await this.replyWithKeyboard(ctx, formatFilterImpact({
       messages: result.messages || [],
       draft,
@@ -534,13 +589,90 @@ export class SetupAssistant {
 
   async trafficSuggestions(ctx) {
     const draft = this.getDraft(ctx);
-    await ctx.reply(`Scanning the latest ${DEFAULT_PREVIEW_MESSAGES} source messages for traffic patterns...`);
-    const result = await this.scanner.previewRecent(DEFAULT_PREVIEW_MESSAGES, draft, { includeMessages: true });
-    await this.replyWithKeyboard(ctx, formatTrafficScheduleSuggestions({
+    const result = await this.collectSetupSample(ctx, {
+      purpose: 'recent traffic suggestions',
+      initialLimit: DEFAULT_PREVIEW_MESSAGES,
+      minMatched: DEFAULT_SAMPLE_MIN_MATCHED,
+      step: DEFAULT_SAMPLE_STEP_MESSAGES,
+      maxLimit: Math.max(DEFAULT_PREVIEW_MESSAGES, DEFAULT_SAMPLE_MAX_MESSAGES),
+      includeMessages: true
+    });
+    const report = buildRecentTrafficScheduleSuggestions({
       messages: result.messages || [],
       draft,
       baseConfig: this.config
-    }), publishMenuKeyboard());
+    });
+    this.setupTrafficPresets.set(ctx.from.id, report.presets || []);
+    await this.replyWithKeyboard(ctx, formatTrafficScheduleSuggestions(report), trafficSuggestionsKeyboard(report.presets || [], { maxDays: getMaxTrafficDays(this.config) }));
+  }
+
+  async extendedTrafficSuggestions(ctx, days) {
+    const safeDays = Math.min(getMaxTrafficDays(this.config), Math.max(1, Number(days || 7)));
+    const report = await buildDatabaseTrafficScheduleSuggestions({
+      repository: this.scanner.repository,
+      draft: this.getDraft(ctx),
+      baseConfig: this.config,
+      days: safeDays
+    });
+    this.setupTrafficPresets.set(ctx.from.id, report.presets || []);
+    await this.replyWithKeyboard(ctx, formatTrafficScheduleSuggestions(report), trafficSuggestionsKeyboard(report.presets || [], { maxDays: getMaxTrafficDays(this.config) }));
+  }
+
+  async applyTrafficPreset(ctx, presetId) {
+    const presets = this.setupTrafficPresets.get(ctx.from.id) || [];
+    const preset = presets.find((item) => item.id === presetId);
+    if (!preset) {
+      await this.replyWithKeyboard(ctx, 'Traffic preset is no longer available. Run Traffic suggestions again.', trafficSuggestionsKeyboard([], { maxDays: getMaxTrafficDays(this.config) }));
+      return;
+    }
+
+    await this.applyPublishPresetObject(ctx, preset, { replace: false });
+  }
+
+  async manageTemplates(ctx) {
+    const draft = this.getDraft(ctx);
+    await this.replyWithKeyboard(ctx, formatManagePublishTemplates(draft), manageTemplatesKeyboard(getPublishTemplates(draft)));
+  }
+
+  async setTemplateEnabled(ctx, key, enabled) {
+    const draft = this.getDraft(ctx);
+    const beforePublish = structuredClone(draft.publish || {});
+    setPublishTemplateEnabled(draft, key, enabled);
+    const afterPublish = structuredClone(draft.publish || {});
+    const action = enabled ? 'Enabled publish template' : 'Disabled publish template';
+    const detail = formatPublishChanges(beforePublish, afterPublish);
+    this.markChanged(ctx, 'publishing', `${action}: ${key}`, detail);
+    await this.replyWithKeyboard(
+      ctx,
+      formatPublishTemplateChanged({ beforePublish, afterPublish, action, key }),
+      manageTemplatesKeyboard(getPublishTemplates(draft))
+    );
+  }
+
+  async confirmRemoveTemplate(ctx, key) {
+    await this.replyWithKeyboard(
+      ctx,
+      formatConfirmRemovePublishTemplate(this.getDraft(ctx), key),
+      confirmRemoveTemplateKeyboard(key)
+    );
+  }
+
+  async removeTemplate(ctx, key) {
+    const draft = this.getDraft(ctx);
+    if (!findPublishTemplate(draft, key)) {
+      await this.replyWithKeyboard(ctx, `Publish template not found: ${key}`, manageTemplatesKeyboard(getPublishTemplates(draft)));
+      return;
+    }
+    const beforePublish = structuredClone(draft.publish || {});
+    removePublishTemplate(draft, key);
+    const afterPublish = structuredClone(draft.publish || {});
+    const detail = formatPublishChanges(beforePublish, afterPublish);
+    this.markChanged(ctx, 'publishing', `Removed publish template: ${key}`, detail);
+    await this.replyWithKeyboard(
+      ctx,
+      formatPublishTemplateChanged({ beforePublish, afterPublish, action: 'Removed publish template', key }),
+      manageTemplatesKeyboard(getPublishTemplates(draft))
+    );
   }
 
   async sourceTest(ctx) {
@@ -549,6 +681,52 @@ export class SetupAssistant {
       draft: this.getDraft(ctx),
       baseConfig: this.config
     }), publishMenuKeyboard());
+  }
+
+  async collectSetupSample(ctx, {
+    purpose = 'setup sample',
+    initialLimit = DEFAULT_TEST_MESSAGES,
+    minMatched = DEFAULT_SAMPLE_MIN_MATCHED,
+    step = DEFAULT_SAMPLE_STEP_MESSAGES,
+    maxLimit = DEFAULT_SAMPLE_MAX_MESSAGES,
+    includeMessages = false
+  } = {}) {
+    const draft = this.getDraft(ctx);
+    const progress = await ctx.reply(formatSampleProgress({
+      purpose,
+      scanned: 0,
+      matched: 0,
+      minMatched,
+      maxLimit,
+      status: 'starting'
+    }));
+
+    const editProgress = async (state) => {
+      const text = formatSampleProgress({ purpose, ...state, status: 'loading' });
+      await ctx.telegram.editMessageText(ctx.chat.id, progress.message_id, undefined, text).catch(() => {});
+    };
+
+    const result = await this.scanner.previewAdaptive({
+      draft,
+      initialLimit,
+      minMatched,
+      step,
+      maxLimit,
+      includeMessages,
+      onProgress: editProgress
+    });
+
+    await ctx.telegram.editMessageText(ctx.chat.id, progress.message_id, undefined, formatSampleProgress({
+      purpose,
+      scanned: result.scanned,
+      matched: result.posts.length,
+      minMatched,
+      maxLimit,
+      exhausted: result.exhausted,
+      status: 'done'
+    })).catch(() => {});
+
+    return result;
   }
 
   async applySuggestion(ctx, suggestionId) {
@@ -661,8 +839,10 @@ export class SetupAssistant {
   }
 
   async test(ctx) {
-    const limit = parseLimit(ctx.message.text, DEFAULT_TEST_MESSAGES);
-    const result = await this.scanner.previewRecent(limit, this.getDraft(ctx));
+    const hasExplicitLimit = Boolean(getArgument(ctx.message.text));
+    const result = hasExplicitLimit
+      ? await this.scanner.previewRecent(parseLimit(ctx.message.text, DEFAULT_TEST_MESSAGES), this.getDraft(ctx))
+      : await this.collectSetupSample(ctx, { purpose: 'parser test' });
     await replyCode(ctx, summarizeParsedPosts(result));
     this.markTested(ctx);
   }
@@ -753,6 +933,7 @@ export class SetupAssistant {
     this.setupSuggestions.delete(ctx.from.id);
     this.setupMeta.delete(ctx.from.id);
     this.setupLastChange.delete(ctx.from.id);
+    this.setupTrafficPresets.delete(ctx.from.id);
   }
 
   async cancel(ctx) {
@@ -760,6 +941,7 @@ export class SetupAssistant {
     this.setupSuggestions.delete(ctx.from.id);
     this.setupMeta.delete(ctx.from.id);
     this.setupLastChange.delete(ctx.from.id);
+    this.setupTrafficPresets.delete(ctx.from.id);
     await this.clearLastSetupKeyboard(ctx);
     await ctx.reply('Setup mode cancelled.');
   }
@@ -861,3 +1043,21 @@ export class SetupAssistant {
 }
 
 export { stringifyForSetup } from './setup/utils.js';
+
+function formatSampleProgress({ purpose, scanned, matched, minMatched, maxLimit, exhausted = false, status = 'loading' }) {
+  const lines = [
+    `🔎 Collecting sample · ${purpose}`,
+    '',
+    `Loaded: ${scanned}/${maxLimit} message(s).`,
+    `Matched parser filters: ${matched}/${minMatched}.`
+  ];
+  if (status === 'starting') lines.push('', 'Starting scan...');
+  else if (status === 'done') {
+    if (matched >= minMatched) lines.push('', 'Done. Enough matched posts for a reliable sample.');
+    else if (exhausted) lines.push('', 'Done. Source history ended before enough matched posts were found.');
+    else lines.push('', 'Done. Sample is still small; parser filters may be strict.');
+  } else if (matched < minMatched) {
+    lines.push('', 'Loading more messages...');
+  }
+  return lines.join('\n');
+}

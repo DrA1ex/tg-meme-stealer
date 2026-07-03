@@ -179,13 +179,14 @@ export function formatPublishMenu(draft, baseConfig = {}) {
       ['🗓 Templates', formatTemplateLines(templates, { includeDisabled: true })],
       ['✨ Available now', [
         'Presets can add/update common schedules with buttons, including time/strictness variants.',
-        'Traffic suggestions looks at recent post times and suggests publish times.',
-        'Schedule preview shows upcoming runs and their selection windows.',
+        'Traffic suggestions has recent-scan and extended database modes, and can add schedules with buttons.',
+        'Manage templates can enable, disable, or remove schedules from the draft.',
+        'Schedule preview shows soon runs plus the next run for every enabled template.',
         'Schedule doctor checks conflicts, firstSendAt shifts, and daily window gaps/overlaps.',
         'Source test checks publish.sources[].where against stored posts.',
         'Advanced JSON still edits exact sources/templates.'
       ]],
-      ['➡️ Next', ['Choose Presets or Traffic suggestions, then run Source test and Schedule doctor.']]
+      ['➡️ Next', ['Choose Presets or Traffic suggestions, then run Source test and Schedule doctor.', 'Use Manage templates to remove old or duplicate schedules.']]
     ]
   });
 }

@@ -262,34 +262,91 @@ export class TelegramScanner {
   }
 
   async previewRecent(limit = 30, draft = {}, options = {}) {
+    const result = await this.previewAdaptive({
+      draft,
+      initialLimit: limit,
+      minMatched: Number.POSITIVE_INFINITY,
+      step: 0,
+      maxLimit: limit,
+      includeMessages: options.includeMessages
+    });
+    return result;
+  }
+
+  async previewAdaptive({
+    draft = {},
+    initialLimit = 40,
+    minMatched = 30,
+    step = 20,
+    maxLimit = 160,
+    includeMessages = false,
+    onProgress = null
+  } = {}) {
     const messages = [];
     let offset = undefined;
     let pages = 0;
+    let nextTarget = Math.max(1, Number(initialLimit || 40));
+    const maxMessages = Math.max(nextTarget, Number(maxLimit || nextTarget));
+    const stepSize = Math.max(1, Number(step || 1));
+    let posts = [];
+    let exhausted = false;
 
-    this.logger.info('Preview scan started', { requestedMessages: limit });
-
-    while (messages.length < limit) {
-      pages += 1;
-      const batchLimit = Math.min(this.config.sync.pageSize, limit - messages.length);
-      const history = await this.getHistory({ limit: batchLimit, offset });
-      const batch = [...history];
-      if (batch.length === 0) break;
-      messages.push(...batch);
-      if (!history.next) break;
-      offset = history.next;
-    }
-
-    const posts = parseMessagesToPosts(messages, {
-      chatId: this.config.telegram.sourceChatId,
-      parsing: draft.parsing || this.config.parsing
+    this.logger.info('Adaptive preview scan started', {
+      initialLimit: nextTarget,
+      minMatched,
+      step: stepSize,
+      maxLimit: maxMessages
     });
 
-    this.logger.info('Preview scan finished', { pages, scanned: messages.length, matched: posts.length });
+    while (messages.length < maxMessages) {
+      while (messages.length < nextTarget && messages.length < maxMessages) {
+        pages += 1;
+        const batchLimit = Math.min(this.config.sync.pageSize, nextTarget - messages.length, maxMessages - messages.length);
+        const history = await this.getHistory({ limit: batchLimit, offset });
+        const batch = [...history];
+        if (batch.length === 0) {
+          exhausted = true;
+          break;
+        }
+        messages.push(...batch);
+        if (!history.next) exhausted = true;
+        offset = history.next;
+        if (exhausted) break;
+      }
+
+      posts = parseMessagesToPosts(messages, {
+        chatId: this.config.telegram.sourceChatId,
+        parsing: draft.parsing || this.config.parsing
+      });
+
+      if (typeof onProgress === 'function') {
+        await onProgress({
+          pages,
+          scanned: messages.length,
+          matched: posts.length,
+          minMatched,
+          maxLimit: maxMessages,
+          exhausted
+        });
+      }
+
+      if (posts.length >= minMatched || exhausted || messages.length >= maxMessages || !Number.isFinite(minMatched)) break;
+      nextTarget = Math.min(maxMessages, messages.length + stepSize);
+    }
+
+    this.logger.info('Adaptive preview scan finished', {
+      pages,
+      scanned: messages.length,
+      matched: posts.length,
+      exhausted
+    });
 
     return {
       scanned: messages.length,
       posts,
-      ...(options.includeMessages ? { messages } : {})
+      pages,
+      exhausted,
+      ...(includeMessages ? { messages } : {})
     };
   }
 

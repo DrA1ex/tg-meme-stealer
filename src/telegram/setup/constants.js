@@ -1,6 +1,10 @@
-export const DEFAULT_TEST_MESSAGES = 30;
+export const DEFAULT_TEST_MESSAGES = 40;
 export const DEFAULT_PREVIEW_MESSAGES = 100;
 export const DEFAULT_PREVIEW_POSTS = 5;
+export const DEFAULT_SAMPLE_MIN_MATCHED = 30;
+export const DEFAULT_SAMPLE_STEP_MESSAGES = 20;
+export const DEFAULT_SAMPLE_MAX_MESSAGES = 160;
+export const MIN_TRAFFIC_DATABASE_POSTS = 30;
 
 export const ADVANCED_HELP = [
   'Advanced setup commands:',

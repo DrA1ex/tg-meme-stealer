@@ -8,30 +8,34 @@ import {
   getPreviousScheduledRunAsDate
 } from '../../runtime/scheduler.js';
 import { findScheduleConflicts, formatSchedule, setupScreen } from './formattingBase.js';
+import { MIN_TRAFFIC_DATABASE_POSTS } from './constants.js';
+import { publishTemplate } from './publishPresets.js';
 
 const DAY_MINUTES = 24 * 60;
+const DEFAULT_TRAFFIC_DB_DAYS = 7;
+const TRAFFIC_PRESET_SOURCE = { key: 'best', where: 'likes > 0' };
 
 export function formatSchedulePreview(draft = {}, baseConfig = {}, now = new Date()) {
   const config = buildRuntimeConfig(draft, baseConfig);
   const timezone = config.schedule?.timezone || 'UTC';
   const entries = getScheduledPublishEntries(config);
   const templates = getTemplates(config);
-  const events = buildNextScheduleEvents({ entries, templates, timezone, now, limit: 8 });
+  const soonEvents = buildNextScheduleEvents({ entries, templates, timezone, now, limit: 8 });
+  const byTemplateEvents = buildNextScheduleEventsByTemplate({ entries, templates, timezone, now });
   const firstSendLines = buildFirstSendNotes({ entries, timezone, now });
 
-  const eventLines = events.map((event) => {
-    const windowStart = new Date(event.runAt.getTime() - Number(event.template?.windowHours || 24) * 60 * 60 * 1000);
-    return `- ${formatLocalDateTime(event.runAt, timezone)} · ${event.key} · window ${formatLocalTime(windowStart, timezone)}–${formatLocalTime(event.runAt, timezone)}`;
-  });
+  const soonLines = soonEvents.map((event) => formatScheduleEvent(event, timezone));
+  const byTemplateLines = byTemplateEvents.map((event) => formatScheduleEvent(event, timezone));
 
   return setupScreen({
     icon: '📅',
     title: 'Schedule preview',
     sections: [
       ['🕒 Timezone', [timezone]],
-      ['📌 Next planned publications', eventLines.length ? eventLines : ['- no enabled scheduled templates']],
+      ['📌 Soon', soonLines.length ? soonLines : ['- no enabled scheduled templates']],
+      ['🧭 By template', byTemplateLines.length ? byTemplateLines : ['- no enabled scheduled templates']],
       ['🚦 First send gate', firstSendLines.length ? firstSendLines : ['- no active firstSendAt gate or no runs affected in this sample']],
-      ['➡️ Next', ['Use Schedule doctor for overlap/gap warnings, or Presets to rebuild common schedules.']]
+      ['➡️ Next', ['Use Schedule doctor for overlap/gap warnings, or Manage templates to remove old schedules.']]
     ]
   });
 }
@@ -76,43 +80,169 @@ export function formatScheduleDoctor(draft = {}, baseConfig = {}, now = new Date
   });
 }
 
-
-export function formatTrafficScheduleSuggestions({ messages = [], draft = {}, baseConfig = {}, now = new Date() } = {}) {
+export function buildRecentTrafficScheduleSuggestions({ messages = [], draft = {}, baseConfig = {} } = {}) {
   const config = buildRuntimeConfig(draft, baseConfig);
   const timezone = config.schedule?.timezone || 'UTC';
   const posts = parseMessagesToPosts(messages, {
     chatId: config.telegram?.sourceChatId,
     parsing: draft.parsing || config.parsing || {}
   });
-  const datedItems = posts.length
-    ? posts.map((post) => ({ id: post.messageId, date: new Date(post.messageDate) }))
-    : messages.map((message) => ({ id: message?.id, date: getMessageDate(message) })).filter((item) => item.date);
-  const buckets = buildHourlyBuckets(datedItems, timezone);
-  const topHours = [...buckets.entries()]
-    .filter(([, count]) => count > 0)
-    .sort((a, b) => b[1] - a[1] || a[0] - b[0])
-    .slice(0, 5);
-  const activeClusters = buildActiveClusters(buckets);
-  const suggestions = buildScheduleSuggestionsFromTraffic({ topHours, activeClusters });
-
-  const bucketLines = topHours.map(([hour, count]) => `- ${formatHour(hour)}–${formatHour(hour + 1)}: ${count} post/message(s)`);
-  const clusterLines = activeClusters.slice(0, 4).map((cluster) => `- ${formatHour(cluster.start)}–${formatHour(cluster.end)}: ${cluster.count} post/message(s)`);
-
-  return setupScreen({
-    icon: '📊',
-    title: 'Traffic-aware schedule suggestions',
-    sections: [
-      ['🔎 Sample', [
-        `Scanned ${messages.length} recent message(s).`,
-        posts.length ? `Using ${posts.length} parser-matched post(s).` : 'No matched posts; falling back to raw message dates.',
-        `Timezone: ${timezone}.`
-      ]],
-      ['⏱ Busiest hours', bucketLines.length ? bucketLines : ['- no dated messages found']],
-      ['📈 Active clusters', clusterLines.length ? clusterLines : ['- no activity clusters found']],
-      ['💡 Suggested schedules', suggestions.length ? suggestions.map((item) => `- ${item}`) : ['- not enough traffic data for a confident suggestion']],
-      ['➡️ Next', ['Use Publish presets for a close starting point, then adjust exact times in Advanced JSON if needed.']]
-    ]
+  const rawItems = messages.map((message) => ({ id: message?.id, date: getMessageDate(message) })).filter((item) => item.date);
+  const items = posts.length
+    ? posts.map((post) => ({ id: post.messageId, date: new Date(post.messageDate), likes: post.likes, dislikes: post.dislikes }))
+    : rawItems;
+  const report = buildTrafficReport({
+    items,
+    timezone,
+    source: posts.length ? 'recent parser-matched Telegram messages' : 'recent raw Telegram messages',
+    sampleLines: [
+      `Scanned ${messages.length} recent Telegram message(s).`,
+      `Matched parser filters: ${posts.length}.`,
+      `Rejected by parser filters: ${Math.max(0, messages.length - posts.length)}.`,
+      posts.length ? 'Traffic is based on parser-matched posts.' : 'No matched posts; falling back to raw message dates.'
+    ],
+    allowPresets: items.length >= 10
   });
+
+  return {
+    ...report,
+    scanned: messages.length,
+    matched: posts.length,
+    rejected: Math.max(0, messages.length - posts.length),
+    mode: 'recent'
+  };
+}
+
+export async function buildDatabaseTrafficScheduleSuggestions({ repository, draft = {}, baseConfig = {}, days = DEFAULT_TRAFFIC_DB_DAYS } = {}) {
+  const config = buildRuntimeConfig(draft, baseConfig);
+  const timezone = config.schedule?.timezone || 'UTC';
+  const chatId = config.telegram?.sourceChatId;
+  const safeDays = Math.max(1, Number(days || DEFAULT_TRAFFIC_DB_DAYS));
+  const sinceIso = new Date(Date.now() - safeDays * 24 * 60 * 60 * 1000).toISOString();
+
+  if (!repository?.all) {
+    return {
+      message: setupScreen({
+        icon: '📊',
+        title: 'Extended traffic suggestions',
+        sections: [
+          ['⚠️ Unable to analyze database', ['Repository is not available in this setup context.']],
+          ['➡️ Next', ['Run this from the normal app/setup process with an initialized database.']]
+        ]
+      }),
+      presets: [],
+      mode: 'database',
+      days: safeDays
+    };
+  }
+
+  const rows = await repository.all(
+    `
+      SELECT message_id AS messageId, likes, dislikes, message_date AS messageDate
+      FROM posts
+      WHERE chat_id = ?
+        AND message_date >= ?
+      ORDER BY message_date DESC, message_id DESC
+    `,
+    [String(chatId), sinceIso]
+  );
+
+  const items = rows
+    .map((row) => ({
+      id: row.messageId,
+      date: new Date(row.messageDate),
+      likes: Number(row.likes || 0),
+      dislikes: Number(row.dislikes || 0)
+    }))
+    .filter((item) => item.date instanceof Date && !Number.isNaN(item.date.getTime()));
+
+  const tooSmall = items.length < MIN_TRAFFIC_DATABASE_POSTS;
+  const report = buildTrafficReport({
+    items,
+    timezone,
+    source: `database posts from last ${safeDays} day(s)`,
+    sampleLines: [
+      `Stored parsed posts in range: ${items.length}.`,
+      `Range: last ${safeDays} day(s).`,
+      `Chat: ${chatId || '<missing sourceChatId>'}.`,
+      tooSmall
+        ? `Need at least ${MIN_TRAFFIC_DATABASE_POSTS} stored post(s) for extended suggestions.`
+        : 'Traffic is based on stored, already parsed posts.'
+    ],
+    allowPresets: !tooSmall
+  });
+
+  return {
+    ...report,
+    mode: 'database',
+    days: safeDays,
+    tooSmall,
+    count: items.length
+  };
+}
+
+export function formatTrafficScheduleSuggestions(report) {
+  return report.message;
+}
+
+export function getMaxTrafficDays(config = {}) {
+  const values = [
+    Number(config.sync?.retentionDays),
+    Number(config.sync?.initialScanDays),
+    Number(config.sync?.refreshRecentDays)
+  ].filter((value) => Number.isFinite(value) && value > 0);
+  return Math.min(365, Math.max(7, ...values, 30));
+}
+
+export function buildTrafficPreset({ id, title, kind, time, morningTime, nightTime, notes = [] }) {
+  if (kind === 'morning_night') {
+    return {
+      id,
+      title,
+      description: `Traffic-based morning/night split at ${morningTime} and ${nightTime}.`,
+      sources: [TRAFFIC_PRESET_SOURCE],
+      templates: [
+        publishTemplate({
+          source: 'best',
+          key: 'daily_morning_best',
+          schedule: { type: 'daily', time: morningTime },
+          windowHours: 12,
+          posts: { min: 5, target: 10, max: 20 },
+          reactions: { strategy: 'likes', min: 20, includeAbove: 30 },
+          template: 'Best {{count}} morning fresh posts'
+        }),
+        publishTemplate({
+          source: 'best',
+          key: 'daily_night_best',
+          schedule: { type: 'daily', time: nightTime },
+          windowHours: 12,
+          posts: { min: 5, target: 10, max: 20 },
+          reactions: { strategy: 'likes', min: 20, includeAbove: 30 },
+          template: 'Best {{count}} night fresh posts'
+        })
+      ],
+      notes
+    };
+  }
+
+  return {
+    id,
+    title,
+    description: `Traffic-based daily digest at ${time}.`,
+    sources: [TRAFFIC_PRESET_SOURCE],
+    templates: [
+      publishTemplate({
+        source: 'best',
+        key: 'daily_best',
+        schedule: { type: 'daily', time },
+        windowHours: 24,
+        posts: { min: 5, target: 10, max: 20 },
+        reactions: { strategy: 'likes', min: 20, includeAbove: 30 },
+        template: 'Best {{count}} posts from the last 24h'
+      })
+    ],
+    notes
+  };
 }
 
 function buildRuntimeConfig(draft, baseConfig) {
@@ -121,6 +251,11 @@ function buildRuntimeConfig(draft, baseConfig) {
 
 function getTemplates(config) {
   return Array.isArray(config.publish?.template) ? config.publish.template : [];
+}
+
+function formatScheduleEvent(event, timezone) {
+  const windowStart = new Date(event.runAt.getTime() - Number(event.template?.windowHours || 24) * 60 * 60 * 1000);
+  return `- ${formatLocalDateTime(event.runAt, timezone)} · ${event.key} · window ${formatLocalDateTime(windowStart, timezone)}–${formatLocalDateTime(event.runAt, timezone)}`;
 }
 
 function buildNextScheduleEvents({ entries, templates, timezone, now, limit }) {
@@ -148,6 +283,18 @@ function buildNextScheduleEvents({ entries, templates, timezone, now, limit }) {
   }
 
   return events;
+}
+
+function buildNextScheduleEventsByTemplate({ entries, templates, timezone, now }) {
+  const templateByKey = new Map(templates.map((template) => [`${template.source}.${template.key}`, template]));
+  return entries
+    .map((entry) => ({
+      key: entry.key,
+      entry,
+      template: templateByKey.get(entry.key),
+      runAt: getNextEligibleScheduledRunAsDate({ now, schedule: entry.schedule, timezone, firstSendAtIso: entry.firstSendAtIso })
+    }))
+    .sort((a, b) => a.key.localeCompare(b.key));
 }
 
 function buildFirstSendNotes({ entries, timezone, now }) {
@@ -224,7 +371,6 @@ function mergeIntervals(intervals) {
   return merged;
 }
 
-
 function analyzeDailyWindowsBySource(templates) {
   const daily = templates.filter((template) => template.schedule?.type === 'daily');
   if (daily.length <= 1) return [];
@@ -258,6 +404,42 @@ function getMessageDate(message) {
   const value = Number(message.date);
   if (!Number.isFinite(value)) return null;
   return new Date(value > 10_000_000_000 ? value : value * 1000);
+}
+
+function buildTrafficReport({ items, timezone, source, sampleLines, allowPresets }) {
+  const buckets = buildHourlyBuckets(items, timezone);
+  const topHours = [...buckets.entries()]
+    .filter(([, count]) => count > 0)
+    .sort((a, b) => b[1] - a[1] || a[0] - b[0])
+    .slice(0, 5);
+  const activeClusters = buildActiveClusters(buckets);
+  const suggestionLines = buildScheduleSuggestionsFromTraffic({ topHours, activeClusters });
+  const presets = allowPresets ? buildTrafficPresetsFromTraffic({ topHours, activeClusters }) : [];
+
+  const bucketLines = topHours.map(([hour, count]) => `- ${formatHour(hour)}–${formatHour(hour + 1)}: ${count} post/message(s)`);
+  const clusterLines = activeClusters.slice(0, 4).map((cluster) => `- ${formatHour(cluster.start)}–${formatHour(cluster.end)}: ${cluster.count} post/message(s)`);
+
+  return {
+    presets,
+    message: setupScreen({
+      icon: '📊',
+      title: 'Traffic-aware schedule suggestions',
+      sections: [
+        ['🔎 Sample', [
+          ...sampleLines,
+          `Source: ${source}.`,
+          `Timezone: ${timezone}.`
+        ]],
+        ['⏱ Busiest hours', bucketLines.length ? bucketLines : ['- no dated posts/messages found']],
+        ['📈 Active clusters', clusterLines.length ? clusterLines : ['- no activity clusters found']],
+        ['💡 Suggested schedules', suggestionLines.length ? suggestionLines.map((item) => `- ${item}`) : ['- not enough traffic data for a confident suggestion']],
+        ['🧩 Actions', presets.length
+          ? presets.map((preset) => `- ${preset.title}: can be applied from buttons below.`)
+          : ['- no apply buttons because the sample is too small or empty.']],
+        ['➡️ Next', ['Use Apply buttons to add/update schedules, or run extended suggestions from database for a longer range.']]
+      ]
+    })
+  };
 }
 
 function buildHourlyBuckets(items, timezone) {
@@ -316,19 +498,54 @@ function buildScheduleSuggestionsFromTraffic({ topHours, activeClusters }) {
   const dailyTime = formatTime((busiestHour + 1) % 24, 0);
   suggestions.push(`Daily top around ${dailyTime}: one digest shortly after the busiest hour.`);
 
-  const morningCluster = activeClusters.find((cluster) => normalizeHour(cluster.start) < 14);
-  const eveningCluster = activeClusters.find((cluster) => normalizeHour(cluster.start) >= 14) || activeClusters[0];
-  if (morningCluster && eveningCluster && morningCluster !== eveningCluster) {
-    suggestions.push(`Morning + night around ${formatTime(normalizeHour(morningCluster.end + 1), 0)} / ${formatTime(normalizeHour(eveningCluster.end + 1), 0)}: split the day around active clusters.`);
+  const split = chooseMorningNightTimes(activeClusters);
+  if (split) {
+    suggestions.push(`Morning + night around ${split.morningTime} / ${split.nightTime}: split the day around active clusters.`);
   } else {
     suggestions.push('Morning + night 11:00 / 23:00: use the standard split if traffic is spread out or sample is small.');
   }
 
   if (topHours.length >= 3) {
     const latestTop = Math.max(...topHours.slice(0, 3).map(([hour]) => hour));
-    suggestions.push(`Night digest around ${formatTime((latestTop + 1) % 24, 0)}: good if most reactions arrive later in the day.`);
+    suggestions.push(`Night digest around ${formatTime((latestTop + 1) % 24, 0)}: good if most posts arrive later in the day.`);
   }
   return suggestions;
+}
+
+function buildTrafficPresetsFromTraffic({ topHours, activeClusters }) {
+  if (!topHours.length) return [];
+  const presets = [];
+  const busiestHour = topHours[0][0];
+  const dailyTime = formatTime((busiestHour + 1) % 24, 0);
+  presets.push(buildTrafficPreset({
+    id: `traffic_daily_${dailyTime.replace(':', '')}`,
+    title: `Apply daily digest · ${dailyTime}`,
+    kind: 'daily',
+    time: dailyTime,
+    notes: ['Generated from observed traffic. Apply/update keeps unrelated templates.']
+  }));
+
+  const split = chooseMorningNightTimes(activeClusters) || { morningTime: '11:00', nightTime: '23:00' };
+  presets.push(buildTrafficPreset({
+    id: `traffic_mn_${split.morningTime.replace(':', '')}_${split.nightTime.replace(':', '')}`,
+    title: `Apply morning/night · ${split.morningTime} / ${split.nightTime}`,
+    kind: 'morning_night',
+    morningTime: split.morningTime,
+    nightTime: split.nightTime,
+    notes: ['Generated from observed traffic. Apply/update keeps unrelated templates.']
+  }));
+
+  return presets;
+}
+
+function chooseMorningNightTimes(activeClusters) {
+  const morningCluster = activeClusters.find((cluster) => normalizeHour(cluster.start) < 14);
+  const eveningCluster = activeClusters.find((cluster) => normalizeHour(cluster.start) >= 14) || activeClusters[0];
+  if (!morningCluster || !eveningCluster || morningCluster === eveningCluster) return null;
+  return {
+    morningTime: formatTime(normalizeHour(morningCluster.end + 1), 0),
+    nightTime: formatTime(normalizeHour(eveningCluster.end + 1), 0)
+  };
 }
 
 function normalizeHour(hour) {
@@ -366,13 +583,4 @@ function formatLocalDateTime(date, timezone) {
     minute: '2-digit',
     hour12: false
   }).format(date).replace(',', '');
-}
-
-function formatLocalTime(date, timezone) {
-  return new Intl.DateTimeFormat('en-GB', {
-    timeZone: timezone,
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false
-  }).format(date);
 }
