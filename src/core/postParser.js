@@ -60,6 +60,14 @@ export function getReactionEmoji(value) {
       reaction?.emoticon ??
       reaction?.value ??
       reaction?.reaction ??
+      reaction?.customEmojiId ??
+      reaction?.custom_emoji_id ??
+      reaction?.documentId ??
+      reaction?.document_id ??
+      value?.customEmojiId ??
+      value?.custom_emoji_id ??
+      value?.documentId ??
+      value?.document_id ??
       ''
   );
 }

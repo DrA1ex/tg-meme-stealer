@@ -89,6 +89,23 @@ export function parseSourceTextCommand(text = '') {
   return source;
 }
 
+
+export function parseCustomSourceInput(text = '') {
+  const raw = String(text || '').trim();
+  const [firstLine, ...restLines] = raw.split(/\r?\n/);
+  const key = String(firstLine || '').trim();
+  const where = restLines.join('\n').trim();
+  if (!key || !where) {
+    throw new Error('Send source key on the first line and expression on the second line.');
+  }
+  if (!/^[A-Za-z][A-Za-z0-9_-]{0,31}$/.test(key)) {
+    throw new Error('Source key must start with a letter and contain only letters, numbers, _ or -; max 32 chars.');
+  }
+  const source = { key, where };
+  validateSourceExpression(source);
+  return source;
+}
+
 export function validateSourceExpression(source = {}) {
   if (!source.key || typeof source.key !== 'string') throw new Error('Source key must be a non-empty string');
   compileSourceWhere(source.where || 'true');
@@ -98,28 +115,28 @@ export function validateSourceExpression(source = {}) {
 export function formatCustomSourceHelp(error = '') {
   return setupScreen({
     icon: '✍️',
-    title: 'Custom source condition',
+    title: 'Add custom source',
     sections: [
       ...(error ? [['❌ Last error', [error]]] : []),
-      ['📌 Usage', [
-        '/setsource <key> <where>',
-        'Example: /setsource positive likes > dislikes and likes >= 10',
-        'JSON also works: /setsource {"key":"positive","where":"likes > dislikes"}'
+      ['📌 Send source as text', [
+        'First line: source key.',
+        'Second line: expression.',
+        '',
+        'Example:',
+        'positive',
+        'likes > dislikes and likes >= 10'
       ]],
-      ['🧮 Allowed fields', [
-        'likes, dislikes',
-        'Operators: > >= < <= = != + - * / % and or not',
-        'Functions: abs(...), min(...), max(...)',
-        'Examples:',
-        '- likes > 0',
-        '- dislikes > likes',
-        '- likes + dislikes >= 10',
-        '- abs(likes - dislikes) < max(likes, dislikes) * 0.25'
+      ['🧮 Allowed expression', [
+        'Fields: likes, dislikes.',
+        'Operators: > >= < <= = != + - * / % and or not.',
+        'Functions: abs(...), min(...), max(...).',
+        'Examples: likes > 0; dislikes > likes; likes + dislikes >= 10.'
       ]],
-      ['➡️ Next', ['Send /setsource with your condition. It will be validated before saving.']]
+      ['➡️ Next', ['Send the two-line text now, or press Back.']]
     ]
   });
 }
+
 
 export function formatSourcesMenu(draft = {}, baseConfig = {}) {
   const sources = getSourceDefinitionsFromDraft(draft, baseConfig);

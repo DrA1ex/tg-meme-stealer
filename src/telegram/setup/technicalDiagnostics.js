@@ -1,9 +1,11 @@
-import { debugParseMessage, getReactionCount, getReactionEmoji, parseMessagesToPosts } from '../../core/postParser.js';
+import { debugParseMessage, getReactionCount, getReactionEmoji, parseCount, parseMessagesToPosts } from '../../core/postParser.js';
 import { setupScreen } from './formattingBase.js';
 import {
   analyzeMessagesForParser,
   AUTHOR_LABEL_REGEX,
   countNativeReactionEmojis,
+  formatReactionCountsForDisplay,
+  formatReactionEmojiForSetup,
   detectAuthorEntities,
   formatSetupSenderLabel,
   getMessageEntities,
@@ -115,20 +117,20 @@ export function formatReactionFields(messages = []) {
   const buttonLines = BUTTON_PATHS.flatMap((path) => {
     const labels = stats.buttonPaths.get(path) || [];
     const messageCount = countMessagesWithPath(messages, path);
-    const topLabels = topValues(labels).slice(0, 10).map(([label, count]) => `${label} ×${count}`);
+    const markerSummary = summarizeButtonReactionLabels(labels);
     return [
       `- ${path} · ${messageCount}/${messages.length} messages, ${labels.length} labels`,
-      ...(topLabels.length ? [`  ${topLabels.join(' · ')}`] : [])
+      ...(markerSummary.length ? [`  ${markerSummary.join(' · ')}`] : [])
     ];
   });
 
   const nativeLines = NATIVE_REACTION_PATHS.flatMap((path) => {
     const values = stats.nativeReactionPaths.get(path) || [];
     const messageCount = countMessagesWithNativeReactionPath(messages, path);
-    const emojiCounts = countNativeReactionEmojis(values).slice(0, 12).map(([emoji, count]) => `${emoji}=${count}`);
+    const emojiCountsText = formatReactionCountsForDisplay(countNativeReactionEmojis(values).slice(0, 12));
     return [
       `- ${path} · ${messageCount}/${messages.length} messages, ${values.length} reaction row(s)`,
-      ...(emojiCounts.length ? [`  ${emojiCounts.join(' · ')}`] : [])
+      ...(emojiCountsText && emojiCountsText !== 'none' ? [`  ${emojiCountsText}`] : [])
     ];
   });
 
@@ -139,6 +141,7 @@ export function formatReactionFields(messages = []) {
       ['📦 Sample', [`Scanned ${messages.length} loaded source message(s).`]],
       ['🔘 Button counters', buttonLines.length ? buttonLines : ['- no button counter fields found']],
       ['🧡 Native reactions', nativeLines.length ? nativeLines : ['- no native reaction fields found']],
+      ['ℹ️ Legend', ['◆ = custom Telegram reaction/sticker emoji. Button counters are grouped by marker, not by full label text.']],
       ['➡️ Next', ['Open Reactions → Reaction options to choose one of the detected modes.']]
     ]
   });
@@ -291,7 +294,7 @@ export function formatMessageBrowser({ messages = [], draft = {}, baseConfig = {
     const post = postByMessageId.get(id);
     const date = formatMessageDate(message);
     const media = getSetupMediaKind(message);
-    const text = oneLine(String(message?.message || message?.text || '').replace(/\n/g, ' '), 42) || '<no text>';
+    const text = oneLine(String(message?.message || message?.text || '').replace(/\n/g, ' '), 90) || '<no text>';
     return `- #${id || '?'} · ${post ? '✓ matched' : '✗ rejected'} · ${date} · ${media} · ${post ? `👍${post.likes || 0}/👎${post.dislikes || 0}` : 'not parsed'} · ${text}`;
   });
   return setupScreen({
@@ -331,6 +334,7 @@ export function formatTechnicalMessagePreview({ message = null, draft = {}, base
         `media=${getSetupMediaKind(message)}`,
         `text=${oneLine(String(message?.message || message?.text || ''), 90) || '<no text>'}`
       ]],
+      ['📝 Message text', [String(message?.message || message?.text || '').trim() || '<no text>']],
       ['✅ Parsed result', debug.result?.post ? [
         `author=${debug.result.post.author || 'unknown'}`,
         `likes=${debug.result.post.likes || 0}, dislikes=${debug.result.post.dislikes || 0}`
@@ -493,6 +497,26 @@ function countBy(values) {
   return counts;
 }
 
+
+function summarizeButtonReactionLabels(labels = []) {
+  const markers = ['👍', '👎', '❤', '❤️', '🔥', '😂', '😁', '😍', '🥰', '👏', '🎉', '💩', '🤡', '🤮', '😡', '😢', '😭', '+', '-'];
+  const stats = new Map();
+  for (const label of labels || []) {
+    const text = String(label || '');
+    for (const marker of markers) {
+      if (!text.includes(marker)) continue;
+      const current = stats.get(marker) || { labels: 0, total: 0 };
+      current.labels += 1;
+      current.total += parseCount(text);
+      stats.set(marker, current);
+    }
+  }
+  return [...stats.entries()]
+    .sort((a, b) => b[1].labels - a[1].labels || b[1].total - a[1].total)
+    .slice(0, 8)
+    .map(([marker, value]) => `${marker}: ${value.labels} label(s), total ${value.total}`);
+}
+
 function topValues(values = []) {
   const counts = new Map();
   for (const value of values.map((item) => String(item || '').trim()).filter(Boolean)) {
@@ -555,7 +579,7 @@ function compactReactions(reactions) {
 
 function compactReactionRow(row) {
   return pruneEmpty({
-    emoji: getReactionEmoji(row),
+    emoji: formatReactionEmojiForSetup(getReactionEmoji(row)),
     count: getReactionCount(row),
     rawType: row?._ || row?.type || row?.className
   });

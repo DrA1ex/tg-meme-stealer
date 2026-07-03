@@ -166,10 +166,18 @@ export function trafficSuggestionsKeyboard(presets = [], options = {}) {
 export function sourcesKeyboard(draft = {}) {
   const selected = new Set((Array.isArray(draft?.publish?.sources) ? draft.publish.sources : []).map((source) => source.key));
   const rows = SOURCE_PRESETS.map((preset) => [button(`${selected.has(preset.key) ? '✓' : '•'} ${preset.title}`, `setup:source_preset:${preset.id}`)]);
-  rows.push([button('Custom source help', 'setup:source_custom'), button('Reset sources', 'setup:sources_reset')]);
+  rows.push([button('Add custom source', 'setup:source_custom'), button('Reset sources', 'setup:sources_reset')]);
   rows.push([button('Source test', 'setup:source_test'), button('Show publish config', 'setup:publish_config')]);
   rows.push([button('Publishing', 'setup:publish')]);
   return inlineKeyboard(rows);
+}
+
+
+export function sourceCustomInputKeyboard() {
+  return inlineKeyboard([
+    [button('Back to sources', 'setup:source_custom_cancel')],
+    [button('Sources', 'setup:sources'), button('Publishing', 'setup:publish')]
+  ]);
 }
 
 export function manualScheduleKeyboard({ draft = {}, baseConfig = {}, wizard = {}, step = 'source' } = {}) {
@@ -242,11 +250,12 @@ export function technicalMessageBrowserKeyboard(messages = [], { page = 0, pageS
   return inlineKeyboard(rows);
 }
 
-export function technicalMessagePreviewKeyboard(page = 0) {
-  return inlineKeyboard([
-    [button('Back to message browser', `setup:technical_preview:${page}`)],
-    [button('Technical diagnostics', 'setup:technical'), button('Setup home', 'setup:status')]
-  ]);
+export function technicalMessagePreviewKeyboard(page = 0, messageId = 0, canPreview = false) {
+  const rows = [];
+  if (canPreview && messageId) rows.push([button('Preview this post', `setup:technical_send_preview:${messageId}:${page}`)]);
+  rows.push([button('Back to message browser', `setup:technical_preview:${page}`)]);
+  rows.push([button('Technical diagnostics', 'setup:technical'), button('Setup home', 'setup:status')]);
+  return inlineKeyboard(rows);
 }
 
 export function previewMenuKeyboard() {

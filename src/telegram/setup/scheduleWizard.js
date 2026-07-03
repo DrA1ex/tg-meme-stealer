@@ -7,8 +7,15 @@ const DEFAULT_SOURCE = { key: 'best', where: 'likes > 0' };
 const WEEKDAYS = [
   ['1', 'Mon'], ['2', 'Tue'], ['3', 'Wed'], ['4', 'Thu'], ['5', 'Fri'], ['6', 'Sat'], ['7', 'Sun']
 ];
-const TIME_OPTIONS = ['10:00', '11:00', '12:00', '20:00', '22:00', '23:00', '00:00'];
-const WINDOW_OPTIONS = [12, 24, 48, 84, 168, 720];
+const TIME_OPTIONS = ['00:00', '03:00', '06:00', '09:00', '10:00', '11:00', '12:00', '13:00', '15:00', '18:00', '20:00', '21:00', '22:00', '23:00'];
+const WINDOW_OPTIONS = [
+  { label: '12h', hours: 12 },
+  { label: '24h', hours: 24 },
+  { label: '3½d', hours: 84 },
+  { label: '7d', hours: 168 },
+  { label: '15d', hours: 360 },
+  { label: '30d', hours: 720 }
+];
 const POSTS_PRESETS = {
   small: { label: 'Small · 3/5/10', posts: { min: 3, target: 5, max: 10 } },
   normal: { label: 'Normal · 5/10/20', posts: { min: 5, target: 10, max: 20 } },
@@ -104,7 +111,7 @@ export function formatManualScheduleConfirm(wizard = {}) {
       ['📣 Templates', formatTemplateLines(templates, { includeDisabled: true })],
       ['📌 Selection', [
         `Source: ${wizard.source || DEFAULT_SOURCE.key}`,
-        `Window: ${Number(wizard.windowHours || defaultWindowForCadence(wizard.cadence))}h`,
+        `Window: ${formatWindowHours(Number(wizard.windowHours || defaultWindowForCadence(wizard.cadence)))}`,
         `Posts: ${POSTS_PRESETS[wizard.postsPreset || 'normal']?.label || POSTS_PRESETS.normal.label}`,
         `Threshold: ${THRESHOLD_PRESETS[wizard.thresholdPreset || 'normal']?.label || THRESHOLD_PRESETS.normal.label}`
       ]],
@@ -176,7 +183,7 @@ function describeWizard(wizard = {}) {
     `Cadence: ${formatCadence(wizard.cadence)}`,
     `Days: ${formatDays(wizard)}`,
     `Time: ${wizard.time || '<choose time>'}`,
-    `Window: ${wizard.windowHours ? `${wizard.windowHours}h` : '<choose window>'}`,
+    `Window: ${wizard.windowHours ? formatWindowHours(Number(wizard.windowHours)) : '<choose window>'}`,
     `Posts: ${POSTS_PRESETS[wizard.postsPreset || 'normal']?.label || '<choose posts>'}`,
     `Threshold: ${THRESHOLD_PRESETS[wizard.thresholdPreset || 'normal']?.label || '<choose threshold>'}`
   ];
@@ -191,7 +198,7 @@ function getStepLines(step, { wizard, sources }) {
     return WEEKDAYS.map(([, label]) => `- ${label}`);
   }
   if (step === 'time') return TIME_OPTIONS.map((time) => `- ${time}`);
-  if (step === 'window') return WINDOW_OPTIONS.map((hours) => `- ${hours}h`);
+  if (step === 'window') return WINDOW_OPTIONS.map((option) => `- ${option.label} (${option.hours}h)`);
   if (step === 'posts') return Object.values(POSTS_PRESETS).map((preset) => `- ${preset.label}`);
   if (step === 'threshold') return Object.values(THRESHOLD_PRESETS).map((preset) => `- ${preset.label}`);
   return ['- Review and create.'];
@@ -220,6 +227,11 @@ function formatDays(wizard = {}) {
     return wizard.weekdays?.length ? wizard.weekdays.map((day) => map.get(String(day)) || day).join(' + ') : '<choose weekday(s)>';
   }
   return 'every day';
+}
+
+function formatWindowHours(hours) {
+  const option = WINDOW_OPTIONS.find((item) => Number(item.hours) === Number(hours));
+  return option ? `${option.label} (${option.hours}h)` : `${hours}h`;
 }
 
 function titleCase(value) {

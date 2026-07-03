@@ -103,7 +103,7 @@ import {
   setPublishTemplateEnabled
 } from './setup/publishTemplates.js';
 import { formatSourceExpressionTest } from './setup/sourceDiagnostics.js';
-import { applySourcePreset, formatAppliedSourcePreset, formatCustomSourceHelp, formatResetSources, formatSourcesMenu, getSourcePreset, parseSourceTextCommand, resetDraftSources } from './setup/sourcePresets.js';
+import { applySourcePreset, formatAppliedSourcePreset, formatCustomSourceHelp, formatResetSources, formatSourcesMenu, getSourcePreset, parseCustomSourceInput, parseSourceTextCommand, resetDraftSources } from './setup/sourcePresets.js';
 import { applyManualSchedule, createScheduleWizard, formatManualScheduleApplied, formatManualScheduleConfirm, formatManualScheduleWizard, getWizardNextStep, normalizeWizardStep } from './setup/scheduleWizard.js';
 import {
   advancedMenuKeyboard,
@@ -124,6 +124,7 @@ import {
   publishAfterPresetKeyboard,
   publishMenuKeyboard,
   sourcesKeyboard,
+  sourceCustomInputKeyboard,
   manualScheduleKeyboard,
   publishPresetDetailsKeyboard,
   publishPresetsKeyboard,
@@ -158,6 +159,7 @@ export class SetupAssistant {
     this.setupSampleCache = new Map();
     this.setupCurrentView = new Map();
     this.setupScheduleWizards = new Map();
+    this.setupTextPrompts = new Map();
   }
 
   register(bot) {
@@ -179,6 +181,7 @@ export class SetupAssistant {
     bot.command('preview', (ctx) => this.withSession(ctx, () => this.preview(ctx)));
     bot.command('done', (ctx) => this.withSession(ctx, () => this.done(ctx)));
     bot.command('cancel', (ctx) => this.cancel(ctx));
+    bot.on('text', (ctx) => this.handleSetupText(ctx));
   }
 
   async setupCommand(ctx) {
@@ -373,6 +376,12 @@ export class SetupAssistant {
       await this.sourceCustomHelp(ctx);
       return;
     }
+    if (action === 'source_custom_cancel') {
+      this.ensureSession(ctx);
+      this.setupTextPrompts.delete(ctx.from.id);
+      await this.sourcesMenu(ctx);
+      return;
+    }
     if (action === 'sources_reset') {
       this.ensureSession(ctx);
       await this.resetSources(ctx);
@@ -512,6 +521,9 @@ export class SetupAssistant {
         await this.applySourcePresetAction(ctx, action.slice('source_preset:'.length));
       } else if (action === 'source_custom') {
         await this.sourceCustomHelp(ctx);
+      } else if (action === 'source_custom_cancel') {
+        this.setupTextPrompts.delete(ctx.from.id);
+        await this.sourcesMenu(ctx);
       } else if (action === 'sources_reset') {
         await this.resetSources(ctx);
       } else if (action === 'manual_schedule') {
@@ -571,6 +583,7 @@ export class SetupAssistant {
     this.setupSampleCache.delete(ctx.from.id);
     this.setupCurrentView.delete(ctx.from.id);
     this.setupScheduleWizards.delete(ctx.from.id);
+    this.setupTextPrompts.delete(ctx.from.id);
     await this.replyWithKeyboard(ctx, formatSetupIntro(this.getDraft(ctx), this.getMeta(ctx)), setupMenuKeyboard());
   }
 
@@ -616,6 +629,11 @@ export class SetupAssistant {
     }
     if (target.startsWith('raw:')) {
       await this.technicalRaw(ctx, target.slice('raw:'.length));
+      return;
+    }
+    if (target.startsWith('send_preview:')) {
+      const [, messageId, page] = target.match(/^send_preview:(\d+):(\d+)$/) || [];
+      await this.technicalSendPreviewMessage(ctx, Number(messageId || 0), Number(page || 0));
       return;
     }
     if (target.startsWith('preview_msg:')) {
@@ -709,11 +727,40 @@ export class SetupAssistant {
     this.rememberCurrentView(ctx, `technical_preview_msg:${messageId}:${safePage}`);
     const result = await this.collectSetupSample(ctx, { purpose: `message preview #${messageId}`, includeMessages: true });
     const message = (result.messages || []).find((item) => Number(item?.id || 0) === Number(messageId));
+    const posts = message ? parseMessagesToPosts([message], { chatId: this.config.telegram?.sourceChatId, parsing: this.getDraft(ctx).parsing || this.config.parsing || {} }) : [];
     await this.replyWithKeyboard(
       ctx,
       formatTechnicalMessagePreview({ message, draft: this.getDraft(ctx), baseConfig: this.config }),
-      technicalMessagePreviewKeyboard(safePage)
+      technicalMessagePreviewKeyboard(safePage, messageId, posts.length > 0)
     );
+  }
+
+
+  async technicalSendPreviewMessage(ctx, messageId, page = 0) {
+    const safePage = Math.max(0, Number(page || 0));
+    const result = await this.collectSetupSample(ctx, { purpose: `single message preview #${messageId}`, includeMessages: true });
+    const message = (result.messages || []).find((item) => Number(item?.id || 0) === Number(messageId));
+    if (!message) {
+      await this.replyWithKeyboard(ctx, `Message #${messageId} is not available in the loaded sample.`, technicalMessageBrowserKeyboard(result.messages || [], { page: safePage }));
+      return;
+    }
+    const posts = parseMessagesToPosts([message], {
+      chatId: this.config.telegram?.sourceChatId,
+      parsing: this.getDraft(ctx).parsing || this.config.parsing || {}
+    });
+    if (!posts.length) {
+      await this.replyWithKeyboard(ctx, `Message #${messageId} does not match current filters, so it cannot be previewed as a post.`, technicalMessagePreviewKeyboard(safePage, messageId, false));
+      return;
+    }
+    await sendRichPost({
+      telegram: ctx.telegram,
+      chatId: ctx.chat.id,
+      mediaDownloader: this.mediaDownloader,
+      post: posts[0],
+      index: 0,
+      templates: this.getDraft(ctx).templates
+    });
+    await this.replyWithKeyboard(ctx, `Preview sent for message #${messageId}.`, technicalMessagePreviewKeyboard(safePage, messageId, true));
   }
 
 
@@ -1071,7 +1118,8 @@ export class SetupAssistant {
   }
 
   async sourceCustomHelp(ctx, error = '') {
-    await this.replyWithKeyboard(ctx, formatCustomSourceHelp(error), sourcesKeyboard(this.getDraft(ctx)));
+    this.setupTextPrompts.set(ctx.from.id, { kind: 'source_custom' });
+    await this.replyWithKeyboard(ctx, formatCustomSourceHelp(error), sourceCustomInputKeyboard());
   }
 
   async resetSources(ctx) {
@@ -1537,6 +1585,7 @@ export class SetupAssistant {
     this.setupSampleCache.delete(ctx.from.id);
     this.setupCurrentView.delete(ctx.from.id);
     this.setupScheduleWizards.delete(ctx.from.id);
+    this.setupTextPrompts.delete(ctx.from.id);
   }
 
   async cancel(ctx) {
@@ -1548,9 +1597,32 @@ export class SetupAssistant {
     this.setupSampleCache.delete(ctx.from.id);
     this.setupCurrentView.delete(ctx.from.id);
     this.setupScheduleWizards.delete(ctx.from.id);
+    this.setupTextPrompts.delete(ctx.from.id);
     await this.clearLastSetupKeyboard(ctx);
     await ctx.reply('Setup mode cancelled.');
   }
+
+  async handleSetupText(ctx) {
+    if (!ctx?.from?.id || !this.sessions.has(ctx.from.id)) return;
+    const text = ctx.message?.text || '';
+    if (text.startsWith('/')) return;
+    const prompt = this.setupTextPrompts.get(ctx.from.id);
+    if (!prompt) return;
+
+    if (prompt.kind === 'source_custom') {
+      try {
+        const source = parseCustomSourceInput(text);
+        const beforePublish = structuredClone(this.getDraft(ctx).publish || {});
+        upsertPublishSource(this.getDraft(ctx), source);
+        this.setupTextPrompts.delete(ctx.from.id);
+        this.markChanged(ctx, 'publishing', `Custom source added: ${source.key}`, formatPublishChanges(beforePublish, this.getDraft(ctx).publish || {}));
+        await this.replyWithKeyboard(ctx, `✅ Source added: ${source.key}\n${source.where}`, sourcesKeyboard(this.getDraft(ctx)));
+      } catch (error) {
+        await this.sourceCustomHelp(ctx, error.message);
+      }
+    }
+  }
+
 
   async withSession(ctx, handler) {
     if (!this.sessions.has(ctx.from.id)) {
