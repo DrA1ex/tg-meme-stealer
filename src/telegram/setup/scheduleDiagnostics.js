@@ -101,7 +101,7 @@ export function buildRecentTrafficScheduleSuggestions({ messages = [], draft = {
       `Rejected by parser filters: ${Math.max(0, messages.length - posts.length)}.`,
       posts.length ? 'Traffic is based on parser-matched posts.' : 'No matched posts; falling back to raw message dates.'
     ],
-    allowPresets: items.length >= 10
+    allowPresets: items.length >= 5
   });
 
   return {
@@ -166,10 +166,10 @@ export async function buildDatabaseTrafficScheduleSuggestions({ repository, draf
       `Range: last ${safeDays} day(s).`,
       `Chat: ${chatId || '<missing sourceChatId>'}.`,
       tooSmall
-        ? `Need at least ${MIN_TRAFFIC_DATABASE_POSTS} stored post(s) for extended suggestions.`
+        ? `Small database sample: ${MIN_TRAFFIC_DATABASE_POSTS}+ stored posts are better for confidence; low-volume samples may be limited to monthly suggestions.`
         : 'Traffic is based on stored, already parsed posts.'
     ],
-    allowPresets: !tooSmall
+    allowPresets: items.length >= 5
   });
 
   return {
@@ -195,6 +195,27 @@ export function getMaxTrafficDays(config = {}) {
 }
 
 export function buildTrafficPreset({ id, title, kind, time, morningTime, nightTime, notes = [] }) {
+  if (kind === 'monthly') {
+    return {
+      id,
+      title,
+      description: `Traffic-based monthly digest on day 1 at ${time}.`,
+      sources: [TRAFFIC_PRESET_SOURCE],
+      templates: [
+        publishTemplate({
+          source: 'best',
+          key: 'monthly_best',
+          schedule: { type: 'monthly', dayOfMonth: 1, time },
+          windowHours: 720,
+          posts: { min: 3, target: 10, max: 20 },
+          reactions: { strategy: 'likes', min: 5, includeAbove: 20 },
+          template: 'Best {{count}} posts from the last month'
+        })
+      ],
+      notes
+    };
+  }
+
   if (kind === 'weekly') {
     return {
       id,
@@ -556,11 +577,15 @@ function buildScheduleSuggestionsFromTraffic({ topHours, activeClusters, metrics
   const dailyTime = formatTime((busiestHour + 1) % 24, 0);
   const split = chooseMorningNightTimes(activeClusters) || { morningTime: '11:00', nightTime: '23:00' };
 
-  if (metrics.avgPerDay < 1) {
-    suggestions.push(`Weekly digest around ${dailyTime}: sample is too small for daily publishing.`);
+  if (metrics.avgPerDay < 0.5) {
+    suggestions.push(`Monthly digest around ${dailyTime}: traffic is too sparse for weekly publishing.`);
+    suggestions.push('Use lower post/reaction minimums if even a monthly window may have too few posts.');
+  } else if (metrics.avgPerDay < 1) {
+    suggestions.push(`Monthly digest around ${dailyTime}: low traffic, safer than weekly.`);
+    suggestions.push(`Weekly digest around ${dailyTime}: possible only with loose post/reaction thresholds.`);
   } else if (metrics.avgPerDay < 3) {
-    suggestions.push(`Twice weekly around ${dailyTime}: low traffic, safer than daily.`);
-    suggestions.push(`Weekly digest around ${dailyTime}: conservative fallback.`);
+    suggestions.push(`Weekly digest around ${dailyTime}: low traffic, safer than daily.`);
+    suggestions.push(`Twice weekly around ${dailyTime}: possible only if each half-week has enough posts.`);
   } else if (metrics.avgPerDay < 8) {
     suggestions.push(`Daily digest around ${dailyTime}: enough posts for one daily run.`);
     suggestions.push(`Twice weekly around ${dailyTime}: safer fallback if reaction thresholds are strict.`);
@@ -580,7 +605,7 @@ function buildTrafficPresetsFromTraffic({ topHours, activeClusters, metrics }) {
   const dailyTime = formatTime((busiestHour + 1) % 24, 0);
   const split = chooseMorningNightTimes(activeClusters) || { morningTime: '11:00', nightTime: '23:00' };
 
-  if (metrics.avgPerDay >= 3) {
+  if (metrics.avgPerDay >= 20) {
     presets.push(buildTrafficPreset({
       id: `traffic_daily_${dailyTime.replace(':', '')}`,
       title: `Apply daily digest · ${dailyTime}`,
@@ -590,7 +615,7 @@ function buildTrafficPresetsFromTraffic({ topHours, activeClusters, metrics }) {
     }));
   }
 
-  if (metrics.avgPerDay >= 8) {
+  if (metrics.avgPerDay >= 50) {
     presets.push(buildTrafficPreset({
       id: `traffic_mn_${split.morningTime.replace(':', '')}_${split.nightTime.replace(':', '')}`,
       title: `Apply morning/night · ${split.morningTime} / ${split.nightTime}`,
@@ -598,6 +623,16 @@ function buildTrafficPresetsFromTraffic({ topHours, activeClusters, metrics }) {
       morningTime: split.morningTime,
       nightTime: split.nightTime,
       notes: ['Generated from observed traffic. Apply/update keeps unrelated templates.']
+    }));
+  }
+
+  if (metrics.avgPerDay < 1) {
+    presets.push(buildTrafficPreset({
+      id: `traffic_monthly_${dailyTime.replace(':', '')}`,
+      title: `Apply monthly digest · day 1 ${dailyTime}`,
+      kind: 'monthly',
+      time: dailyTime,
+      notes: ['Generated from very low-volume traffic. Creates one monthly schedule.']
     }));
   }
 
@@ -611,13 +646,15 @@ function buildTrafficPresetsFromTraffic({ topHours, activeClusters, metrics }) {
     }));
   }
 
-  presets.push(buildTrafficPreset({
-    id: `traffic_weekly_${dailyTime.replace(':', '')}`,
-    title: `Apply weekly digest · Mon ${dailyTime}`,
-    kind: 'weekly',
-    time: dailyTime,
-    notes: ['Generated from observed traffic. Good fallback for low-volume sources.']
-  }));
+  if (metrics.avgPerDay >= 3) {
+    presets.push(buildTrafficPreset({
+      id: `traffic_weekly_${dailyTime.replace(':', '')}`,
+      title: `Apply weekly digest · Mon ${dailyTime}`,
+      kind: 'weekly',
+      time: dailyTime,
+      notes: ['Generated from observed traffic. Good fallback for low-volume sources.']
+    }));
+  }
 
   return presets;
 }
@@ -643,12 +680,15 @@ function recommendCadence(avgPerDay) {
   if (avgPerDay >= 20) return 'two daily runs or strict daily digest';
   if (avgPerDay >= 8) return 'daily or morning/night';
   if (avgPerDay >= 3) return 'daily digest';
-  if (avgPerDay >= 1) return 'twice weekly or weekly';
-  return 'weekly digest';
+  if (avgPerDay >= 1) return 'weekly or twice weekly';
+  if (avgPerDay >= 0.5) return 'monthly digest, weekly only with loose thresholds';
+  if (avgPerDay > 0) return 'monthly digest';
+  return 'not enough data';
 }
 
 function formatNumber(value) {
-  return Number(value || 0).toFixed(value >= 10 ? 1 : 2).replace(/\.00$/, '').replace(/0$/, '');
+  const number = Number(value || 0);
+  return number.toFixed(number >= 10 ? 1 : 2).replace(/\.?0+$/, '');
 }
 
 function chooseMorningNightTimes(activeClusters) {

@@ -139,6 +139,43 @@ test('manual schedule wizard builds deterministic templates and applies them to 
   assert.match(formatManualScheduleApplied(change), /Custom schedule created/);
 });
 
+
+test('traffic suggestions recommend monthly schedules for very low volume sources', async () => {
+  const now = Date.parse('2026-07-01T20:00:00.000Z') / 1000;
+  const sparseMessages = Array.from({ length: 6 }, (_, index) => ({
+    id: index + 1,
+    date: now - index * 5 * 24 * 60 * 60,
+    message: `Sparse post ${index + 1}`,
+    text: `Sparse post ${index + 1}`,
+    photo: { id: index + 1 },
+    replyMarkup: { rows: [{ buttons: [{ text: `👍 ${index + 1}` }] }] }
+  }));
+  const draft = {
+    parsing: {
+      filters: [{ source: 'message', transform: 'hasContent' }],
+      likes: [{ source: 'message', path: 'replyMarkup.rows[].buttons[].text', regex: '👍\\s*(\\d+)', group: 1, transform: 'count', aggregate: 'sum' }]
+    }
+  };
+  const baseConfig = { schedule: { timezone: 'UTC' }, telegram: { sourceChatId: -100 } };
+
+  const recent = buildRecentTrafficScheduleSuggestions({ messages: sparseMessages, draft, baseConfig });
+  const database = await buildDatabaseTrafficScheduleSuggestions({
+    repository: { all: async () => sparseMessages.map((item) => ({ messageId: item.id, likes: 5, dislikes: 0, messageDate: new Date(item.date * 1000).toISOString() })) },
+    draft,
+    baseConfig,
+    days: 30
+  });
+  const monthly = buildTrafficPreset({ id: 'monthly', title: 'Monthly', kind: 'monthly', time: '21:00' });
+
+  assert.match(recent.message, /monthly digest/i);
+  assert.match(recent.message, /too sparse for weekly/i);
+  assert.ok(recent.presets.some((preset) => preset.id.startsWith('traffic_monthly_')));
+  assert.ok(database.presets.some((preset) => preset.id.startsWith('traffic_monthly_')));
+  assert.deepEqual(monthly.templates.map((item) => item.key), ['monthly_best']);
+  assert.equal(monthly.templates[0].schedule.type, 'monthly');
+  assert.equal(monthly.templates[0].windowHours, 720);
+});
+
 test('schedule diagnostics preview upcoming runs, first-send gates and overlapping daily windows', () => {
   const now = new Date('2026-07-03T08:00:00.000Z');
   const baseConfig = { schedule: { timezone: 'UTC' }, publish: { sources: [{ key: 'best', where: 'likes > 0' }] } };
@@ -190,9 +227,10 @@ test('traffic suggestions use recent/parser data and database volume to build ac
 
   assert.equal(recent.mode, 'recent');
   assert.equal(recent.matched, 24);
-  assert.ok(recent.presets.some((preset) => preset.id.startsWith('traffic_daily_')));
+  assert.ok(recent.presets.some((preset) => preset.id.startsWith('traffic_weekly_')));
   assert.equal(database.tooSmall, true);
-  assert.match(database.message, /Need at least/);
+  assert.match(database.message, /Small database sample/);
+  assert.doesNotMatch(database.message, /Average: 12\./);
   assert.match(noRepo.message, /Repository is not available/);
   assert.deepEqual(weekly.templates.map((item) => item.key), ['weekly_best']);
 });
