@@ -408,6 +408,7 @@ export class SelectionPublisher {
     }
     const job = await this.syncWorker.sync('admin');
     await ctx.reply(formatJobStatus('Sync', job));
+    await this.replyManualJobResult(ctx, 'Sync', job);
   }
 
   async runManualBackfill(ctx) {
@@ -418,6 +419,13 @@ export class SelectionPublisher {
     const days = parseOptionalPositiveInteger(getCommandArgument(ctx));
     const job = await this.syncWorker.backfill(days, 'admin');
     await ctx.reply(formatJobStatus('Backfill', job));
+    await this.replyManualJobResult(ctx, 'Backfill', job);
+  }
+
+  async replyManualJobResult(ctx, label, job) {
+    if (!shouldWaitForManualJob(job)) return;
+    const result = await waitForManualJob(job);
+    await ctx.reply(formatManualJobResult(label, result));
   }
 
   async runManualPublish(ctx) {
@@ -584,6 +592,88 @@ function formatJobStatus(label, job) {
     return `${label} job status: ${job.status} (${job.reason})`;
   }
   return `${label} job status: ${job.status}`;
+}
+
+function shouldWaitForManualJob(job) {
+  return Boolean(job?.promise) && (job.status === 'running' || job.status === 'scheduled');
+}
+
+async function waitForManualJob(job) {
+  try {
+    return await job.promise;
+  } catch (error) {
+    return {
+      failed: true,
+      error: error?.message || String(error)
+    };
+  }
+}
+
+function formatManualJobResult(label, result) {
+  if (result?.failed) return `${label} failed: ${result.error || 'unknown error'}`;
+  if (result?.skipped) return `${label} skipped: ${result.reason || 'skipped'}`;
+  if (label === 'Sync') return formatSyncResult(result || {});
+  if (label === 'Backfill') return formatBackfillResult(result || {});
+  return `${label} finished.`;
+}
+
+function formatSyncResult(result) {
+  return compactLines([
+    'Sync finished',
+    result.isInitial === true ? 'mode: initial' : result.isInitial === false ? 'mode: refresh' : null,
+    formatStatLine('since', result.since),
+    formatStatLine('pages', result.pages),
+    formatStatLine('fetched', result.fetched),
+    formatStatLine('matched', result.matched),
+    formatStatLine('saved', result.saved),
+    formatStatLine('skipped old', result.skippedOld),
+    formatStatLine('deleted', result.deleted),
+    formatStatLine('seen', result.seen),
+    formatStatLine('stop reason', result.stopReason)
+  ]);
+}
+
+function formatBackfillResult(result) {
+  const matchedButNotStored = sumNumbers(result.skippedOld, result.skippedExistingOld);
+  return compactLines([
+    'Backfill finished',
+    formatStatLine('days', result.days),
+    formatStatLine('since', result.since),
+    formatStatLine('update since', result.updateSince),
+    formatStatLine('pages', result.pages),
+    formatStatLine('fetched', result.fetched),
+    formatStatLine('matched', result.matched),
+    formatStatLine('added', result.added),
+    formatStatLine('updated', result.updated),
+    formatStatLine('skipped existing old', result.skippedExistingOld),
+    formatStatLine('skipped old', result.skippedOld),
+    Number.isFinite(matchedButNotStored) && matchedButNotStored > 0
+      ? formatStatLine('matched but not stored', matchedButNotStored)
+      : null,
+    formatStatLine('deleted', result.deleted),
+    formatStatLine('seen', result.seen),
+    formatStatLine('stop reason', result.stopReason)
+  ]);
+}
+
+function compactLines(lines) {
+  return lines.filter(Boolean).join('\n');
+}
+
+function formatStatLine(label, value) {
+  if (value === undefined || value === null || value === '') return null;
+  return `${label}: ${value}`;
+}
+
+function sumNumbers(...values) {
+  let sum = 0;
+  let hasNumber = false;
+  for (const value of values) {
+    if (!Number.isFinite(Number(value))) continue;
+    sum += Number(value);
+    hasNumber = true;
+  }
+  return hasNumber ? sum : Number.NaN;
 }
 
 function formatPublishResult(result, job = null) {

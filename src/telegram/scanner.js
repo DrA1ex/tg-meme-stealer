@@ -48,7 +48,8 @@ export class TelegramScanner {
       matched: scan.matched,
       saved: scan.saved,
       skippedOld: scan.skippedOld,
-      deleted
+      deleted,
+      stopReason: scan.stopReason
     });
 
     return {
@@ -60,7 +61,8 @@ export class TelegramScanner {
       matched: scan.matched,
       saved: scan.saved,
       skippedOld: scan.skippedOld,
-      deleted
+      deleted,
+      stopReason: scan.stopReason
     };
   }
 
@@ -96,7 +98,8 @@ export class TelegramScanner {
       updated: scan.updated,
       skippedExistingOld: scan.skippedExistingOld,
       skippedOld: scan.skippedOld,
-      deleted
+      deleted,
+      stopReason: scan.stopReason
     });
 
     return {
@@ -111,7 +114,8 @@ export class TelegramScanner {
       updated: scan.updated,
       skippedExistingOld: scan.skippedExistingOld,
       skippedOld: scan.skippedOld,
-      deleted
+      deleted,
+      stopReason: scan.stopReason
     };
   }
 
@@ -123,6 +127,7 @@ export class TelegramScanner {
     let matched = 0;
     let saved = 0;
     let skippedOld = 0;
+    let stopReason = 'unknown';
 
     while (true) {
       pages += 1;
@@ -131,6 +136,7 @@ export class TelegramScanner {
       const messages = [...history];
       fetched += messages.length;
       if (messages.length === 0) {
+        stopReason = 'empty-page';
         this.logger.debug('History page returned no messages', { page: pages });
         break;
       }
@@ -167,11 +173,18 @@ export class TelegramScanner {
         hasNext: Boolean(history.next)
       });
 
-      if (oldestDate < sinceDate || !history.next) break;
+      if (oldestDate < sinceDate) {
+        stopReason = 'reached-since-date';
+        break;
+      }
+      if (!history.next) {
+        stopReason = 'history-exhausted';
+        break;
+      }
       offset = history.next;
     }
 
-    return { seenIds, pages, fetched, matched, saved, skippedOld };
+    return { seenIds, pages, fetched, matched, saved, skippedOld, stopReason };
   }
 
   async scanBackfill({ sinceDate, updateSinceDate, existingIds }) {
@@ -184,6 +197,7 @@ export class TelegramScanner {
     let updated = 0;
     let skippedExistingOld = 0;
     let skippedOld = 0;
+    let stopReason = 'unknown';
 
     while (true) {
       pages += 1;
@@ -191,6 +205,7 @@ export class TelegramScanner {
       const messages = [...history];
       fetched += messages.length;
       if (messages.length === 0) {
+        stopReason = 'empty-page';
         this.logger.debug('Backfill history page returned no messages', { page: pages });
         break;
       }
@@ -254,11 +269,18 @@ export class TelegramScanner {
         hasNext: Boolean(history.next)
       });
 
-      if (oldestDate < sinceDate || !history.next) break;
+      if (oldestDate < sinceDate) {
+        stopReason = 'reached-since-date';
+        break;
+      }
+      if (!history.next) {
+        stopReason = 'history-exhausted';
+        break;
+      }
       offset = history.next;
     }
 
-    return { seenIds, pages, fetched, matched, added, updated, skippedExistingOld, skippedOld };
+    return { seenIds, pages, fetched, matched, added, updated, skippedExistingOld, skippedOld, stopReason };
   }
 
   async previewRecent(limit = 30, draft = {}, options = {}) {

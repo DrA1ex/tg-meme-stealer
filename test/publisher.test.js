@@ -350,7 +350,7 @@ test('SelectionPublisher keeps request resumable when Telegram send fails', asyn
   assert.equal(errorId, 42);
 });
 
-test('SelectionPublisher.runManualSync runs sync worker and replies with result', async () => {
+test('SelectionPublisher.runManualSync runs sync worker and replies with final stats', async () => {
   const replies = [];
   const publisher = new SelectionPublisher({
     repository: {},
@@ -359,7 +359,22 @@ test('SelectionPublisher.runManualSync runs sync worker and replies with result'
     syncWorker: {
       sync: async (source) => {
         assert.equal(source, 'admin');
-        return { status: 'running', key: 'sync', promise: Promise.resolve({ isInitial: false, seen: 10 }) };
+        return {
+          status: 'running',
+          key: 'sync',
+          promise: Promise.resolve({
+            isInitial: false,
+            since: '2026-06-27T16:00:00.000Z',
+            pages: 2,
+            fetched: 150,
+            matched: 120,
+            saved: 118,
+            skippedOld: 2,
+            deleted: 1,
+            seen: 118,
+            stopReason: 'reached-since-date'
+          })
+        };
       }
     },
     config: config()
@@ -370,10 +385,75 @@ test('SelectionPublisher.runManualSync runs sync worker and replies with result'
     reply: async (message) => replies.push(message)
   });
 
-  assert.deepEqual(replies, ['Sync job status: running']);
+  assert.equal(replies.length, 2);
+  assert.equal(replies[0], 'Sync job status: running');
+  assert.match(replies[1], /Sync finished/);
+  assert.match(replies[1], /since: 2026-06-27T16:00:00.000Z/);
+  assert.match(replies[1], /pages: 2/);
+  assert.match(replies[1], /fetched: 150/);
+  assert.match(replies[1], /matched: 120/);
+  assert.match(replies[1], /saved: 118/);
+  assert.match(replies[1], /skipped old: 2/);
+  assert.match(replies[1], /deleted: 1/);
+  assert.match(replies[1], /stop reason: reached-since-date/);
 });
 
-test('SelectionPublisher.runManualBackfill runs sync worker with optional days', async () => {
+test('SelectionPublisher.runManualBackfill replies with final stats after completion', async () => {
+  const replies = [];
+  const publisher = new SelectionPublisher({
+    repository: {},
+    mediaDownloader: {},
+    setupAssistant: null,
+    syncWorker: {
+      backfill: async (days, source) => {
+        assert.equal(days, 90);
+        assert.equal(source, 'admin');
+        return {
+          status: 'running',
+          key: 'backfill:90',
+          promise: Promise.resolve({
+            days: 90,
+            since: '2026-04-05T16:00:00.000Z',
+            updateSince: '2026-06-27T16:00:00.000Z',
+            pages: 1,
+            fetched: 100,
+            matched: 92,
+            added: 30,
+            updated: 0,
+            skippedExistingOld: 0,
+            skippedOld: 62,
+            deleted: 0,
+            seen: 30,
+            stopReason: 'reached-since-date'
+          })
+        };
+      }
+    },
+    config: config()
+  });
+
+  await publisher.runManualBackfill({
+    message: { text: '/backfill 90' },
+    reply: async (message) => replies.push(message)
+  });
+
+  assert.equal(replies.length, 2);
+  assert.equal(replies[0], 'Backfill job status: running');
+  assert.match(replies[1], /Backfill finished/);
+  assert.match(replies[1], /days: 90/);
+  assert.match(replies[1], /since: 2026-04-05T16:00:00.000Z/);
+  assert.match(replies[1], /fetched: 100/);
+  assert.match(replies[1], /matched: 92/);
+  assert.match(replies[1], /added: 30/);
+  assert.match(replies[1], /updated: 0/);
+  assert.match(replies[1], /skipped existing old: 0/);
+  assert.match(replies[1], /skipped old: 62/);
+  assert.match(replies[1], /deleted: 0/);
+  assert.match(replies[1], /matched but not stored: 62/);
+  assert.match(replies[1], /stop reason: reached-since-date/);
+});
+
+test('SelectionPublisher.runManualBackfill keeps busy response single-message', async () => {
   const replies = [];
   const publisher = new SelectionPublisher({
     repository: {},
@@ -395,6 +475,32 @@ test('SelectionPublisher.runManualBackfill runs sync worker with optional days',
   });
 
   assert.deepEqual(replies, ['Backfill job status: busy (busy)']);
+});
+
+test('SelectionPublisher.runManualSync reports final job failure', async () => {
+  const replies = [];
+  const publisher = new SelectionPublisher({
+    repository: {},
+    mediaDownloader: {},
+    setupAssistant: null,
+    syncWorker: {
+      sync: async () => ({
+        status: 'running',
+        key: 'sync',
+        promise: Promise.resolve({ failed: true, error: 'FLOOD_WAIT_12' })
+      })
+    },
+    config: config()
+  });
+
+  await publisher.runManualSync({
+    reply: async (message) => replies.push(message)
+  });
+
+  assert.deepEqual(replies, [
+    'Sync job status: running',
+    'Sync failed: FLOOD_WAIT_12'
+  ]);
 });
 
 test('SelectionPublisher.runManualPublish plans selections and replies with job status', async () => {

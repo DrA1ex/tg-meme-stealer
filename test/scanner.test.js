@@ -75,3 +75,47 @@ test('getBackfillPostAction adds missing old posts and updates only recent exist
 function post(messageId, messageDate) {
   return { messageId, messageDate };
 }
+
+test('TelegramScanner.scanBackfill reports stop reason when reaching the backfill window boundary', async () => {
+  const saved = [];
+  const scanner = new TelegramScanner({
+    client: {},
+    repository: {
+      upsertPost: async (row) => saved.push(row.messageId)
+    },
+    config: {
+      telegram: { sourceChatId: -1001 },
+      parsing: {},
+      sync: { pageSize: 100, throttle: { enabled: false } }
+    }
+  });
+  scanner.getHistory = async () => {
+    const rows = [
+      telegramMessage(1, '2026-04-06T00:00:00.000Z'),
+      telegramMessage(2, '2026-01-01T00:00:00.000Z')
+    ];
+    rows.next = 'older-page';
+    return rows;
+  };
+
+  const result = await scanner.scanBackfill({
+    sinceDate: new Date('2026-04-05T00:00:00.000Z'),
+    updateSinceDate: new Date('2026-06-27T00:00:00.000Z'),
+    existingIds: new Set()
+  });
+
+  assert.equal(result.stopReason, 'reached-since-date');
+  assert.equal(result.fetched, 2);
+  assert.equal(result.matched, 2);
+  assert.equal(result.added, 1);
+  assert.equal(result.skippedOld, 1);
+  assert.deepEqual(saved, [1]);
+});
+
+function telegramMessage(id, isoDate) {
+  return {
+    id,
+    date: new Date(isoDate),
+    text: `By Author ${id}\nPost ${id}`
+  };
+}
