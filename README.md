@@ -4,7 +4,7 @@ Telegram rankings bot for communities where a regular bot cannot be added to the
 
 `tg-memes` logs in as a regular Telegram user with [mtcute](https://mtcute.dev), scans posts from a source chat, stores post stats in SQLite, and publishes ranked selections to a target channel through a Telegram bot powered by Telegraf.
 
-It supports text posts, photos, videos, albums, configurable parsing rules, QR login, scheduled publishing, and an admin-only setup mode for tuning filters before the first real sync.
+It supports text posts, photos, videos, albums, configurable parsing rules, QR login, scheduled publishing, and an admin-only setup mode for tuning content parsing and publishing before the first real sync.
 
 ## Features
 
@@ -16,8 +16,10 @@ It supports text posts, photos, videos, albums, configurable parsing rules, QR l
 - Removes recently deleted source posts from the local database.
 - Publishes configurable top selections to a target Telegram channel.
 - Publishes configurable controversial selections from rolling time windows.
-- Keeps a publication log in SQLite.
-- Provides admin-only bot commands for stats and parser setup.
+- Supports configurable publication sources, rolling windows, thresholds, and schedules.
+- Keeps a publication log in SQLite and resumes interrupted publication jobs.
+- Provides admin-only bot commands for stats, sync, backfill, publishing, and setup.
+- Includes a button-driven setup assistant for content rules, publishing schedules, diagnostics, and safe draft saving.
 - Uses templates for published captions and admin stats.
 
 ## Requirements
@@ -48,7 +50,7 @@ TELEGRAM_PUBLISH_CHANNEL_ID=-1009876543210
 TELEGRAM_BOT_TOKEN=123456:bot_token
 ```
 
-Message eligibility is controlled only by `parsing.filters`. To scan posts from one sender, add a filter that matches a sender or message field discovered with `/raw` or `/debug`.
+Message eligibility is controlled only by `parsing.filters`. To scan posts from one sender, add a filter that matches a sender or message field discovered with setup diagnostics, `/raw`, or `/debug`.
 
 ## Launch Flow
 
@@ -78,7 +80,7 @@ cp config.default.json config.json
 npm run session
 ```
 
-5. Tune parsing rules in setup mode:
+5. Tune content and publishing rules in setup mode:
 
 ```bash
 npm run setup
@@ -88,15 +90,29 @@ Then open a private chat with your bot from `TELEGRAM_ADMIN_ID` and run:
 
 ```text
 /setup
-/test 30
-/raw 123456
-/test_message 123456
-/debug 123456
-/preview 5 100
-/done
 ```
 
-After `/done`, stop setup mode with `Ctrl+C` or keep it running and open another terminal for the next commands.
+Use the button menu instead of writing JSON by hand. A typical first setup pass is:
+
+```text
+/setup
+→ Content setup
+→ Quick setup
+→ Review Filters / Author / Reactions if needed
+→ Test content
+→ Preview
+→ Publishing setup
+→ Recommended presets or Traffic suggestions
+→ Schedule preview / Schedule doctor
+→ Check & save
+→ Save
+```
+
+Diagnostics are available from the setup home screen. Use `Diagnostics → Message browser` to inspect concrete source messages, including lookup by Telegram message id.
+
+The old text commands such as `/setfilter`, `/raw`, `/debug`, `/preview`, and `/done` still work in setup mode, but they are now best treated as advanced/manual tools.
+
+After saving, stop setup mode with `Ctrl+C` or keep it running and open another terminal for the next commands.
 
 6. Start the scheduled app:
 
@@ -141,7 +157,7 @@ If the same period was already scheduled or published, `/publish` reports that e
 /publish weekly_best -force
 ```
 
-For later maintenance, usually run only `npm start`. Use admin `/sync` for one refresh pass, `/backfill 90` to fill a larger historical window, `/publish weekly_best` to manually publish one selection, and `npm run setup` when parser or template rules need to be changed.
+For later maintenance, usually run only `npm start`. Use admin `/sync` for one refresh pass, `/backfill 90` to fill a larger historical window, `/publish weekly_best` to manually publish one selection, and `npm run setup` when parser, publishing, source, or template rules need to be changed.
 
 ## Configuration
 
@@ -311,41 +327,189 @@ Run this again only when you change the Telegram account, remove the session fil
 
 ## Setup Mode
 
-Before syncing a real database, use setup mode to tune parser rules against recent source messages:
+Setup mode starts the admin bot and lets one admin build a temporary draft config before it is written to `config.json`:
 
 ```bash
 npm run setup
 ```
 
-Then open a private chat with your bot as `TELEGRAM_ADMIN_ID` and run:
+Open a private chat with the bot as `TELEGRAM_ADMIN_ID` and run:
 
 ```text
 /setup
-/test 30
-/preview 5 100
-/done
 ```
 
-Useful setup commands:
+`/setup` creates a draft from the currently loaded config and opens `Setup home`. Changes are pending until you press `Save` or run `/done`. `Cancel` or `/cancel` drops the draft. When saving, the current `config.json` is backed up to `config.json.old` first.
+
+### Setup Home
+
+The home screen is navigation, not a status screen. It shows a short draft summary and these main areas:
 
 ```text
-/setfilter {"source":"message","transform":"hasContent"}
-/setfilter [{"source":"message","transform":"hasContent"},{"source":"sender","path":"id","transform":"equals","value":123456789}]
-/addfilter {"source":"message","path":"message","transform":"contains","values":["/skip","#ignore"],"negate":true}
-/addfilter {"source":"message","path":"message","regex":"#meme","transform":"bool"}
-/setauthor {"source":"message","path":"message","regex":"(?:^|\\n)By\\s+(.+?)(?:\\n|$)","group":1}
-/setlikes {"source":"message","path":"replyMarkup.rows[].buttons[].text","regex":"👍\\s*([\\d\\s,.]+[km]?)","group":1,"transform":"count","aggregate":"sum"}
-/setdislikes {"source":"message","path":"replyMarkup.rows[].buttons[].text","regex":"👎\\s*([\\d\\s,.]+[km]?)","group":1,"transform":"count","aggregate":"sum"}
+Content setup
+Publishing setup
+Diagnostics
+Check & save
+Advanced
+Save / Cancel
+```
+
+Use `Home` to return to this screen. Use `Status` only when you want a health summary of the current draft.
+
+### Content Setup
+
+`Content setup` controls which Telegram messages become posts and how `author`, `likes`, and `dislikes` are extracted.
+
+Recommended path:
+
+```text
+Content setup
+→ Quick setup
+→ Review filters / author / reactions
+→ Test content
+→ Preview
+```
+
+Manual sections:
+
+- `Filters`: choose or reset eligibility rules. Filters only decide whether a source message can become a candidate post.
+- `Author`: choose how `{{author}}` is extracted for published captions.
+- `Reactions`: choose button counters or native Telegram reactions for likes/dislikes.
+
+Each section has `Pending Config`, which shows only the relevant draft snippet with unsaved changes applied:
+
+```text
+Filters → pending parsing.filters
+Author  → pending parsing.author
+Reactions → pending parsing.likes + parsing.dislikes
+```
+
+`Pending Content Config` shows the full pending `parsing` draft. `Saved Content Config` shows the config loaded from disk, so you can compare pending changes with the saved state.
+
+Reaction options are intentionally shown as separate modes even when they produce the same result on the current sample:
+
+- `buttons · detected markers`: uses markers discovered in inline button labels.
+- `buttons · conservative`: prefers common positive/negative markers such as 👍 and 👎.
+- `buttons · broad`: uses a broader emoji set.
+- `buttons · except 👎💩🤡 is like`: counts any numeric button label except configured negative markers as likes, and counts those negative markers as dislikes.
+- `native · conservative`, `native · broad`, and `native · except 👎💩🤡 is like`: read Telegram native reaction counters instead of button text.
+
+The reaction option legend is:
+
+```text
+★ = suggested best guess from the current sample
+✓ = current selected option
+≈ = same config result as selected on this sample, but not the selected option
+• = available option
+◆ = custom Telegram reaction
+```
+
+Manual choices in Filters, Author, and Reactions are applied directly to the pending draft. They do not go through the `Apply suggested` confirmation screen; that screen is only for Quick setup / Suggestions.
+
+### Publishing Setup
+
+`Publishing setup` controls publication sources, schedules, rolling windows, post counts, and reaction thresholds.
+
+Main paths:
+
+- `Recommended presets`: apply built-in publish template presets.
+- `Traffic suggestions`: scan recent/database traffic and suggest practical schedules.
+- `Manual schedule`: create a schedule step by step from source, cadence, weekday/day, time, window, post count, and threshold.
+- `Sources`: enable/disable source presets, add a custom source expression, reset sources, or run `Source test`.
+- `Schedules`: enable, disable, or remove existing publish templates.
+- `Schedule preview`: show upcoming runs.
+- `Schedule doctor`: check schedule/template problems.
+- `Publish config`: show the pending publishing draft. This is not necessarily saved yet.
+
+`publish.sources[]` are named SQL-like filters over stored reaction fields. `publish.template[]` entries reference sources by key and define schedule, window, selection limits, reaction thresholds, and header template.
+
+### Diagnostics
+
+Diagnostics are available from `Setup home` because they can be useful for both content setup and publishing checks.
+
+Diagnostic sections:
+
+- `Why matched?`: show parser trace for a message that matched current rules.
+- `Why rejected?`: show parser trace for a rejected message.
+- `Unknown author?`: focus on messages where author extraction failed.
+- `Zero likes?`: focus on messages where reaction extraction produced zero.
+- `Message browser`: inspect loaded sample messages page by page.
+- `Reaction fields`: show likely reaction/button paths.
+- `Author fields`: show likely author fields.
+- `Raw / advanced tools`: field scan, message shape, raw matched messages, raw reactions, pending content config, and advanced JSON.
+
+`Message browser` can open messages from the loaded setup sample or by Telegram message id. `View by message ID` first searches the loaded setup context/cache. If the message is not there, it requests the message from the configured source chat through the userbot scanner. The lookup result explicitly says whether the message was found in context, loaded from Telegram, not found, or failed with a Telegram error.
+
+Single-message view supports these modes:
+
+- `Overview`: parsed status, author/reaction summary, and useful message metadata.
+- `Raw reactions`: raw button/native reaction data for that message.
+- `Message shape`: compact structural view of the Telegram message object.
+- `Parsed preview`: sends a separate rich preview post for that message if it matches current filters.
+- `Back to Message Browser`: returns to the browser page you came from.
+
+`Overview`, `Raw reactions`, and `Message shape` edit the same setup message. `Parsed preview` sends a new preview message because it may contain media and a rendered caption.
+
+### Check & Save
+
+Use `Check & save` before writing the draft to disk:
+
+```text
+Status
+Doctor
+Test content
+Preview
+Show last change
+Save / Cancel
+```
+
+Recommended order:
+
+1. `Status`: read the concise draft summary.
+2. `Doctor`: catch obvious content, source, and schedule issues.
+3. `Test content`: parse recent source messages without writing to SQLite.
+4. `Preview`: send rich preview posts to the admin chat without publishing to the target channel.
+5. `Save`: write `config.json` after the draft looks correct.
+
+Setup tracks whether content or publishing changed after the last test/preview and warns when preview is stale.
+
+### Text Commands in Setup Mode
+
+The button UI is the normal path, but setup mode still accepts text commands for exact JSON edits or debugging:
+
+```text
+/setup
+/setup home
+/setup status
+/setup check
+/setup save
+/setup cancel
+/setup suggestions
+/setup presets
+
+/setfilter {jsonRuleOrArray}
+/addfilter {jsonRuleOrArray}
+/setauthor {jsonRuleOrArray}
+/setlikes {jsonRuleOrArray}
+/setdislikes {jsonRuleOrArray}
+/setsources [{"key":"best","where":"true"}]
 /setsource {"key":"positive","where":"likes > dislikes"}
 /setpublish {"source":"positive","key":"daily_positive","enabled":false,"schedule":{"type":"daily","time":"12:00"},"windowHours":24,"posts":{"min":1,"target":3,"max":5},"reactions":{"strategy":"likes","min":0,"includeAbove":999999},"template":"Positive posts ({{count}})"}
 /settemplate templates.publish.postCaption {{position}}. By {{author}}\n👍 {{likes}}  👎 {{dislikes}}\nMedia: {{mediaSummary}}\n\n{{text}}
-/settemplate publish.template.weekly_best.template Weekly community picks ({{count}})
-/settemplate templates.publish.unknownAuthor anonymous
+/test 30
+/raw 123456
+/test_message 123456
+/debug 123456
+/preview 5 100
+/done
+/cancel
 ```
 
-`/test N` reads the latest `N` source messages, applies the draft parser, and does not write anything to the database. `/raw MESSAGE_ID` fetches the current source message directly from Telegram and sends the raw object as a JSON file, which helps choose parser paths. `/test_message MESSAGE_ID` also fetches the current source message directly from Telegram, applies the current draft parser to that message, and shows the extracted fields. `/debug MESSAGE_ID` fetches the current source message directly from Telegram and sends a JSON file with a step-by-step parser trace for filters, paths, regexes, transforms, fallback reactions, and final parsed output. These commands do not read from SQLite. `/preview P M` scans the latest `M` messages, selects up to `P` weekly top posts, and sends them as rich posts with media and captions. `/done` saves the draft into `config.json`. If `config.json` already exists, it is copied to `config.json.old` first.
+`/test N` reads the latest `N` source messages, applies the draft parser, and does not write anything to the database. `/raw MESSAGE_ID` fetches the current source message directly from Telegram and sends the raw object as a JSON file. `/test_message MESSAGE_ID` fetches one source message and applies the current draft parser. `/debug MESSAGE_ID` fetches one source message and sends a JSON file with a step-by-step parser trace for filters, paths, regexes, transforms, fallback reactions, and final parsed output. `/preview P M` scans the latest `M` messages, selects up to `P` weekly top posts, and sends them as rich posts with media and captions. `/done` is the text-command equivalent of `Save`.
 
 ### Recommended Setup Workflow
+
+For a new source chat, use the button flow first:
 
 1. Start setup mode:
 
@@ -359,53 +523,23 @@ npm run setup
 /setup
 ```
 
-3. Start with a broad filter:
+3. Open `Content setup → Quick setup`. Apply the recommended parser setup if it looks right.
 
-```text
-/setfilter {"source":"message","transform":"hasContent"}
-```
+4. Review `Filters`, `Author`, and `Reactions` manually if the suggested setup is not enough. Use each section's `Pending Config` to confirm the pending draft snippet.
 
-To keep only one sender, add a second filter that matches a field from `/raw` or `/debug`:
+5. Run `Test content`. If the match set is wrong, adjust filters or use `Diagnostics → Why rejected?` / `Why matched?`.
 
-```text
-/setfilter [{"source":"message","transform":"hasContent"},{"source":"sender","path":"id","transform":"equals","value":123456789}]
-```
+6. Open `Diagnostics → Message browser` if a concrete source message behaves unexpectedly. Use `View by message ID` to fetch a message that is not in the current sample.
 
-To exclude posts containing any marker, use a negated `contains` filter:
+7. Run `Preview` and inspect the rendered posts in the admin chat.
 
-```text
-/addfilter {"source":"message","path":"message","transform":"contains","values":["/skip","#ignore"],"negate":true}
-```
+8. Open `Publishing setup`. Use `Recommended presets`, `Traffic suggestions`, or `Manual schedule`, then run `Schedule preview` and `Schedule doctor`.
 
-4. Test recent messages:
+9. Open `Check & save`, then run `Status`, `Doctor`, `Test content`, and `Preview` once more if the draft changed.
 
-```text
-/test 30
-```
+10. Press `Save` or run `/done`.
 
-5. Inspect a specific source message if parser paths are unclear:
-
-```text
-/raw 123456
-/test_message 123456
-/debug 123456
-```
-
-6. Add stricter filters or parser rules until the matched posts look correct.
-
-7. Preview the post that would win the weekly selection:
-
-```text
-/preview 5 100
-```
-
-8. Save the final config:
-
-```text
-/done
-```
-
-9. Build the first database window with the saved config from the admin bot:
+11. Build the first database window with the saved config from the admin bot:
 
 ```text
 /backfill
@@ -486,7 +620,13 @@ Extractor transforms are used for `author`, `likes`, and `dislikes`. The `author
 
 - `trim`
 - `count`
+- `reactionCount`
+- `mentionAuthor`
 - `telegramUsername`
+
+`count` parses numbers from text, including common compact suffixes handled by the parser. It is normally used for inline button labels such as `👍 12` or `12 👍`.
+
+`reactionCount` reads Telegram native reaction objects. It accepts an `emojis` array. If `invert` is true, the rule counts every reaction except the listed emojis. This is how the native `except 👎💩🤡 is like` setup option is represented.
 
 Extractor examples:
 
@@ -496,6 +636,8 @@ Extractor examples:
 /setauthor {"source":"sender","path":"username","regex":"(.+)","group":1,"transform":"telegramUsername"}
 /setlikes {"source":"message","path":"replyMarkup.rows[].buttons[].text","regex":"👍\\s*([\\d\\s,.]+[km]?)","group":1,"transform":"count","aggregate":"sum"}
 /setdislikes {"source":"message","path":"replyMarkup.rows[].buttons[].text","regex":"👎\\s*([\\d\\s,.]+[km]?)","group":1,"transform":"count","aggregate":"sum"}
+/setlikes {"source":"message","path":"reactionCounts[]","transform":"reactionCount","emojis":["👍","❤","❤️","🔥"],"aggregate":"sum"}
+/setdislikes {"source":"message","path":"reactionCounts[]","transform":"reactionCount","emojis":["👎"],"aggregate":"sum"}
 ```
 
 Custom button labels:
@@ -505,6 +647,20 @@ Custom button labels:
 /setdislikes {"source":"message","path":"replyMarkup.rows[].buttons[].text","regex":"dislike=([\\d.,k]+)","group":1,"transform":"count","aggregate":"sum"}
 ```
 
+Button labels where any non-negative counted button means like:
+
+```text
+/setlikes {"source":"message","path":"markup.buttons[].text","regex":"^(?!.*(?:👎|💩|🤡|-)).*?([\\d\\s,.]+[km]?).*$","group":1,"transform":"count","aggregate":"sum"}
+/setdislikes {"source":"message","path":"markup.buttons[].text","regex":"(?:👎|💩|🤡|-)\\s*([\\d\\s,.]+[km]?)","group":1,"transform":"count","aggregate":"sum"}
+```
+
+Native reactions where every emoji except negative markers counts as likes:
+
+```text
+/setlikes {"source":"message","path":"reactionCounts[]","transform":"reactionCount","emojis":["👎","💩","🤡"],"invert":true,"aggregate":"sum"}
+/setdislikes {"source":"message","path":"reactionCounts[]","transform":"reactionCount","emojis":["👎","💩","🤡"],"aggregate":"sum"}
+```
+
 ### Useful Message Paths
 
 Depending on the source message shape, useful paths may include:
@@ -512,11 +668,18 @@ Depending on the source message shape, useful paths may include:
 - `text`
 - `message`
 - `sender.firstName`
+- `sender.lastName`
 - `sender.username`
 - `markup.buttons[].text`
 - `replyMarkup.rows[].buttons[].text`
+- `reactionCounts[]`
+- `nativeReactions[]`
+- `messageReactions.results[]`
+- `reactions.results[]`
 
-If a path does not match anything, run `/test 30` with a broader filter and adjust the path. The project keeps compatibility with mtcute-style fields and older Telegram-client field names where possible.
+Button paths are used with `transform: "count"`. Native reaction paths are used with `transform: "reactionCount"`.
+
+If a path does not match anything, use `Diagnostics → Reaction fields`, `Diagnostics → Author fields`, or `Diagnostics → Message browser`. The project keeps compatibility with mtcute-style fields and older Telegram-client field names where possible.
 
 ## Templates
 
@@ -612,11 +775,26 @@ Create or refresh the mtcute user session:
 npm run session
 ```
 
-Start setup mode for parser and template tuning:
+Start setup mode for parser, publishing, source, and template tuning:
 
 ```bash
 npm run setup
 ```
+
+Inside the admin private chat, `/setup` opens the button-driven setup home. Useful setup actions are also available as text aliases:
+
+```text
+/setup
+/setup home
+/setup status
+/setup check
+/setup suggestions
+/setup presets
+/setup save
+/setup cancel
+```
+
+Use the buttons for normal setup. Use the JSON commands documented in `Setup Mode → Text Commands in Setup Mode` only when you need exact manual edits.
 
 Run one recent refresh pass from the admin bot. This updates posts inside `sync.refreshRecentDays` and removes recently deleted source posts from the local database:
 
@@ -742,6 +920,10 @@ Commands work only in a private chat with `TELEGRAM_ADMIN_ID`.
 /backfill
 /publish
 /setup
+/setup status
+/setup check
+/setup save
+/setup cancel
 ```
 
 `/jobs` shows all active publication jobs and the last 5 terminal jobs, sorted by `updated_at`, including progress and the latest error.
@@ -783,8 +965,14 @@ Telegram can return `FLOOD_WAIT` for read-only API calls too, including history 
 
 ## Development
 
-Run tests:
+Run all tests:
 
 ```bash
 npm test
+```
+
+Run only setup-related tests with coverage over the setup assistant and setup modules:
+
+```bash
+npm run test:setup
 ```
