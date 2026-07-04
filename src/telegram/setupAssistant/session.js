@@ -8,7 +8,9 @@ import {
   formatNoLastChange,
   formatSetupIntro,
   formatSetupStatus,
+  formatCheckAndSave,
   lastChangeKeyboard,
+  checkAndSaveKeyboard,
   formatPublishChanges,
   parseCustomSourceInput,
   mergeReplyOptions,
@@ -29,11 +31,19 @@ export async function start(ctx) {
   this.setupCurrentView.delete(ctx.from.id);
   this.setupScheduleWizards.delete(ctx.from.id);
   this.setupTextPrompts.delete(ctx.from.id);
-  await this.replyWithKeyboard(ctx, formatSetupIntro(this.getDraft(ctx), this.getMeta(ctx)), setupMenuKeyboard());
+  await this.home(ctx);
+}
+
+export async function home(ctx) {
+  await this.replyWithKeyboard(ctx, formatSetupIntro(this.getDraft(ctx), this.config, this.getMeta(ctx)), setupMenuKeyboard());
 }
 
 export async function status(ctx) {
-  await this.replyWithKeyboard(ctx, formatSetupStatus(this.getDraft(ctx), this.config, this.getMeta(ctx)), setupMenuKeyboard());
+  await this.replyWithKeyboard(ctx, formatSetupStatus(this.getDraft(ctx), this.config, this.getMeta(ctx)), checkAndSaveKeyboard());
+}
+
+export async function checkAndSave(ctx) {
+  await this.replyWithKeyboard(ctx, formatCheckAndSave(this.getDraft(ctx), this.config, this.getMeta(ctx)), checkAndSaveKeyboard());
 }
 
 export async function done(ctx) {
@@ -80,6 +90,11 @@ export async function handleSetupText(ctx) {
   if (text.startsWith('/')) return;
   const prompt = this.setupTextPrompts.get(ctx.from.id);
   if (!prompt) return;
+
+  if (prompt.kind === 'message_browser_id') {
+    await this.openTechnicalMessageByIdText(ctx, text, prompt);
+    return;
+  }
 
   if (prompt.kind === 'source_custom') {
     try {
@@ -199,7 +214,7 @@ export function markTested(ctx) {
 export async function showLastChange(ctx) {
   const change = this.setupLastChange.get(ctx.from.id);
   if (!change) {
-    await this.replyWithKeyboard(ctx, formatNoLastChange(), setupMenuKeyboard());
+    await this.replyWithKeyboard(ctx, formatNoLastChange(), checkAndSaveKeyboard());
     return;
   }
   await this.replyWithKeyboard(ctx, formatLastChange(change), lastChangeKeyboard(change.area));
@@ -220,7 +235,9 @@ export function reloadConfig() {
 
 export const sessionMethods = {
   start,
+  home,
   status,
+  checkAndSave,
   done,
   cancel,
   handleSetupText,

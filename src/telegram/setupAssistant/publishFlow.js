@@ -46,6 +46,9 @@ import {
   confirmReplacePublishPresetKeyboard,
   confirmRemoveTemplateKeyboard,
   manageTemplatesKeyboard,
+  filtersMenuKeyboard,
+  authorMenuKeyboard,
+  reactionsMenuKeyboard,
   parserMenuKeyboard,
   publishAfterPresetKeyboard,
   publishMenuKeyboard,
@@ -136,9 +139,9 @@ export async function confirmReplacePublishPreset(ctx, presetId) {
 }
 
 export async function showPublishConfig(ctx) {
-  await ctx.reply('Current publishing config:');
+  await ctx.reply('Pending publishing config:');
   await replyJsonCode(ctx, this.getDraft(ctx).publish || {});
-  await this.replyWithKeyboard(ctx, 'Use presets for common schedules, or Advanced JSON for exact tuning.', publishMenuKeyboard());
+  await this.replyWithKeyboard(ctx, 'This is the pending publishing draft. Use presets and publishing tools for common schedules, then Save to write it to config.', publishMenuKeyboard());
 }
 
 export async function advanced(ctx) {
@@ -152,9 +155,39 @@ export async function showDraftConfig(ctx) {
 }
 
 export async function showParserConfig(ctx) {
-  await ctx.reply('Current parser rules:');
+  await ctx.reply('Pending content config:');
   await replyJsonCode(ctx, this.getDraft(ctx).parsing || {});
-  await this.replyWithKeyboard(ctx, 'Use Test content or Preview to check these rules against real source posts.', parserMenuKeyboard());
+  await this.replyWithKeyboard(ctx, 'Use Test content or Preview to check these pending rules against real source posts.', parserMenuKeyboard());
+}
+
+export async function showSavedParserConfig(ctx) {
+  await ctx.reply('Saved content config:');
+  await replyJsonCode(ctx, this.config.parsing || {});
+  await this.replyWithKeyboard(ctx, 'This is the saved config currently loaded from disk. Pending setup changes are shown separately.', parserMenuKeyboard());
+}
+
+export async function showPendingSectionConfig(ctx, section = 'parser') {
+  const draftParsing = this.getDraft(ctx).parsing || {};
+  const normalized = String(section || '').trim();
+  let title = 'Pending content config';
+  let payload = draftParsing;
+  let keyboard = parserMenuKeyboard();
+  if (normalized === 'filters') {
+    title = 'Pending filters config';
+    payload = { filters: draftParsing.filters || [] };
+    keyboard = filtersMenuKeyboard();
+  } else if (normalized === 'author') {
+    title = 'Pending author config';
+    payload = { author: draftParsing.author || [] };
+    keyboard = authorMenuKeyboard();
+  } else if (normalized === 'reactions' || normalized === 'likes') {
+    title = 'Pending likes config';
+    payload = { likes: draftParsing.likes || [], dislikes: draftParsing.dislikes || [] };
+    keyboard = reactionsMenuKeyboard();
+  }
+  await ctx.reply(`${title}:`);
+  await replyJsonCode(ctx, payload);
+  await this.replyWithKeyboard(ctx, 'This snippet includes pending setup changes that are not saved yet.', keyboard);
 }
 
 export async function schedulePreview(ctx) {
@@ -319,6 +352,11 @@ export async function showManualScheduleStep(ctx, step = '') {
 
 export async function createManualSchedule(ctx) {
   const wizard = this.getManualScheduleWizard(ctx);
+  const nextStep = getWizardNextStep(wizard);
+  if (nextStep !== 'confirm') {
+    await this.showManualScheduleStep(ctx, nextStep);
+    return;
+  }
   const change = applyManualSchedule(this.getDraft(ctx), wizard);
   this.markChanged(ctx, 'publishing', 'Created custom schedule', change.lines);
   this.setupScheduleWizards.delete(ctx.from.id);
@@ -343,6 +381,8 @@ export const publishFlowMethods = {
   advanced,
   showDraftConfig,
   showParserConfig,
+  showSavedParserConfig,
+  showPendingSectionConfig,
   schedulePreview,
   scheduleDoctor,
   trafficSuggestions,

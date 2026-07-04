@@ -5,11 +5,15 @@ import {
 } from './deps.js';
 
 const COMMAND_ALIASES = new Map([
+  ['menu', 'home'],
   ['suggestions', 'suggest'],
   ['presets', 'publish_presets']
 ]);
 
 const DIRECT_HANDLERS = {
+  home: (assistant, ctx) => assistant.home(ctx),
+  save: (assistant, ctx) => assistant.done(ctx),
+  check: (assistant, ctx) => assistant.checkAndSave(ctx),
   status: (assistant, ctx) => assistant.status(ctx),
   doctor: (assistant, ctx) => assistant.doctor(ctx),
   preview: (assistant, ctx) => assistant.previewDefaults(ctx),
@@ -22,9 +26,14 @@ const DIRECT_HANDLERS = {
   reactions: (assistant, ctx) => assistant.reactionsMenu(ctx),
   reaction_options: (assistant, ctx) => assistant.reactionOptions(ctx),
   technical: (assistant, ctx) => assistant.technicalDiagnostics(ctx),
+  technical_raw_tools: (assistant, ctx) => assistant.technicalRawTools(ctx),
   reset_author: (assistant, ctx) => assistant.resetAuthor(ctx),
   reset_reactions: (assistant, ctx) => assistant.resetReactions(ctx),
+  filters_pending_config: (assistant, ctx) => assistant.showPendingSectionConfig(ctx, 'filters'),
+  author_pending_config: (assistant, ctx) => assistant.showPendingSectionConfig(ctx, 'author'),
+  reactions_pending_config: (assistant, ctx) => assistant.showPendingSectionConfig(ctx, 'reactions'),
   parser_config: (assistant, ctx) => assistant.showParserConfig(ctx),
+  saved_parser_config: (assistant, ctx) => assistant.showSavedParserConfig(ctx),
   suggest: (assistant, ctx) => assistant.suggestParser(ctx),
   parser_paths: (assistant, ctx) => assistant.parserPaths(ctx),
   author_test: (assistant, ctx) => assistant.authorTest(ctx),
@@ -59,6 +68,10 @@ const DIRECT_HANDLERS = {
 
 const PREFIX_HANDLERS = [
   ['load_more:', (assistant, ctx, value) => assistant.loadMoreMessages(ctx, value)],
+  ['technical_msg:', (assistant, ctx, value) => {
+    const [messageId, page, mode] = value.split(':');
+    return assistant.technicalViewMessage(ctx, Number(messageId), Number(page || 0), mode || 'overview');
+  }],
   ['technical_', (assistant, ctx, _value, action) => assistant.technicalAction(ctx, action)],
   ['refresh_sample', (assistant, ctx, _value, action) => assistant.refreshSample(ctx, action.includes(':') ? action.split(':').slice(1).join(':') : 'technical')],
   ['apply:', (assistant, ctx, value) => assistant.applySuggestion(ctx, value)],

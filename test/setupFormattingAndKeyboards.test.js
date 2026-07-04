@@ -93,7 +93,7 @@ test('last-change screens and navigation keyboards point to the right setup area
   const noNavRaw = technicalRawKeyboard({ mode: 'buttons', index: 0, total: 1 }).reply_markup.inline_keyboard;
   assert.notEqual(noNavRaw[0][0].text, 'Next');
 
-  assert.deepEqual(mergeReplyOptions({ parse_mode: 'HTML', disable_web_page_preview: true }, technicalRawKeyboard()).reply_markup.inline_keyboard.at(-1)[0].callback_data, 'setup:status');
+  assert.deepEqual(mergeReplyOptions({ parse_mode: 'HTML', disable_web_page_preview: true }, technicalRawKeyboard()).reply_markup.inline_keyboard.at(-1).map((item) => item.callback_data), ['setup:technical_raw_tools', 'setup:home']);
 });
 
 function template(overrides = {}) {

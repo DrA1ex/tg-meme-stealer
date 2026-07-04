@@ -4,68 +4,87 @@ import { POSTS_PRESETS, THRESHOLD_PRESETS, TIME_OPTIONS, WEEKDAYS, WINDOW_OPTION
 
 export function setupMenuKeyboard() {
   return inlineKeyboard([
-    [button('Status', 'setup:status'), button('Doctor', 'setup:doctor')],
-    [button('Preview', 'setup:preview'), button('Test content', 'setup:test')],
-    [button('Content setup', 'setup:parser'), button('Publishing', 'setup:publish')],
-    [button('Show last change', 'setup:last_change'), button('Show config', 'setup:config')],
-    [button('Advanced JSON', 'setup:advanced')],
+    [button('Content setup', 'setup:parser'), button('Publishing setup', 'setup:publish')],
+    [button('Diagnostics', 'setup:technical'), button('Check & save', 'setup:check')],
+    [button('Advanced', 'setup:advanced')],
     [button('Save', 'setup:save'), button('Cancel', 'setup:cancel')]
+  ]);
+}
+
+export function checkAndSaveKeyboard() {
+  return inlineKeyboard([
+    [button('Status', 'setup:status'), button('Doctor', 'setup:doctor')],
+    [button('Test content', 'setup:test'), button('Preview', 'setup:preview')],
+    [button('Show last change', 'setup:last_change')],
+    [button('Save', 'setup:save'), button('Cancel', 'setup:cancel')],
+    [button('Home', 'setup:home')]
   ]);
 }
 
 export function parserMenuKeyboard() {
   return inlineKeyboard([
     [button('Quick setup', 'setup:suggest')],
-    [button('Content filters', 'setup:filters'), button('Author', 'setup:author')],
-    [button('Reactions', 'setup:reactions'), button('Technical diagnostics', 'setup:technical')],
+    [button('Filters', 'setup:filters'), button('Author', 'setup:author')],
+    [button('Reactions', 'setup:reactions')],
     [button('Test content', 'setup:test'), button('Preview', 'setup:preview')],
-    [button('Content config', 'setup:parser_config'), button('Setup home', 'setup:status')]
+    [button('Pending Content Config', 'setup:parser_config'), button('Saved Content Config', 'setup:saved_parser_config')],
+    [button('Home', 'setup:home')]
   ]);
 }
 
 export function filtersMenuKeyboard() {
   return inlineKeyboard([
     [button('Filter options', 'setup:filters_options'), button('Filter impact', 'setup:filter_impact')],
+    [button('Pending Config', 'setup:filters_pending_config')],
     [button('Test content', 'setup:test'), button('Reset filters', 'setup:reset_filters')],
-    [button('Content setup', 'setup:parser'), button('Setup home', 'setup:status')]
+    [button('Content setup', 'setup:parser'), button('Home', 'setup:home')]
   ]);
 }
 
 export function authorMenuKeyboard() {
   return inlineKeyboard([
     [button('Author options', 'setup:author_options'), button('Test author', 'setup:author_test')],
+    [button('Pending Config', 'setup:author_pending_config')],
     [button('Reset author', 'setup:reset_author')],
-    [button('Content setup', 'setup:parser'), button('Setup home', 'setup:status')]
+    [button('Content setup', 'setup:parser'), button('Home', 'setup:home')]
   ]);
 }
 
 export function reactionsMenuKeyboard() {
   return inlineKeyboard([
     [button('Reaction options', 'setup:reaction_options'), button('Test reactions', 'setup:reaction_test')],
+    [button('Pending Config', 'setup:reactions_pending_config')],
     [button('Reaction diagnostics', 'setup:technical_reactions'), button('Reset reactions', 'setup:reset_reactions')],
-    [button('Content setup', 'setup:parser'), button('Setup home', 'setup:status')]
+    [button('Content setup', 'setup:parser'), button('Home', 'setup:home')]
   ]);
 }
 
 export function technicalDiagnosticsKeyboard() {
   return inlineKeyboard([
-    [button('Field scan', 'setup:technical_field_scan'), button('Message shape', 'setup:technical_shape')],
-    [button('Reaction fields', 'setup:technical_reactions'), button('Author fields', 'setup:technical_author')],
-    [button('Trace matched', 'setup:technical_trace:matched'), button('Trace rejected', 'setup:technical_trace:rejected')],
-    [button('Trace unknown author', 'setup:technical_trace:unknown_author'), button('Trace zero likes', 'setup:technical_trace:zero_likes')],
-    [button('Raw matched', 'setup:technical_raw:matched'), button('Raw reactions', 'setup:technical_raw:buttons')],
+    [button('Why matched?', 'setup:technical_trace:matched'), button('Why rejected?', 'setup:technical_trace:rejected')],
+    [button('Unknown author?', 'setup:technical_trace:unknown_author'), button('Zero likes?', 'setup:technical_trace:zero_likes')],
     [button('Message browser', 'setup:technical_preview:0')],
+    [button('Reaction fields', 'setup:technical_reactions'), button('Author fields', 'setup:technical_author')],
+    [button('Raw / advanced tools', 'setup:technical_raw_tools')],
     [button('Load more messages', 'setup:load_more:technical'), button('Refresh sample', 'setup:refresh_sample:technical')],
-    [button('Content config', 'setup:parser_config'), button('Advanced JSON', 'setup:advanced')],
-    [button('Content setup', 'setup:parser'), button('Setup home', 'setup:status')]
+    [button('Content setup', 'setup:parser'), button('Home', 'setup:home')]
+  ]);
+}
+
+export function technicalRawToolsKeyboard() {
+  return inlineKeyboard([
+    [button('Field scan', 'setup:technical_field_scan'), button('Message shape', 'setup:technical_shape')],
+    [button('Raw matched', 'setup:technical_raw:matched'), button('Raw reactions', 'setup:technical_raw:buttons')],
+    [button('Pending Content Config', 'setup:parser_config'), button('Advanced JSON', 'setup:advanced')],
+    [button('Diagnostics', 'setup:technical'), button('Home', 'setup:home')]
   ]);
 }
 
 export function technicalDiagnosticsBackKeyboard(target = 'technical') {
   return inlineKeyboard([
     [button('Load more messages', `setup:load_more:${target}`), button('Refresh sample', `setup:refresh_sample:${target}`)],
-    [button('Technical diagnostics', 'setup:technical'), button('Content setup', 'setup:parser')],
-    [button('Setup home', 'setup:status')]
+    [button('Diagnostics', 'setup:technical'), button('Content setup', 'setup:parser')],
+    [button('Home', 'setup:home')]
   ]);
 }
 
@@ -76,8 +95,8 @@ export function technicalTraceKeyboard({ mode = 'matched', index = 0, total = 0 
   if (Number(index || 0) < Number(total || 0) - 1) nav.push(button('Next', `setup:technical_trace:${mode}:${Number(index || 0) + 1}`));
   if (nav.length) rows.push(nav);
   rows.push([button('Load more messages', `setup:load_more:technical_trace:${mode}:${index}`), button('Refresh sample', `setup:refresh_sample:technical_trace:${mode}:${index}`)]);
-  rows.push([button('Technical diagnostics', 'setup:technical'), button('Message browser', 'setup:technical_preview:0')]);
-  rows.push([button('Setup home', 'setup:status')]);
+  rows.push([button('Diagnostics', 'setup:technical'), button('Message browser', 'setup:technical_preview:0')]);
+  rows.push([button('Home', 'setup:home')]);
   return inlineKeyboard(rows);
 }
 
@@ -88,36 +107,59 @@ export function technicalRawKeyboard({ mode = 'matched', index = 0, total = 0 } 
   if (Number(index || 0) < Number(total || 0) - 1) nav.push(button('Next', `setup:technical_raw:${mode}:${Number(index || 0) + 1}`));
   if (nav.length) rows.push(nav);
   rows.push([button('Load more messages', `setup:load_more:technical_raw:${mode}:${index}`), button('Refresh sample', `setup:refresh_sample:technical_raw:${mode}:${index}`)]);
-  rows.push([button('Technical diagnostics', 'setup:technical'), button('Message browser', 'setup:technical_preview:0')]);
-  rows.push([button('Setup home', 'setup:status')]);
+  rows.push([button('Diagnostics', 'setup:technical'), button('Message browser', 'setup:technical_preview:0')]);
+  rows.push([button('Raw tools', 'setup:technical_raw_tools'), button('Home', 'setup:home')]);
   return inlineKeyboard(rows);
 }
 
 export function parserAfterApplyKeyboard() {
   return inlineKeyboard([
     [button('Test content', 'setup:test'), button('Preview', 'setup:preview')],
-    [button('Content config', 'setup:parser_config')],
-    [button('More suggestions', 'setup:suggest'), button('Content setup', 'setup:parser')]
+    [button('More suggestions', 'setup:suggest'), button('Content setup', 'setup:parser')],
+    [button('Check & save', 'setup:check')]
+  ]);
+}
+
+
+export function manualParserApplyKeyboard(category = 'parser') {
+  const pendingAction = category === 'author'
+    ? 'setup:author_pending_config'
+    : category === 'reactions'
+      ? 'setup:reactions_pending_config'
+      : category === 'filters'
+        ? 'setup:filters_pending_config'
+        : 'setup:parser_config';
+  const optionAction = category === 'author'
+    ? 'setup:author_options'
+    : category === 'reactions'
+      ? 'setup:reaction_options'
+      : category === 'filters'
+        ? 'setup:filters_options'
+        : 'setup:suggest';
+  return inlineKeyboard([
+    [button('Content setup', 'setup:parser'), button('Pending Config', pendingAction)],
+    [button('More options', optionAction)],
+    [button('Test content', 'setup:test'), button('Preview', 'setup:preview')],
+    [button('Check & save', 'setup:check'), button('Home', 'setup:home')]
   ]);
 }
 
 export function publishMenuKeyboard() {
   return inlineKeyboard([
-    [button('Add custom schedule', 'setup:manual_schedule'), button('Sources', 'setup:sources')],
-    [button('Presets', 'setup:publish_presets'), button('Traffic suggestions', 'setup:traffic_suggestions')],
-    [button('Manage templates', 'setup:manage_templates')],
+    [button('Recommended presets', 'setup:publish_presets'), button('Traffic suggestions', 'setup:traffic_suggestions')],
+    [button('Manual schedule', 'setup:manual_schedule')],
+    [button('Sources', 'setup:sources'), button('Schedules', 'setup:manage_templates')],
     [button('Schedule preview', 'setup:schedule_preview'), button('Schedule doctor', 'setup:schedule_doctor')],
-    [button('Source test', 'setup:source_test'), button('Show publish config', 'setup:publish_config')],
-    [button('Doctor', 'setup:doctor'), button('Preview', 'setup:preview')],
-    [button('Advanced JSON', 'setup:advanced'), button('Show full config', 'setup:config')],
-    [button('Back to setup', 'setup:status')]
+    [button('Source test', 'setup:source_test')],
+    [button('Publish config', 'setup:publish_config')],
+    [button('Home', 'setup:home')]
   ]);
 }
 
 export function publishPresetsKeyboard() {
   const rows = PUBLISH_PRESETS.map((preset) => [button(preset.title, `setup:preset:${preset.id}`)]);
-  rows.push([button('Show publish config', 'setup:publish_config')]);
-  rows.push([button('Back', 'setup:publish')]);
+  rows.push([button('Publish config', 'setup:publish_config')]);
+  rows.push([button('Back', 'setup:publish'), button('Home', 'setup:home')]);
   return inlineKeyboard(rows);
 }
 
@@ -125,25 +167,26 @@ export function publishPresetDetailsKeyboard(preset) {
   return inlineKeyboard([
     [button('Apply / update preset', `setup:apply_preset:${preset.id}`)],
     [button('Replace all templates with preset', `setup:replace_preset:${preset.id}`)],
-    [button('Show publish config', 'setup:publish_config')],
-    [button('Back to presets', 'setup:publish_presets'), button('Publishing', 'setup:publish')]
+    [button('Publish config', 'setup:publish_config')],
+    [button('Back to presets', 'setup:publish_presets'), button('Publishing', 'setup:publish')],
+    [button('Home', 'setup:home')]
   ]);
 }
 
 export function confirmReplacePublishPresetKeyboard(preset) {
   return inlineKeyboard([
     [button('Yes, replace templates', `setup:replace_preset_confirm:${preset.id}`)],
-    [button('Back to preset', `setup:preset:${preset.id}`), button('Presets', 'setup:publish_presets')]
+    [button('Back to preset', `setup:preset:${preset.id}`), button('Presets', 'setup:publish_presets')],
+    [button('Home', 'setup:home')]
   ]);
 }
 
 export function publishAfterPresetKeyboard() {
   return inlineKeyboard([
-    [button('Show last change', 'setup:last_change'), button('Show publish config', 'setup:publish_config')],
-    [button('Schedule preview', 'setup:schedule_preview'), button('Manage templates', 'setup:manage_templates')],
-    [button('Presets', 'setup:publish_presets')],
-    [button('Doctor', 'setup:doctor'), button('Preview', 'setup:preview')],
-    [button('Save', 'setup:save'), button('Publishing', 'setup:publish')]
+    [button('Schedule preview', 'setup:schedule_preview'), button('Schedule doctor', 'setup:schedule_doctor')],
+    [button('Show last change', 'setup:last_change'), button('Schedules', 'setup:manage_templates')],
+    [button('Presets', 'setup:publish_presets'), button('Publishing', 'setup:publish')],
+    [button('Save', 'setup:save'), button('Home', 'setup:home')]
   ]);
 }
 
@@ -157,8 +200,8 @@ export function manageTemplatesKeyboard(templates = []) {
       : button(`Disable ${shortKey(key)}`, `setup:template_disable:${key}`);
     rows.push([toggle, button(`Remove ${shortKey(key)}`, `setup:template_remove:${key}`)]);
   }
-  rows.push([button('Show publish config', 'setup:publish_config')]);
-  rows.push([button('Back', 'setup:publish')]);
+  rows.push([button('Publish config', 'setup:publish_config')]);
+  rows.push([button('Back', 'setup:publish'), button('Home', 'setup:home')]);
   return inlineKeyboard(rows);
 }
 
@@ -170,7 +213,8 @@ function shortKey(key) {
 export function confirmRemoveTemplateKeyboard(key) {
   return inlineKeyboard([
     [button('Yes, remove template', `setup:template_remove_confirm:${key}`)],
-    [button('Back to templates', 'setup:manage_templates'), button('Publishing', 'setup:publish')]
+    [button('Back to schedules', 'setup:manage_templates'), button('Publishing', 'setup:publish')],
+    [button('Home', 'setup:home')]
   ]);
 }
 
@@ -183,6 +227,7 @@ export function trafficSuggestionsKeyboard(presets = [], options = {}) {
   rows.push([button('Extended · week', 'setup:traffic_extended:7'), button('Extended · month', 'setup:traffic_extended:30')]);
   if (options.maxDays && options.maxDays > 30) rows.push([button(`Extended · max ${options.maxDays}d`, `setup:traffic_extended:${options.maxDays}`)]);
   rows.push([button('Schedule preview', 'setup:schedule_preview'), button('Publishing', 'setup:publish')]);
+  rows.push([button('Home', 'setup:home')]);
   return inlineKeyboard(rows);
 }
 
@@ -191,8 +236,8 @@ export function sourcesKeyboard(draft = {}) {
   const selected = new Set((Array.isArray(draft?.publish?.sources) ? draft.publish.sources : []).map((source) => source.key));
   const rows = SOURCE_PRESETS.map((preset) => [button(`${selected.has(preset.key) ? '✓' : '•'} ${preset.title}`, `setup:source_preset:${preset.id}`)]);
   rows.push([button('Add custom source', 'setup:source_custom'), button('Reset sources', 'setup:sources_reset')]);
-  rows.push([button('Source test', 'setup:source_test'), button('Show publish config', 'setup:publish_config')]);
-  rows.push([button('Publishing', 'setup:publish')]);
+  rows.push([button('Source test', 'setup:source_test'), button('Publish config', 'setup:publish_config')]);
+  rows.push([button('Publishing', 'setup:publish'), button('Home', 'setup:home')]);
   return inlineKeyboard(rows);
 }
 
@@ -200,7 +245,8 @@ export function sourcesKeyboard(draft = {}) {
 export function sourceCustomInputKeyboard() {
   return inlineKeyboard([
     [button('Back to sources', 'setup:source_custom_cancel')],
-    [button('Sources', 'setup:sources'), button('Publishing', 'setup:publish')]
+    [button('Sources', 'setup:sources'), button('Publishing', 'setup:publish')],
+    [button('Home', 'setup:home')]
   ]);
 }
 
@@ -249,6 +295,7 @@ export function manualScheduleKeyboard({ draft = {}, baseConfig = {}, wizard = {
     rows.push([button('Create schedule', 'setup:manual_create')]);
   }
   rows.push([button('Start over', 'setup:manual_schedule'), button('Publishing', 'setup:publish')]);
+  rows.push([button('Home', 'setup:home')]);
   return inlineKeyboard(rows);
 }
 
@@ -268,9 +315,28 @@ export function technicalMessageBrowserKeyboard(messages = [], { page = 0, pageS
   if (currentPage > 0) nav.push(button('Prev', `setup:technical_preview:${currentPage - 1}`));
   if (currentPage < totalPages - 1) nav.push(button('Next', `setup:technical_preview:${currentPage + 1}`));
   if (nav.length) rows.push(nav);
+  rows.push([button('View by message ID', `setup:technical_preview_by_id:${currentPage}`)]);
   rows.push([button('Load more messages', `setup:load_more:technical_preview:${currentPage}`), button('Refresh sample', `setup:refresh_sample:technical_preview:${currentPage}`)]);
-  rows.push([button('Technical diagnostics', 'setup:technical'), button('Content setup', 'setup:parser')]);
-  rows.push([button('Setup home', 'setup:status')]);
+  rows.push([button('Diagnostics', 'setup:technical'), button('Content setup', 'setup:parser')]);
+  rows.push([button('Home', 'setup:home')]);
+  return inlineKeyboard(rows);
+}
+
+
+export function technicalMessageViewKeyboard({ page = 0, messageId = 0, canPreview = false } = {}) {
+  const id = Number(messageId || 0);
+  const safePage = Math.max(0, Number(page || 0));
+  const rows = [];
+  if (id) {
+    rows.push([
+      button('Overview', `setup:technical_msg:${id}:${safePage}:overview`),
+      button('Raw reactions', `setup:technical_msg:${id}:${safePage}:raw_reactions`),
+      button('Message shape', `setup:technical_msg:${id}:${safePage}:shape`)
+    ]);
+    if (canPreview) rows.push([button('Parsed preview', `setup:technical_send_preview:${id}:${safePage}`)]);
+  }
+  rows.push([button('Back to Message Browser', `setup:technical_preview:${safePage}`)]);
+  rows.push([button('Diagnostics', 'setup:technical'), button('Home', 'setup:home')]);
   return inlineKeyboard(rows);
 }
 
@@ -278,7 +344,7 @@ export function technicalMessagePreviewKeyboard(page = 0, messageId = 0, canPrev
   const rows = [];
   if (canPreview && messageId) rows.push([button('Preview this post', `setup:technical_send_preview:${messageId}:${page}`)]);
   rows.push([button('Back to message browser', `setup:technical_preview:${page}`)]);
-  rows.push([button('Technical diagnostics', 'setup:technical'), button('Setup home', 'setup:status')]);
+  rows.push([button('Diagnostics', 'setup:technical'), button('Home', 'setup:home')]);
   return inlineKeyboard(rows);
 }
 
@@ -286,15 +352,18 @@ export function previewMenuKeyboard() {
   return inlineKeyboard([
     [button('Looks good / Save', 'setup:save'), button('Run doctor', 'setup:doctor')],
     [button('Content setup', 'setup:parser'), button('Publishing', 'setup:publish')],
-    [button('Back to setup', 'setup:status')]
+    [button('Home', 'setup:home')]
   ]);
 }
 
 export function advancedMenuKeyboard() {
   return inlineKeyboard([
-    [button('Status', 'setup:status'), button('Show config', 'setup:config')],
-    [button('Test content', 'setup:test'), button('Preview', 'setup:preview')],
-    [button('Back to setup', 'setup:status')]
+    [button('Show full pending config', 'setup:config')],
+    [button('Pending Content Config', 'setup:parser_config'), button('Saved Content Config', 'setup:saved_parser_config')],
+    [button('Publish config', 'setup:publish_config')],
+    [button('Status', 'setup:status'), button('Doctor', 'setup:doctor')],
+    [button('Preview', 'setup:preview')],
+    [button('Home', 'setup:home')]
   ]);
 }
 

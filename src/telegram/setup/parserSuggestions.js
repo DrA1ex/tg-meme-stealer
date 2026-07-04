@@ -319,20 +319,21 @@ export function buildButtonReactionVariants(path, texts = [], messages = []) {
     texts,
     title: 'buttons · except 👎💩🤡 is like',
     likeMarkers: detectedMarkers.filter((marker) => !NEGATIVE_ONLY_EMOJIS.includes(marker) && marker !== '-' && marker !== '👎'),
-    dislikeMarkers: detectedMarkers.filter((marker) => NEGATIVE_ONLY_EMOJIS.includes(marker) || marker === '-' || marker === '👎'),
-    details: `likes=detected non-negative markers, dislikes=${NEGATIVE_ONLY_EMOJIS.join(' ')} -`,
+    dislikeMarkers: unique([...NEGATIVE_ONLY_EMOJIS, '-']),
+    likesRules: buildButtonExceptNegativeRules(path, unique([...NEGATIVE_ONLY_EMOJIS, '-'])),
+    details: `likes=any counted button except ${NEGATIVE_ONLY_EMOJIS.join(' ')} -, dislikes=${NEGATIVE_ONLY_EMOJIS.join(' ')} -`,
     messages
   });
 
   return variants;
 }
 
-function addButtonReactionVariant(variants, { id, path, texts, title, likeMarkers = [], dislikeMarkers = [], recommended = false, details = '', messages = [] }) {
+function addButtonReactionVariant(variants, { id, path, texts, title, likeMarkers = [], dislikeMarkers = [], likesRules: explicitLikesRules = null, dislikesRules: explicitDislikesRules = null, recommended = false, details = '', messages = [] }) {
   const uniqueLikeMarkers = unique(likeMarkers);
   const uniqueDislikeMarkers = unique(dislikeMarkers);
-  if (!uniqueLikeMarkers.length && !uniqueDislikeMarkers.length) return;
-  const likesRules = uniqueLikeMarkers.length ? buildReactionRules(path, uniqueLikeMarkers) : [];
-  const dislikesRules = uniqueDislikeMarkers.length ? buildReactionRules(path, uniqueDislikeMarkers) : [];
+  const likesRules = explicitLikesRules || (uniqueLikeMarkers.length ? buildReactionRules(path, uniqueLikeMarkers) : []);
+  const dislikesRules = explicitDislikesRules || (uniqueDislikeMarkers.length ? buildReactionRules(path, uniqueDislikeMarkers) : []);
+  if (!likesRules.length && !dislikesRules.length) return;
   const reactionStats = countMessagesWithParsedReactions(messages, likesRules, dislikesRules);
   const coverage = formatReactionCoverage(reactionStats);
   variants.push({
@@ -348,16 +349,37 @@ function addButtonReactionVariant(variants, { id, path, texts, title, likeMarker
   });
 }
 
-function dedupeButtonReactionVariants(variants) {
-  const seen = new Set();
-  const result = [];
-  for (const variant of variants) {
-    const key = JSON.stringify({ likes: variant.likesRules, dislikes: variant.dislikesRules });
-    if (seen.has(key)) continue;
-    seen.add(key);
-    result.push(variant);
+function dedupeEquivalentReactionSuggestions(suggestions = []) {
+  const groups = new Map();
+  for (const suggestion of suggestions) {
+    const key = reactionRulesKey(suggestion);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(suggestion);
   }
-  return result;
+
+  const selectedIds = new Set();
+  for (const group of groups.values()) {
+    const selected = group.find((item) => item.recommended) || [...group].sort(compareReactionSuggestions)[0];
+    if (selected) selectedIds.add(selected.id);
+  }
+
+  return suggestions.filter((suggestion) => selectedIds.has(suggestion.id));
+}
+
+function reactionRulesKey(suggestion) {
+  return JSON.stringify({
+    likes: suggestion?.likesRules || [],
+    dislikes: suggestion?.dislikesRules || []
+  });
+}
+
+function compareReactionSuggestions(a, b) {
+  return (
+    Number(b?.reactionScore || 0) - Number(a?.reactionScore || 0)
+    || Number(b?.reactionMatched || 0) - Number(a?.reactionMatched || 0)
+    || reactionPriority(b) - reactionPriority(a)
+    || String(a?.title || '').localeCompare(String(b?.title || ''))
+  );
 }
 
 function getDetectedReactionMarkers(texts = []) {
@@ -371,6 +393,21 @@ function getDetectedReactionMarkers(texts = []) {
     '-'
   ]);
   return markerCandidates.filter((marker) => texts.some((text) => String(text).includes(marker)));
+}
+
+
+export function buildButtonExceptNegativeRules(path, negativeMarkers = NEGATIVE_ONLY_EMOJIS.concat('-')) {
+  const negativeRegex = unique(negativeMarkers).map(escapeRegex).join('|');
+  return [
+    {
+      source: 'message',
+      path,
+      regex: `^(?!.*(?:${negativeRegex})).*?([\d\s,.]+[km]?).*$`,
+      group: 1,
+      transform: 'count',
+      aggregate: 'sum'
+    }
+  ];
 }
 
 export function buildReactionRules(path, markers) {
@@ -462,12 +499,7 @@ function markBestReactionSuggestion(suggestions = []) {
     reactionScore: Number(item.reactionScore || 0),
     reactionMatched: Number(item.reactionMatched || 0)
   }));
-  scored.sort((a, b) => (
-    b.reactionScore - a.reactionScore
-    || b.reactionMatched - a.reactionMatched
-    || reactionPriority(b) - reactionPriority(a)
-    || String(a.title).localeCompare(String(b.title))
-  ));
+  scored.sort(compareReactionSuggestions);
   const bestId = scored[0]?.id;
   return suggestions.map((item) => ({ ...item, recommended: item.id === bestId }));
 }
@@ -607,20 +639,22 @@ export function parserSuggestionsKeyboard(suggestions) {
   rows.push([button('Review reactions', 'setup:reaction_options')]);
   rows.push([button('Test content', 'setup:test'), button('Preview', 'setup:preview')]);
   rows.push([button('Load more messages', 'setup:load_more:suggest')]);
-  rows.push([button('Technical diagnostics', 'setup:technical'), button('Show config', 'setup:parser_config')]);
-  rows.push([button('Back', 'setup:parser')]);
+  rows.push([button('Pending Content Config', 'setup:parser_config'), button('Saved Content Config', 'setup:saved_parser_config')]);
+  rows.push([button('Back', 'setup:parser'), button('Home', 'setup:home')]);
   return inlineKeyboard(rows);
 }
 
 export function confirmResetFiltersKeyboard() {
   return inlineKeyboard([
     [button('Yes, reset filters', 'setup:reset_filters_confirm')],
-    [button('Back to suggestions', 'setup:suggest'), button('Parser', 'setup:parser')]
+    [button('Back to suggestions', 'setup:suggest'), button('Content setup', 'setup:parser')],
+    [button('Home', 'setup:home')]
   ]);
 }
 
 export function suggestionButton(suggestion, { fullTitle = false } = {}) {
-  const prefix = `${suggestion.recommended ? '★ ' : ''}${suggestion.active ? '✓ ' : suggestion.actionable ? '• ' : '✓ '}`;
+  const marker = formatSuggestionStateMarker(suggestion);
+  const prefix = `${suggestion.recommended ? '★ ' : ''}${marker} `;
   const title = fullTitle ? suggestion.title : shortSuggestionTitle(suggestion.title);
   const action = suggestion.actionable ? `setup:apply:${suggestion.id}` : `setup:noop:${suggestion.id}`;
   return button(`${prefix}${title}`.slice(0, 52), action);
@@ -638,12 +672,23 @@ export function shortSuggestionTitle(title) {
 }
 
 export function markSuggestionStates(suggestions, draft) {
-  return suggestions.map((suggestion) => {
-    const active = isFilterSuggestionActive(suggestion, draft);
+  let selectedNoopId = null;
+  const analyzed = suggestions.map((suggestion) => {
+    const filterActive = isFilterSuggestionActive(suggestion, draft);
+    const useful = isSuggestionUseful(suggestion, draft);
+    const exactNoop = !suggestion?.filterRules?.length && !useful;
+    if (exactNoop && !selectedNoopId) selectedNoopId = suggestion.id;
+    return { suggestion, filterActive, useful, exactNoop };
+  });
+
+  return analyzed.map(({ suggestion, filterActive, useful, exactNoop }) => {
+    const active = filterActive || (exactNoop && suggestion.id === selectedNoopId);
+    const equivalent = exactNoop && !active;
     return {
       ...suggestion,
       active,
-      actionable: active || isSuggestionUseful(suggestion, draft)
+      equivalent,
+      actionable: filterActive || useful
     };
   });
 }
@@ -703,7 +748,14 @@ export function filterSuggestionsByCategory(suggestions = [], category) {
 export function formatSuggestionOptions({ title, icon, categoryTitle, suggestions, scanned, matched, next }) {
   const states = suggestions || [];
   const lines = states.length
-    ? states.map((suggestion) => `- ${suggestion.recommended ? '★ ' : ''}${formatSuggestionStateMarker(suggestion)} ${suggestion.title}: ${suggestion.description}${suggestion.actionable ? '' : ' — current / no change'}`)
+    ? states.map((suggestion) => {
+      const state = suggestion.active
+        ? ' — current / no change'
+        : suggestion.equivalent
+          ? ' — same rules as selected option'
+          : '';
+      return `- ${suggestion.recommended ? '★ ' : ''}${formatSuggestionStateMarker(suggestion)} ${suggestion.title}: ${suggestion.description}${state}`;
+    })
     : ['- No options found for this sample.'];
   return setupScreen({
     icon,
@@ -711,7 +763,7 @@ export function formatSuggestionOptions({ title, icon, categoryTitle, suggestion
     sections: [
       ['🔎 Sample', [`Scanned ${scanned} recent source message(s).`, `Current filters matched ${matched}.`]],
       [categoryTitle, lines],
-      ['ℹ️ Legend', ['★ = suggested best guess from current sample.', '• can apply, ✓ selected/current. In Filters, clicking ✓ removes that filter.', '◆ = custom Telegram reaction.']],
+      ['ℹ️ Legend', ['★ = suggested best guess from current sample.', '• can apply, ✓ selected/current, ≈ same config result but not selected. In Filters, clicking ✓ removes that filter.', '◆ = custom Telegram reaction.']],
       ['➡️ Next', [next || 'Choose an option, then run the related test and Preview.']]
     ]
   });
@@ -719,6 +771,7 @@ export function formatSuggestionOptions({ title, icon, categoryTitle, suggestion
 
 export function formatSuggestionStateMarker(suggestion) {
   if (suggestion.active) return '✓';
+  if (suggestion.equivalent) return '≈';
   return suggestion.actionable ? '•' : '✓';
 }
 

@@ -10,13 +10,19 @@ import {
   formatParserTrace,
   formatReactionFields,
   formatTechnicalMessagePreview,
+  formatSingleMessageOverview,
+  formatSingleMessageRawReactions,
+  formatSingleMessageShape,
   formatTechnicalDiagnosticsOverview,
+  formatTechnicalRawToolsMenu,
   technicalDiagnosticsKeyboard,
   technicalDiagnosticsBackKeyboard,
   technicalTraceKeyboard,
   technicalRawKeyboard,
   technicalMessageBrowserKeyboard,
-  technicalMessagePreviewKeyboard
+  technicalMessagePreviewKeyboard,
+  technicalMessageViewKeyboard,
+  technicalRawToolsKeyboard
 } from './deps.js';
 import {
   clampIndex,
@@ -26,13 +32,19 @@ import {
 
 export async function technicalDiagnostics(ctx) {
   this.rememberCurrentView(ctx, 'technical');
-  const result = await this.collectSetupSample(ctx, { purpose: 'technical diagnostics', includeMessages: true });
+  const result = await this.collectSetupSample(ctx, { purpose: 'Diagnostics', includeMessages: true });
   await this.replyWithKeyboard(ctx, formatTechnicalDiagnosticsOverview({
     messages: result.messages || [],
     draft: this.getDraft(ctx),
     baseConfig: this.config,
     sample: this.getSampleStatus(ctx, result)
   }), technicalDiagnosticsKeyboard());
+}
+
+
+export async function technicalRawTools(ctx) {
+  this.rememberCurrentView(ctx, 'technical_raw_tools');
+  await this.replyWithKeyboard(ctx, formatTechnicalRawToolsMenu(), technicalRawToolsKeyboard());
 }
 
 export async function technicalAction(ctx, action) {
@@ -45,6 +57,11 @@ export async function technicalAction(ctx, action) {
   if (target.startsWith('raw:')) {
     const parts = target.slice('raw:'.length).split(':');
     await this.technicalRaw(ctx, parts[0], Number(parts[1] || 0));
+    return;
+  }
+  if (target === 'preview_by_id' || target.startsWith('preview_by_id:')) {
+    const explicitPage = target.includes(':') ? Number(target.split(':')[1] || 0) : null;
+    await this.technicalMessageByIdPrompt(ctx, explicitPage);
     return;
   }
   if (target.startsWith('send_preview:')) {
@@ -143,24 +160,115 @@ export async function technicalMessageBrowser(ctx, page = 0) {
 }
 
 export async function technicalPreviewMessage(ctx, messageId, page = 0) {
-  const safePage = Math.max(0, Number(page || 0));
-  this.rememberCurrentView(ctx, `technical_preview_msg:${messageId}:${safePage}`);
-  const result = await this.collectSetupSample(ctx, { purpose: `message preview #${messageId}`, includeMessages: true });
-  const message = (result.messages || []).find((item) => Number(item?.id || 0) === Number(messageId));
-  const posts = message ? parseMessagesToPosts([message], { chatId: this.config.telegram?.sourceChatId, parsing: this.getDraft(ctx).parsing || this.config.parsing || {} }) : [];
-  await this.replaceCurrentSetupMessage(
+  await this.technicalViewMessage(ctx, messageId, page, 'overview');
+}
+
+export async function technicalMessageByIdPrompt(ctx, page = null) {
+  const currentView = this.getCurrentView(ctx);
+  const currentPageMatch = String(currentView || '').match(/^technical_preview:(\d+)/);
+  const resolvedPage = Math.max(0, Number.isFinite(Number(page)) && page !== null ? Number(page) : Number(currentPageMatch?.[1] || 0));
+  this.setupTextPrompts.set(ctx.from.id, { kind: 'message_browser_id', page: resolvedPage });
+  await this.replyWithKeyboard(
     ctx,
-    formatTechnicalMessagePreview({ message, draft: this.getDraft(ctx), baseConfig: this.config }),
-    technicalMessagePreviewKeyboard(safePage, messageId, posts.length > 0)
+    'Send Telegram message id to inspect. I will look in the loaded setup sample first, then request it from Telegram if needed.',
+    technicalMessageBrowserKeyboard(this.setupSampleCache.get(ctx.from.id)?.messages || [], { page: resolvedPage })
   );
+}
+
+export async function openTechnicalMessageByIdText(ctx, text, prompt = {}) {
+  const messageId = Number(String(text || '').trim().replace(/^#/, ''));
+  if (!Number.isFinite(messageId) || messageId <= 0) {
+    await this.replyWithKeyboard(ctx, 'Message id must be a positive number. Send an id like 12345.', technicalMessageBrowserKeyboard(this.setupSampleCache.get(ctx.from.id)?.messages || [], { page: prompt.page || 0 }));
+    return;
+  }
+  this.setupTextPrompts.delete(ctx.from.id);
+  await this.technicalViewMessage(ctx, messageId, prompt.page || 0, 'overview');
+}
+
+export async function technicalViewMessage(ctx, messageId, page = 0, mode = 'overview') {
+  const safePage = Math.max(0, Number(page || 0));
+  const normalizedMode = ['overview', 'raw_reactions', 'shape'].includes(String(mode || '')) ? String(mode) : 'overview';
+  const lookup = await this.resolveSetupMessageById(ctx, messageId);
+  const message = lookup.message;
+  const posts = message ? parseMessagesToPosts([message], { chatId: this.config.telegram?.sourceChatId, parsing: this.getDraft(ctx).parsing || this.config.parsing || {} }) : [];
+  this.rememberCurrentView(ctx, `technical_msg:${messageId}:${safePage}:${normalizedMode}`);
+  let text;
+  let extra = {};
+  if (!message) {
+    text = formatMessageLookupMiss(lookup);
+  } else if (normalizedMode === 'raw_reactions') {
+    text = addLookupStatus(formatSingleMessageRawReactions({ message, draft: this.getDraft(ctx), baseConfig: this.config }), lookup);
+    extra = { parse_mode: 'HTML' };
+  } else if (normalizedMode === 'shape') {
+    text = addLookupStatus(formatSingleMessageShape({ message, draft: this.getDraft(ctx), baseConfig: this.config }), lookup);
+  } else {
+    text = addLookupStatus(formatSingleMessageOverview({ message, draft: this.getDraft(ctx), baseConfig: this.config }), lookup);
+  }
+  const keyboard = technicalMessageViewKeyboard({ page: safePage, messageId, canPreview: posts.length > 0 });
+  return this.replaceCurrentSetupMessage(ctx, text, keyboard, extra);
+}
+
+export async function resolveSetupMessageById(ctx, messageId) {
+  const id = Number(messageId || 0);
+  const cached = this.setupSampleCache.get(ctx.from.id)?.messages || [];
+  const found = cached.find((message) => Number(message?.id || 0) === id);
+  if (found) {
+    return { id, message: found, source: 'loaded setup context', checkedContext: true, requestedTelegram: false };
+  }
+
+  if (typeof this.scanner?.getMessageById !== 'function') {
+    return {
+      id,
+      message: null,
+      source: 'not found',
+      checkedContext: true,
+      requestedTelegram: false,
+      reason: 'Telegram source chat lookup is unavailable: scanner.getMessageById is not configured.'
+    };
+  }
+
+  try {
+    const message = await this.scanner.getMessageById(id);
+    if (message) {
+      const cache = this.setupSampleCache.get(ctx.from.id) || { messages: [], loadedAt: Date.now(), pages: 0 };
+      if (!cache.messages.some((item) => Number(item?.id || 0) === id)) cache.messages.push(message);
+      this.setupSampleCache.set(ctx.from.id, cache);
+      return { id, message, source: 'Telegram source chat', checkedContext: true, requestedTelegram: true };
+    }
+    return {
+      id,
+      message: null,
+      source: 'not found',
+      checkedContext: true,
+      requestedTelegram: true,
+      reason: 'Telegram returned no message for this id.'
+    };
+  } catch (error) {
+    return {
+      id,
+      message: null,
+      source: 'lookup failed',
+      checkedContext: true,
+      requestedTelegram: true,
+      reason: error?.message || String(error || 'Unknown Telegram lookup error')
+    };
+  }
+}
+
+export async function findSetupMessageById(ctx, messageId) {
+  return (await this.resolveSetupMessageById(ctx, messageId)).message || null;
 }
 
 export async function technicalSendPreviewMessage(ctx, messageId, page = 0) {
   const safePage = Math.max(0, Number(page || 0));
-  const result = await this.collectSetupSample(ctx, { purpose: `single message preview #${messageId}`, includeMessages: true });
-  const message = (result.messages || []).find((item) => Number(item?.id || 0) === Number(messageId));
+  const lookup = await this.resolveSetupMessageById(ctx, messageId);
+  const message = lookup.message;
   if (!message) {
-    await this.replyWithKeyboard(ctx, `Message #${messageId} is not available in the loaded sample.`, technicalMessageBrowserKeyboard(result.messages || [], { page: safePage }));
+    await this.replyWithKeyboard(
+      ctx,
+      ['Cannot send parsed preview for this message.', '', formatMessageLookupMiss(lookup)].join('\n'),
+      technicalMessagePreviewKeyboard(safePage, messageId, false)
+    );
     return;
   }
   const posts = parseMessagesToPosts([message], {
@@ -182,8 +290,53 @@ export async function technicalSendPreviewMessage(ctx, messageId, page = 0) {
   await this.replyWithKeyboard(ctx, `Preview sent for message #${messageId}.`, technicalMessagePreviewKeyboard(safePage, messageId, true));
 }
 
+function addLookupStatus(text, lookup = {}) {
+  const status = formatLookupStatusLines(lookup);
+  if (!status.length) return text;
+  const lines = String(text || '').split('\n');
+  const [title, ...rest] = lines;
+  return [title, '', '🔎 Lookup', ...status, ...rest].join('\n');
+}
+
+function formatMessageLookupMiss(lookup = {}) {
+  const status = formatLookupStatusLines(lookup);
+  return [
+    `🔍 Message lookup · #${Number(lookup.id || 0) || '?'}`,
+    '',
+    '🔎 Lookup',
+    ...(status.length ? status : ['- Lookup did not run.']),
+    '',
+    '⚠️ Not found',
+    lookup.reason ? `- ${lookup.reason}` : '- Message was not found.',
+    '',
+    '➡️ Next',
+    '- Check that the id belongs to the configured source chat.',
+    '- If the id is correct, Telegram may not expose that message to the userbot account.'
+  ].join('\n');
+}
+
+function formatLookupStatusLines(lookup = {}) {
+  const lines = [];
+  if (lookup.checkedContext) {
+    lines.push(lookup.source === 'loaded setup context'
+      ? '- Loaded setup context: found.'
+      : '- Loaded setup context: not found.');
+  }
+  if (lookup.requestedTelegram) {
+    if (lookup.message) lines.push('- Telegram source chat: loaded by id.');
+    else if (lookup.source === 'lookup failed') lines.push('- Telegram source chat: lookup failed.');
+    else lines.push('- Telegram source chat: requested, not found.');
+  } else if (lookup.source === 'loaded setup context') {
+    lines.push('- Telegram source chat: not requested because context already had the message.');
+  } else if (lookup.reason) {
+    lines.push('- Telegram source chat: not requested.');
+  }
+  return lines;
+}
+
 export const technicalFlowMethods = {
   technicalDiagnostics,
+  technicalRawTools,
   technicalAction,
   technicalFieldScan,
   technicalMessageShape,
@@ -193,5 +346,10 @@ export const technicalFlowMethods = {
   technicalRaw,
   technicalMessageBrowser,
   technicalPreviewMessage,
+  technicalMessageByIdPrompt,
+  openTechnicalMessageByIdText,
+  technicalViewMessage,
+  resolveSetupMessageById,
+  findSetupMessageById,
   technicalSendPreviewMessage
 };

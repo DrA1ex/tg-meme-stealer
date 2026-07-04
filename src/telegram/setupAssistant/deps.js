@@ -35,10 +35,12 @@ export {
   formatAuthorMenu,
   formatReactionsMenu,
   formatTechnicalDiagnosticsMenu,
+  formatTechnicalRawToolsMenu,
   formatPublishMenu,
   formatSetupDoctor,
   formatSetupIntro,
   formatSetupStatus,
+  formatCheckAndSave,
   lastChangeKeyboard
 } from '../setup/messages.js';
 export {
@@ -76,6 +78,9 @@ export {
   formatParserTrace,
   formatReactionFields,
   formatTechnicalMessagePreview,
+  formatSingleMessageOverview,
+  formatSingleMessageRawReactions,
+  formatSingleMessageShape,
   formatTechnicalDiagnosticsOverview
 } from '../setup/technicalDiagnostics.js';
 export {
@@ -128,6 +133,7 @@ export {
 export {
   advancedMenuKeyboard,
   button,
+  checkAndSaveKeyboard,
   authorMenuKeyboard,
   filtersMenuKeyboard,
   reactionsMenuKeyboard,
@@ -135,11 +141,14 @@ export {
   technicalDiagnosticsBackKeyboard,
   technicalTraceKeyboard,
   technicalRawKeyboard,
+  technicalRawToolsKeyboard,
   technicalMessageBrowserKeyboard,
   technicalMessagePreviewKeyboard,
+  technicalMessageViewKeyboard,
   confirmReplacePublishPresetKeyboard,
   confirmRemoveTemplateKeyboard,
   manageTemplatesKeyboard,
+  manualParserApplyKeyboard,
   mergeReplyOptions,
   parserMenuKeyboard,
   previewMenuKeyboard,

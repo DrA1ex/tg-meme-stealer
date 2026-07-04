@@ -32,7 +32,7 @@ export function formatTechnicalDiagnosticsOverview({ messages = [], draft = {}, 
 
   return setupScreen({
     icon: '🛠',
-    title: 'Technical diagnostics',
+    title: 'Diagnostics',
     sections: [
       ['📦 Loaded sample', [
         `Loaded: ${messages.length}/${sample.maxLimit || '?'} source message(s).`,
@@ -41,14 +41,18 @@ export function formatTechnicalDiagnosticsOverview({ messages = [], draft = {}, 
         `Cache age: ${cacheAge}.`,
         sample.exhausted ? 'Source history ended for this sample.' : 'More source messages may be available.'
       ]],
-      ['🔎 Diagnostics', [
-        'Field scan: raw Telegram object paths and coverage.',
-        'Message shape: media, buttons, entities, senders, forwards/replies.',
-        'Reaction fields: button counters and native Telegram reactions.',
-        'Author fields: label lines, mentions, sender fallback.',
-        'Parser trace: why a concrete message matched or did not match.'
+      ['🔎 Explain parsing', [
+        'Why matched / Why rejected show parser trace for concrete messages.',
+        'Unknown author and Zero likes focus on common setup failures.'
       ]],
-      ['➡️ Next', ['Use these tools only when normal Filters / Author / Reactions screens do not explain enough.']]
+      ['🧩 Inspect messages', [
+        'Message browser lets you pick a concrete loaded message.',
+        'Reaction fields and Author fields summarize useful paths without dumping raw JSON.'
+      ]],
+      ['🧬 Raw tools', [
+        'Field scan, message shape, raw compact JSON, content config, and Advanced JSON are grouped under Raw / advanced tools.'
+      ]],
+      ['➡️ Next', ['Start with Explain parsing. Use Raw tools only when the normal screens are not enough.']]
     ]
   });
 }
@@ -400,6 +404,64 @@ export function formatTechnicalMessagePreview({ message = null, draft = {}, base
         `nativeReactions=${JSON.stringify(compact.nativeReactions || compact.reactionCounts || compact.messageReactions || [])}`,
         `entities=${JSON.stringify(compact.entities || compact.messageEntities || [])}`
       ]]
+    ]
+  });
+}
+
+
+export function formatSingleMessageOverview({ message = null, draft = {}, baseConfig = {} } = {}) {
+  if (!message) return formatTechnicalMessagePreview({ message, draft, baseConfig });
+  return formatTechnicalMessagePreview({ message, draft, baseConfig })
+    .replace('Message preview ·', 'Message overview ·');
+}
+
+export function formatSingleMessageRawReactions({ message = null } = {}) {
+  if (!message) {
+    return setupHtmlScreen({
+      icon: '👍',
+      title: 'Raw reactions',
+      sections: [['⚠️ Not found', ['Message is not available.']]]
+    });
+  }
+  const compact = buildCompactRawMessage(message) || {};
+  const payload = pruneEmpty({
+    id: message.id,
+    markup: compact.markup,
+    replyMarkup: compact.replyMarkup,
+    reactions: compact.reactions
+  });
+  return setupHtmlScreen({
+    icon: '👍',
+    title: `Raw reactions · #${Number(message.id || 0) || '?'}`,
+    sections: [
+      ['🧾 Raw reaction fields', [htmlJsonBlock(JSON.stringify(payload, null, 2))]],
+      ['➡️ Next', ['Switch back to Overview, Message shape, or send Parsed preview.']]
+    ]
+  });
+}
+
+export function formatSingleMessageShape({ message = null } = {}) {
+  if (!message) {
+    return setupScreen({
+      icon: '📊',
+      title: 'Message shape',
+      sections: [['⚠️ Not found', ['Message is not available.']]]
+    });
+  }
+  const compact = buildCompactRawMessage(message) || {};
+  const keys = Object.keys(compact).sort();
+  const rows = keys.length ? keys.map((key) => `- ${key}: ${Array.isArray(compact[key]) ? `${compact[key].length} item(s)` : typeof compact[key]}`) : ['- no compact fields'];
+  return setupScreen({
+    icon: '📊',
+    title: `Message shape · #${Number(message.id || 0) || '?'}`,
+    sections: [
+      ['📌 Summary', [
+        `media=${getSetupMediaKind(message)}`,
+        `hasContent=${hasSetupContent(message)}`,
+        `hasMedia=${hasSetupMedia(message)}`,
+        `sender=${JSON.stringify(compact.sender || {})}`
+      ]],
+      ['🧬 Compact fields', rows]
     ]
   });
 }

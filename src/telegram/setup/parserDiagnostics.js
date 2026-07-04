@@ -74,7 +74,7 @@ export function formatParserPaths(messages = [], draft = {}) {
         recommendedButtonPath ? `Use message.${recommendedButtonPath.path} for reaction buttons.` : 'No reaction button path detected.',
         recommendedNativeReactionPath ? `Use message.${recommendedNativeReactionPath.path} for native reaction counters.` : 'No native reaction path detected.'
       ]],
-      ['➡️ Next', ['Use Author / Reactions screens for normal setup; this screen is technical diagnostics.']]
+      ['➡️ Next', ['Use Author / Reactions screens for normal setup; this screen is Diagnostics.']]
     ]
   });
 }
@@ -121,7 +121,7 @@ export function formatReactionExtractionTest({ messages = [], draft = {}, baseCo
       ['🔎 Scan', [`Matched ${posts.length} post(s) from ${messages.length} scanned message(s).`, `Posts with 0 likes: ${zeroLikes}.`]],
       ['🧪 Extracted reactions', lines.length ? lines : ['- No matched posts. Check filters first.']],
       ...(warnings.length ? [['⚠️ Warnings', warnings.map((item) => `- ${item}`)]] : []),
-      ['➡️ Next', ['If values look wrong, open Reaction options or Technical diagnostics.']]
+      ['➡️ Next', ['If values look wrong, open Reaction options or Diagnostics.']]
     ]
   });
 }

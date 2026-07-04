@@ -30,9 +30,9 @@ export function normalizeLoadMoreTarget(target, fallback = 'suggest') {
     'test'
   ]);
   const normalized = String(target || '').trim();
-  if (allowed.has(normalized) || normalized.startsWith('technical_trace:') || normalized.startsWith('technical_raw:') || normalized.startsWith('technical_preview')) return normalized;
+  if (allowed.has(normalized) || normalized.startsWith('technical_trace:') || normalized.startsWith('technical_raw:') || normalized.startsWith('technical_preview') || normalized.startsWith('technical_msg:')) return normalized;
   const fallbackValue = String(fallback || '').trim();
-  if (allowed.has(fallbackValue) || fallbackValue.startsWith('technical_trace:') || fallbackValue.startsWith('technical_raw:') || fallbackValue.startsWith('technical_preview')) return fallbackValue;
+  if (allowed.has(fallbackValue) || fallbackValue.startsWith('technical_trace:') || fallbackValue.startsWith('technical_raw:') || fallbackValue.startsWith('technical_preview') || fallbackValue.startsWith('technical_msg:')) return fallbackValue;
   return 'suggest';
 }
 
@@ -51,9 +51,9 @@ export function formatLoadMoreTarget(target) {
 }
 
 export function getCategoryExtraRows(category) {
-  if (category === 'filters') return [[button('Filter impact', 'setup:filter_impact'), button('Test content', 'setup:test')]];
-  if (category === 'author') return [[button('Test author', 'setup:author_test')]];
-  if (category === 'reactions') return [[button('Test reactions', 'setup:reaction_test'), button('Reaction diagnostics', 'setup:technical_reactions')]];
+  if (category === 'filters') return [[button('Pending Config', 'setup:filters_pending_config')], [button('Filter impact', 'setup:filter_impact'), button('Test content', 'setup:test')]];
+  if (category === 'author') return [[button('Pending Config', 'setup:author_pending_config')], [button('Test author', 'setup:author_test')]];
+  if (category === 'reactions') return [[button('Pending Config', 'setup:reactions_pending_config')], [button('Test reactions', 'setup:reaction_test'), button('Reaction diagnostics', 'setup:technical_reactions')]];
   return [];
 }
 

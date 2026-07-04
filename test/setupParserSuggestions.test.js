@@ -93,6 +93,62 @@ test('suggestion formatters expose categories, current state and custom reaction
   assert.equal(buildReactionRules('replyMarkup.rows[].buttons[].text', ['👍'])[0].aggregate, 'sum');
 });
 
+
+test('reaction options keep button variations visible and mark only one exact current option', () => {
+  const messages = Array.from({ length: 5 }, (_, index) => message({
+    id: index + 1,
+    text: `Post ${index + 1}`,
+    buttons: ['👍 10', '👎 2']
+  }));
+  const draft = {
+    parsing: {
+      filters: [],
+      author: [],
+      likes: buildReactionRules('replyMarkup.rows[].buttons[].text', ['👍']),
+      dislikes: buildReactionRules('replyMarkup.rows[].buttons[].text', ['👎'])
+    }
+  };
+
+  const suggestions = buildParserSuggestions(messages, draft);
+  const states = markSuggestionStates(filterSuggestionsByCategory(suggestions, 'reactions'), draft);
+  const buttonTitles = states.filter((item) => item.id.startsWith('r_buttons')).map((item) => item.title);
+  const text = formatSuggestionOptions({
+    title: 'Reaction options',
+    icon: '👍',
+    categoryTitle: '✨ Reaction options',
+    suggestions: states,
+    scanned: messages.length,
+    matched: messages.length
+  });
+
+  assert.deepEqual(buttonTitles, [
+    'buttons · detected markers',
+    'buttons · conservative',
+    'buttons · broad',
+    'buttons · except 👎💩🤡 is like'
+  ]);
+  assert.equal((text.match(/current \/ no change/g) || []).length, 1);
+  assert.match(text, /≈ buttons · conservative|≈ buttons · broad/);
+  assert.match(text, /buttons · except 👎💩🤡 is like/);
+});
+
+test('buttons except-negative variation writes semantic non-negative rules instead of conservative thumbs-only rules', () => {
+  const messages = [
+    message({ id: 1, text: 'Post 1', buttons: ['👍 10', '🐳 8', '👎 2', '💩 1'] }),
+    message({ id: 2, text: 'Post 2', buttons: ['🔥 4', '🤡 1'] })
+  ];
+  const draft = { parsing: { filters: [], author: [], likes: [], dislikes: [] } };
+  const suggestions = buildParserSuggestions(messages, draft);
+  const option = suggestions.find((item) => item.id === 'r_buttons_except_negative');
+
+  assert.ok(option, 'except-negative button option should exist');
+  option.apply(draft);
+
+  assert.match(draft.parsing.likes[0].regex, /\(\?!\.\*\(/);
+  assert.doesNotMatch(draft.parsing.likes[0].regex, /👍/);
+  assert.match(draft.parsing.dislikes[0].regex, /👎|💩|🤡/);
+});
+
 test('author entity detection handles text mentions, usernames and tg user links', () => {
   const text = 'Credit @alice and Bob';
   const result = detectAuthorEntities({

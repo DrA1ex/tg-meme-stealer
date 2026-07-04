@@ -128,27 +128,6 @@ test('parseMessagesToPosts supports mtcute-shaped messages', () => {
   assert.equal(posts[0].data.media[0].mediaKind, 'photo');
 });
 
-test('parseMessagesToPosts should do reaction fallback', () => {
-  const posts = parseMessagesToPosts(
-    [message({ id: 52, text: 'By Eve', buttons: [['👍 31']] })],
-    {
-      chatId: -1001,
-      parsing: {
-        likes: [{
-          source: 'message',
-          path: 'missing.rows[].buttons[].text',
-          regex: '👍\\s*(\\d+)',
-          group: 1,
-          transform: 'count',
-          aggregate: 'sum'
-        }]
-      }
-    }
-  );
-
-  assert.equal(posts[0].likes, 31);
-});
-
 test('passesFilters supports regex and bool transforms', () => {
   assert.equal(
     passesFilters(
@@ -304,6 +283,24 @@ test('debugParseMessage explains fallback when extractor path has no values', ()
   assert.equal(debug.extractors.likes.fallbackSource, 'parseReactions(message.markup || message.replyMarkup)');
   assert.equal(debug.extractors.likes.rules[0].pathMatched, false);
   assert.equal(debug.extractors.likes.rules[0].valuesCount, 0);
+
+  const posts = parseMessagesToPosts(
+    [message({ id: 52, text: 'By Eve', buttons: [['👍 31']] })],
+    {
+      chatId: -1001,
+      parsing: {
+        likes: [{
+          source: 'message',
+          path: 'missing.rows[].buttons[].text',
+          regex: '👍\\s*(\\d+)',
+          group: 1,
+          transform: 'count',
+          aggregate: 'sum'
+        }]
+      }
+    }
+  );
+  assert.equal(posts[0].likes, 31);
 });
 
 test('debugParseMessage omits regex trace fields when rule has no regex', () => {

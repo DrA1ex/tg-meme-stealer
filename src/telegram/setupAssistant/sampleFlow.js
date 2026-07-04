@@ -47,6 +47,10 @@ export async function showLoadMoreTarget(ctx, target) {
     const parts = target.split(':');
     return this.technicalPreviewMessage(ctx, Number(parts[1] || 0), Number(parts[2] || 0));
   }
+  if (target.startsWith('technical_msg:')) {
+    const parts = target.split(':');
+    return this.technicalViewMessage(ctx, Number(parts[1] || 0), Number(parts[2] || 0), parts[3] || 'overview');
+  }
   if (target.startsWith('technical_preview')) return this.technicalMessageBrowser(ctx, Number(target.split(':')[1] || 0));
   if (target === 'test') return this.testDefaults(ctx);
   return this.suggestParser(ctx);

@@ -38,7 +38,8 @@ export function lastChangeKeyboard(area) {
   const back = area === 'publishing' ? 'setup:publish' : 'setup:parser';
   return inlineKeyboard([
     [button('Doctor', 'setup:doctor'), button('Preview', 'setup:preview')],
-    [button('Back', back), button('Setup status', 'setup:status')]
+    [button('Back', back), button('Check & save', 'setup:check')],
+    [button('Home', 'setup:home')]
   ]);
 }
 
@@ -75,18 +76,23 @@ export function formatSetupStatusLines(draft = {}, baseConfig = {}, meta = creat
   return lines;
 }
 
-export function formatSetupIntro(draft, meta = createSetupMeta()) {
+export function formatSetupIntro(draft, baseConfig = {}, meta = createSetupMeta()) {
   return setupScreen({
     icon: '🧰',
-    title: 'Setup mode',
+    title: 'Setup home',
     sections: [
-      ['🎛 Flow', [
-        'Use buttons for the common path: Status → Doctor → Content setup/Publishing → Preview → Save.',
-        'Advanced JSON commands still work, but they are a fallback for exact tuning.'
+      ['📌 Draft summary', formatSetupStatusLines(draft, baseConfig, meta)],
+      ['1. Content setup', [
+        'Use Quick setup first, or tune Filters / Author / Reactions manually.',
+        'Content controls which Telegram messages become posts and how author/reactions are extracted.'
       ]],
-      ['📌 Current draft', formatSetupStatusLines(draft, {}, meta)],
-      ['➡️ Next', [
-        'Run Doctor for obvious issues, or start with Content setup → Quick setup.'
+      ['2. Publishing setup', [
+        'Create schedules with presets, traffic suggestions, or the manual wizard.',
+        'Manage sources and schedules from the publishing screen.'
+      ]],
+      ['3. Check & save', [
+        'Run Status, Doctor, Test content, and Preview before saving.',
+        isPreviewStale(meta) ? 'Preview is stale after draft changes.' : 'No stale preview warning right now.'
       ]]
     ]
   });
@@ -102,9 +108,27 @@ export function formatSetupStatus(draft, baseConfig = {}, meta = createSetupMeta
       ['🧪 Validation', formatValidationStatusLines(draft, meta)],
       ['➡️ Next', [
         isPreviewStale(meta)
-          ? 'Preview is stale after changes. Run Preview before Save.'
+          ? 'Preview is stale after changes. Run Preview from Check & save before Save.'
           : 'Run Doctor or Preview before saving if you changed the draft.',
-        'Quick setup and Publishing presets are available from their screens.'
+        'Home is navigation; Status is only this health summary.'
+      ]]
+    ]
+  });
+}
+
+export function formatCheckAndSave(draft, baseConfig = {}, meta = createSetupMeta()) {
+  const validation = formatValidationStatusLines(draft, meta);
+  return setupScreen({
+    icon: '✅',
+    title: 'Check & save',
+    sections: [
+      ['📌 Current state', formatSetupStatusLines(draft, baseConfig, meta)],
+      ['🧪 Checks', validation],
+      ['➡️ Recommended order', [
+        '1. Status: read the concise draft summary.',
+        '2. Doctor: catch obvious config/content/schedule issues.',
+        '3. Test content: verify parser matches real messages.',
+        '4. Preview: inspect final output before Save.'
       ]]
     ]
   });
@@ -156,11 +180,18 @@ export function formatParserMenu(draft) {
         `Author: ${countRules(parsing.author)} rule(s).`,
         `Reactions: ${countRules(parsing.likes)} like rule(s), ${countRules(parsing.dislikes)} dislike rule(s).`
       ]],
-      ['✨ Quick path', [
-        'Quick setup suggests filters, author extraction, and reaction parsing in one place.',
-        'Review screens keep each concern separate: filters decide which posts are stored; author decides caption author; reactions decide ranking scores.'
+      ['✨ Recommended', [
+        'Quick setup scans recent source messages and suggests filters, author extraction, and reaction parsing together.'
       ]],
-      ['➡️ Next', ['Use Quick setup for the recommended path, or open Filters / Author / Reactions to choose explicitly.']]
+      ['🛠 Manual tuning', [
+        'Filters decide which messages become posts.',
+        'Author decides the {{author}} value in captions.',
+        'Reactions decide likes/dislikes and ranking scores.'
+      ]],
+      ['🧪 Checks / advanced', [
+        'Run Test content and Preview after changes.',
+        'Open Diagnostics only when normal options do not explain enough.'
+      ]]
     ]
   });
 }
@@ -207,10 +238,39 @@ export function formatReactionsMenu(draft) {
 export function formatTechnicalDiagnosticsMenu() {
   return setupScreen({
     icon: '🧭',
-    title: 'Technical diagnostics',
+    title: 'Diagnostics',
     sections: [
-      ['📌 Tools', ['Field scan shows raw Telegram object paths and coverage.', 'Message shape, Reaction fields, Author fields, and Parser trace explain why normal options may not appear.', 'Advanced JSON remains available for exact tuning.']],
-      ['➡️ Next', ['Use this when normal Filters / Author / Reactions screens do not explain enough.']]
+      ['🔎 Explain parsing', [
+        'Why matched / Why rejected show parser trace for concrete messages.',
+        'Unknown author and Zero likes focus on common setup failures.'
+      ]],
+      ['🧩 Inspect messages', [
+        'Message browser lets you pick a concrete loaded message.',
+        'Reaction fields and Author fields summarize useful paths without dumping raw JSON.'
+      ]],
+      ['🧬 Raw tools', [
+        'Raw / advanced tools contains field scan, message shape, raw compact JSON, content config, and Advanced JSON.'
+      ]],
+      ['➡️ Next', ['Start with Explain parsing. Use Raw tools only when the normal screens are not enough.']]
+    ]
+  });
+}
+
+export function formatTechnicalRawToolsMenu() {
+  return setupScreen({
+    icon: '🧬',
+    title: 'Raw / advanced tools',
+    sections: [
+      ['📦 Raw inspection', [
+        'Field scan shows raw Telegram object paths and coverage.',
+        'Message shape summarizes media, buttons, entities, senders, forwards, and replies.',
+        'Raw matched and Raw reactions show compact JSON for concrete messages.'
+      ]],
+      ['⚙️ Exact tuning', [
+        'Pending Content Config shows draft parser JSON; Saved Content Config shows the config loaded from disk.',
+        'Advanced JSON remains available for exact manual commands.'
+      ]],
+      ['➡️ Next', ['Go back to Diagnostics when you want trace/reaction/author explanations.']]
     ]
   });
 }
@@ -225,22 +285,24 @@ export function formatPublishMenu(draft, baseConfig = {}) {
     sections: [
       ['📌 Current publish config', [
         `Sources: ${sources.length}`,
-        `Templates: ${templates.length}`,
+        `Schedules: ${templates.length}`,
         `Timezone: ${baseConfig.schedule?.timezone || 'default'}`
       ]],
-      ['🗓 Templates', formatTemplateLines(templates, { includeDisabled: true })],
-      ['✨ Available now', [
-        'Add custom schedule builds daily/weekly/twice-weekly/monthly templates with buttons.',
-        'Sources provides simple source presets such as best, controversial, disliked, and engagement.',
-        'Presets can add/update common schedules with buttons, including time/strictness variants.',
-        'Traffic suggestions has recent-scan and extended database modes, and can add schedules with buttons.',
-        'Manage templates can enable, disable, or remove schedules from the draft.',
-        'Schedule preview shows soon runs plus the next run for every enabled template.',
-        'Schedule doctor checks conflicts, firstSendAt shifts, and daily window gaps/overlaps.',
-        'Source test checks publish.sources[].where against stored posts.',
-        'Advanced JSON still edits exact sources/templates.'
+      ['✨ Create', [
+        'Recommended presets add/update common schedules.',
+        'Traffic suggestions builds schedules from recent or stored post volume.',
+        'Manual schedule creates one daily/weekly/twice-weekly/monthly schedule with buttons.'
       ]],
-      ['➡️ Next', ['Use Add custom schedule for manual control, or Traffic suggestions for volume-based schedules.', 'Run Source test and Schedule doctor before saving.']]
+      ['🛠 Manage', [
+        'Sources defines reusable post selections such as best, controversial, disliked, and engagement.',
+        'Schedules lets you enable, disable, or remove existing publish templates.'
+      ]],
+      ['🧪 Check', [
+        'Schedule preview shows upcoming runs.',
+        'Schedule doctor checks conflicts, firstSendAt shifts, and gaps/overlaps.',
+        'Source test checks publish.sources[].where against stored posts.'
+      ]],
+      ['🗓 Current schedules', formatTemplateLines(templates, { includeDisabled: true })]
     ]
   });
 }

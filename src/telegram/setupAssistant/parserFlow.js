@@ -15,6 +15,7 @@ import {
   formatParserSuggestions,
   formatSuggestionOptions,
   filterSuggestionsByCategory,
+  getSuggestionCategory,
   formatFiltersReset,
   confirmResetFiltersKeyboard,
   isSuggestionUseful,
@@ -33,6 +34,7 @@ import {
   technicalDiagnosticsKeyboard,
   parserMenuKeyboard,
   setupMenuKeyboard,
+  manualParserApplyKeyboard,
   replyCode
 } from './deps.js';
 import {
@@ -227,19 +229,31 @@ export async function applySuggestion(ctx, suggestionId) {
     await this.filterOptions(ctx);
     return;
   }
+  const category = getSuggestionCategory(suggestion);
+  const manualCategory = ['author', 'reactions'].includes(category);
+  const appliedTitle = category === 'author'
+    ? 'Author rules updated'
+    : category === 'reactions'
+      ? 'Reaction rules updated'
+      : suggestion.title;
   await this.replyWithKeyboard(
     ctx,
     [
       formatAppliedSuggestion({
-        suggestion,
+        suggestion: { ...suggestion, title: appliedTitle },
         beforeParsing,
         afterParsing
       }),
       '',
-      'You can apply another suggestion from the same list, or run Test content / Preview.'
+      manualCategory
+        ? 'Return to Content setup, inspect Pending Config, or run Test content / Preview.'
+        : 'You can apply another suggestion from the same list, or run Test content / Preview.'
     ].join('\n'),
-    parserSuggestionsKeyboard(markSuggestionStates(suggestions, draft))
+    manualCategory
+      ? manualParserApplyKeyboard(category)
+      : parserSuggestionsKeyboard(markSuggestionStates(suggestions, draft))
   );
+
 }
 
 export async function confirmResetFilters(ctx) {
