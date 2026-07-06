@@ -25,6 +25,28 @@ test('manual schedule stale create callback does not create a default schedule b
   assert.match(JSON.stringify(replies.at(-1)[1].reply_markup.inline_keyboard), /setup:manual_cadence:/);
 });
 
+test('manual schedule source selection advances instead of toggling source off', async () => {
+  const replies = [];
+  const assistant = new SetupAssistant({
+    scanner: {},
+    mediaDownloader: {},
+    config: { parsing: {}, publish: { sources: [{ key: 'best', where: 'likes > 0' }], template: [] }, templates: {} },
+    configLoader: () => ({ parsing: {}, publish: { sources: [{ key: 'best', where: 'likes > 0' }], template: [] }, templates: {} })
+  });
+  const ctx = plainCtx({ replies });
+  assistant.sessions.set(1, { parsing: {}, publish: { sources: [{ key: 'best', where: 'likes > 0' }], template: [] }, templates: {} });
+
+  await assistant.startManualSchedule(ctx);
+  assert.match(JSON.stringify(replies.at(-1)[1].reply_markup.inline_keyboard), /setup:manual_source:best/);
+
+  await assistant.manualScheduleSet(ctx, { source: 'best' });
+
+  assert.equal(assistant.setupScheduleWizards.get(1).source, 'best');
+  assert.match(replies.at(-1)[0], /Cadence: <choose cadence>/);
+  assert.match(JSON.stringify(replies.at(-1)[1].reply_markup.inline_keyboard), /setup:manual_cadence:/);
+  assert.doesNotMatch(JSON.stringify(replies.at(-1)[1].reply_markup.inline_keyboard), /setup:manual_source:/);
+});
+
 test('single-message parsed preview reports Telegram lookup miss and failure details', async () => {
   const missReplies = [];
   let missLookupId = 0;

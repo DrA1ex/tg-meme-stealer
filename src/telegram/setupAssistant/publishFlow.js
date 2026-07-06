@@ -329,11 +329,7 @@ export async function startManualSchedule(ctx) {
 
 export async function manualScheduleSet(ctx, patch = {}) {
   const wizard = this.getManualScheduleWizard(ctx);
-  if (Object.prototype.hasOwnProperty.call(patch, 'source') && wizard.source === patch.source) {
-    wizard.source = '';
-  } else {
-    Object.assign(wizard, patch);
-  }
+  Object.assign(wizard, patch);
   this.setupScheduleWizards.set(ctx.from.id, wizard);
   await this.showManualScheduleStep(ctx, getWizardNextStep(wizard));
 }
