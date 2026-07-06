@@ -326,8 +326,9 @@ function getTemplates(config) {
 }
 
 function formatScheduleEvent(event, timezone) {
-  const windowStart = new Date(event.runAt.getTime() - Number(event.template?.windowHours || 24) * 60 * 60 * 1000);
-  return `- ${formatLocalDateTime(event.runAt, timezone)} · ${event.key} · window ${formatLocalDateTime(windowStart, timezone)}–${formatLocalDateTime(event.runAt, timezone)}`;
+  const windowEnd = new Date(event.runAt.getTime() - Number(event.template?.offsetHours || 0) * 60 * 60 * 1000);
+  const windowStart = new Date(windowEnd.getTime() - Number(event.template?.windowHours || 24) * 60 * 60 * 1000);
+  return `- ${formatLocalDateTime(event.runAt, timezone)} · ${event.key} · window ${formatLocalDateTime(windowStart, timezone)}–${formatLocalDateTime(windowEnd, timezone)}`;
 }
 
 function buildNextScheduleEvents({ entries, templates, timezone, now, limit }) {
@@ -393,7 +394,7 @@ function analyzeDailyWindows(templates) {
   const warnings = [];
   const intervals = daily.map((template) => ({
     key: template.key || '<missing key>',
-    end: parseTimeToMinutes(template.schedule.time),
+    end: normalizeMinutes(parseTimeToMinutes(template.schedule.time) - Number(template.offsetHours || 0) * 60),
     duration: Math.max(0, Number(template.windowHours || 24) * 60)
   }));
 
@@ -704,6 +705,11 @@ function chooseMorningNightTimes(activeClusters) {
 function normalizeHour(hour) {
   const value = hour % 24;
   return value < 0 ? value + 24 : value;
+}
+
+function normalizeMinutes(minutes) {
+  const value = minutes % DAY_MINUTES;
+  return value < 0 ? value + DAY_MINUTES : value;
 }
 
 function formatHour(hour) {

@@ -325,6 +325,67 @@ test('validateConfig accepts a user-defined template set without default templat
   }));
 });
 
+test('validateConfig accepts non-negative publish template offsetHours', () => {
+  assert.doesNotThrow(() => validateConfig({
+    ...validConfig(),
+    publish: {
+      ...validConfig().publish,
+      template: [
+        {
+          ...template('daily_best', 'best', { type: 'daily', time: '10:00' }, 24, 'Day {{count}}'),
+          offsetHours: 168
+        },
+        {
+          ...template('weekly_best', 'best', { type: 'weekly', weekday: 1, time: '10:00' }, 168, 'Week {{count}}'),
+          offsetHours: 0.5
+        }
+      ]
+    }
+  }));
+});
+
+test('validateConfig rejects invalid publish template offsetHours', () => {
+  assert.throws(
+    () => validateConfig({
+      ...validConfig(),
+      publish: {
+        ...validConfig().publish,
+        template: [
+          {
+            ...template('daily_best', 'best', { type: 'daily', time: '10:00' }, 24, 'Day {{count}}'),
+            offsetHours: -1
+          },
+          {
+            ...template('weekly_best', 'best', { type: 'weekly', weekday: 1, time: '10:00' }, 168, 'Week {{count}}'),
+            offsetHours: Number.NaN
+          },
+          {
+            ...template('monthly_best', 'best', { type: 'monthly', dayOfMonth: 1, time: '10:00' }, 720, 'Month {{count}}'),
+            offsetHours: '168'
+          }
+        ]
+      }
+    }),
+    /publish\.template\.1\.offsetHours: expected number, got number[\s\S]*publish\.template\.2\.offsetHours: expected number, got string/
+  );
+
+  assert.throws(
+    () => validateConfig({
+      ...validConfig(),
+      publish: {
+        ...validConfig().publish,
+        template: [
+          {
+            ...template('daily_best', 'best', { type: 'daily', time: '10:00' }, 24, 'Day {{count}}'),
+            offsetHours: -1
+          }
+        ]
+      }
+    }),
+    /publish\.template\.0\.offsetHours: expected number greater than or equal to 0/
+  );
+});
+
 test('validateConfig allows custom publish sources and rejects unsafe source expressions', () => {
   const withCustomSource = {
     ...validConfig(),

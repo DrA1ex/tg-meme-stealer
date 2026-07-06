@@ -291,7 +291,9 @@ Common options:
 
 `logging.logLevel` can be `DEBUG`, `INFO`, `WARN`, `ERROR`, or `SILENT` and is case-insensitive. `logging.color` can be `auto`, `always`, or `never`; `auto` uses colors only for interactive terminals. Log levels are colored, scopes are highlighted, and high-signal fields such as `status`, `key`, `publicationId`, `messageId`, `reason`, and `error` get distinct colors. Sync logs include the scan window, each Telegram history request, fetched message counts, matched post counts, saved rows, skipped old posts, and deleted-post cleanup. `sync.runOnStart` controls whether the daemon runs one sync immediately after startup. `sync.intervalHours` controls the recurring sync interval. `sync.retentionDays` controls how long source post rows stay in `posts`; the default is 60 days. Retention starts after `sync.retentionInitialDelayMinutes` and then repeats every `sync.retentionIntervalHours`; it uses the same in-memory job gate as sync and publishing. Set `sync.runOnStart` to `false` to disable the initial startup sync.
 
-Publication schedules use `schedule.timezone`. Each item under `publish.template` has a globally unique `key`, `source`, explicit `schedule`, `windowHours`, `posts`, `reactions`, and header `template`. `source` names an entry from `publish.sources`; `best` and `controversial` are the defaults, and you can add your own. Schedules can be daily (`{"type":"daily","time":"10:00"}`), weekly (`{"type":"weekly","weekday":1,"time":"10:00"}` with Monday as `1`), or monthly (`{"type":"monthly","dayOfMonth":15,"time":"10:00"}`; use days `1..28`). Selections use the rolling window `[scheduledAt - windowHours, scheduledAt)`.
+Publication schedules use `schedule.timezone`. Each item under `publish.template` has a globally unique `key`, `source`, explicit `schedule`, `windowHours`, optional `offsetHours`, `posts`, `reactions`, and header `template`. `source` names an entry from `publish.sources`; `best` and `controversial` are the defaults, and you can add your own. Schedules can be daily (`{"type":"daily","time":"10:00"}`), weekly (`{"type":"weekly","weekday":1,"time":"10:00"}` with Monday as `1`), or monthly (`{"type":"monthly","dayOfMonth":15,"time":"10:00"}`; use days `1..28`). Selections normally use the rolling window `[scheduledAt - windowHours, scheduledAt)`.
+
+Set `offsetHours` to move only the selection window back from the scheduled run time. For example, `windowHours: 24` and `offsetHours: 168` on a run at `2026-07-08T10:00:00Z` selects posts from `[2026-06-30T10:00:00Z, 2026-07-01T10:00:00Z)`, while the publish key, first-send gate, and send time remain tied to `2026-07-08T10:00:00Z`.
 
 Set optional `publish.firstSendAt` to stage a daemon without publishing older missed periods. Scheduled runs and normal `/publish` calls before that timestamp are skipped; `/publish <key> -force` can still publish earlier. Use an ISO date string, preferably with an explicit timezone offset, for example `"2026-07-01T00:00:00+03:00"`.
 
@@ -494,7 +496,7 @@ The button UI is the normal path, but setup mode still accepts text commands for
 /setdislikes {jsonRuleOrArray}
 /setsources [{"key":"best","where":"true"}]
 /setsource {"key":"positive","where":"likes > dislikes"}
-/setpublish {"source":"positive","key":"daily_positive","enabled":false,"schedule":{"type":"daily","time":"12:00"},"windowHours":24,"posts":{"min":1,"target":3,"max":5},"reactions":{"strategy":"likes","min":0,"includeAbove":999999},"template":"Positive posts ({{count}})"}
+/setpublish {"source":"positive","key":"daily_positive","enabled":false,"schedule":{"type":"daily","time":"12:00"},"windowHours":24,"offsetHours":0,"posts":{"min":1,"target":3,"max":5},"reactions":{"strategy":"likes","min":0,"includeAbove":999999},"template":"Positive posts ({{count}})"}
 /settemplate templates.publish.postCaption {{position}}. By {{author}}\n👍 {{likes}}  👎 {{dislikes}}\nMedia: {{mediaSummary}}\n\n{{text}}
 /test 30
 /raw 123456
@@ -713,6 +715,16 @@ Example:
 }
 ```
 
+Selection header variables:
+
+- `key`, `source`, `type`, `templateKey`, `period`
+- `count`, `limit`, `posts`, `reactions`
+- `windowHours`
+- `offsetHours`
+- `windowStart`: ISO timestamp for the actual selection window start
+- `windowEnd`: ISO timestamp for the actual selection window end
+- `scheduledAt`: ISO timestamp for the publish run time
+
 Post caption variables:
 
 - `position`
@@ -762,7 +774,7 @@ Setup mode can also edit the publication format directly:
 ```text
 /setsources [{"key":"best","where":"true"},{"key":"controversial","where":"abs(likes - dislikes) < max(likes, dislikes) * 0.3"}]
 /setsource {"key":"positive","where":"likes > dislikes"}
-/setpublish {"source":"positive","key":"daily_positive","enabled":false,"schedule":{"type":"daily","time":"12:00"},"windowHours":24,"posts":{"min":1,"target":3,"max":5},"reactions":{"strategy":"likes","min":0,"includeAbove":999999},"template":"Positive posts ({{count}})"}
+/setpublish {"source":"positive","key":"daily_positive","enabled":false,"schedule":{"type":"daily","time":"12:00"},"windowHours":24,"offsetHours":0,"posts":{"min":1,"target":3,"max":5},"reactions":{"strategy":"likes","min":0,"includeAbove":999999},"template":"Positive posts ({{count}})"}
 ```
 
 Run `/preview P M` after changing templates to see the final rendered rich posts. Setup preview sends media content to the admin private chat, but does not publish anything to the target channel and does not write publication records.

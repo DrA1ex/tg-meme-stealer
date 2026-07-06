@@ -482,6 +482,52 @@ test('Scheduler plans missed publications inside request TTL without waking work
   assert.equal(workerRuns, 0);
 });
 
+test('Scheduler catch-up keeps weekly and monthly scheduledAt independent from offsetHours', async () => {
+  const planned = [];
+  const scheduler = new Scheduler(
+    {
+      schedule: {
+        enabled: true,
+        timezone: 'Asia/Yekaterinburg'
+      },
+      publish: {
+        requestTtlHours: 72,
+        template: [
+          {
+            source: 'best',
+            key: 'weekly_best',
+            enabled: true,
+            schedule: { type: 'weekly', weekday: 1, time: '10:10' },
+            windowHours: 168,
+            offsetHours: 168
+          },
+          {
+            source: 'best',
+            key: 'monthly_best',
+            enabled: true,
+            schedule: { type: 'monthly', dayOfMonth: 1, time: '10:20' },
+            windowHours: 720,
+            offsetHours: 720
+          }
+        ]
+      },
+      logging: { logLevel: 'silent' }
+    },
+    {
+      publish: async (key, scheduledAt) => planned.push({ key, scheduledAt: scheduledAt.toISOString() }),
+      publishWorker: async () => {}
+    }
+  );
+
+  const plannedCount = await scheduler.planMissedPublications(new Date('2026-07-01T08:00:00.000Z'));
+
+  assert.deepEqual(planned, [
+    { key: 'best.weekly_best', scheduledAt: '2026-06-29T05:10:00.000Z' },
+    { key: 'best.monthly_best', scheduledAt: '2026-07-01T05:20:00.000Z' }
+  ]);
+  assert.equal(plannedCount, 2);
+});
+
 test('Scheduler plans catch-up checks without waking worker when request already exists', async () => {
   const planned = [];
   let workerRuns = 0;

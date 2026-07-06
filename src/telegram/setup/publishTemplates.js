@@ -1,4 +1,4 @@
-import { formatSchedule, formatTemplateLines, setupScreen } from './formattingBase.js';
+import { formatSchedule, formatTemplateLines, formatTemplateTiming, setupScreen } from './formattingBase.js';
 import { formatPublishChanges } from './publishPresets.js';
 
 export function formatManagePublishTemplates(draft = {}) {
@@ -25,7 +25,7 @@ export function formatConfirmRemovePublishTemplate(draft = {}, key) {
     title: 'Remove publish template?',
     sections: [
       ['🗑 Template', template ? [
-        `${template.key}: ${template.source || '<missing source>'}, ${formatSchedule(template.schedule)}, window=${template.windowHours ?? '?'}h`,
+        `${template.key}: ${template.source || '<missing source>'}, ${formatSchedule(template.schedule)}${formatTemplateTiming(template) || ', window=?h'}`,
         'This removes it from draft publish.template only.',
         'Existing publication records in the database are not deleted.'
       ] : [`Template not found: ${key}`]],

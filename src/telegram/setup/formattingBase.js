@@ -49,9 +49,14 @@ export function formatTemplateLines(templates, options = {}) {
   return visible.slice(0, 12).map((template) => {
     const status = template.enabled === false ? 'disabled' : 'enabled';
     const schedule = formatSchedule(template.schedule);
-    const window = template.windowHours ? `, window=${template.windowHours}h` : '';
-    return `- ${template.key || '<missing key>'}: ${status}, source=${template.source || '<missing source>'}, ${schedule}${window}`;
+    return `- ${template.key || '<missing key>'}: ${status}, source=${template.source || '<missing source>'}, ${schedule}${formatTemplateTiming(template)}`;
   });
+}
+
+export function formatTemplateTiming(template = {}) {
+  const window = template.windowHours ? `, window=${template.windowHours}h` : '';
+  const offset = Number(template.offsetHours || 0) > 0 ? `, offset=${template.offsetHours}h` : '';
+  return `${window}${offset}`;
 }
 
 export function formatSchedule(schedule) {
@@ -95,4 +100,3 @@ export function scheduleIdentity(schedule) {
   if (schedule.type === 'monthly') return `monthly:${schedule.dayOfMonth || ''}:${schedule.time || ''}`;
   return `${schedule.type || ''}:${schedule.time || ''}`;
 }
-

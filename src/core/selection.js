@@ -20,7 +20,9 @@ export function buildSelectionSpecs(config, now = new Date(), keys = null, optio
     const reactions = normalizeReactions(entry.reactions);
     const sourceDefinition = getSourceDefinition(config, entry.source);
     const windowHours = Number(entry.windowHours ?? 24);
-    const until = new Date(now);
+    const offsetHours = Number(entry.offsetHours ?? 0);
+    const scheduledAt = new Date(now);
+    const until = subtractHours(scheduledAt, offsetHours);
     const since = subtractHours(until, windowHours);
 
     specs.push({
@@ -32,9 +34,10 @@ export function buildSelectionSpecs(config, now = new Date(), keys = null, optio
       chatId,
       sinceIso: since.toISOString(),
       untilIso: until.toISOString(),
-      scheduledAtIso: until.toISOString(),
+      scheduledAtIso: scheduledAt.toISOString(),
       firstSendAtIso,
       windowHours,
+      offsetHours,
       limit: posts.max,
       posts,
       reactions,
@@ -173,7 +176,11 @@ export function renderSelectionTemplate(spec, posts) {
     limit: spec.limit,
     posts: spec.posts,
     reactions: spec.reactions,
-    windowHours: spec.windowHours || hoursBetween(spec.sinceIso, spec.untilIso)
+    windowHours: spec.windowHours || hoursBetween(spec.sinceIso, spec.untilIso),
+    offsetHours: spec.offsetHours || 0,
+    windowStart: spec.sinceIso,
+    windowEnd: spec.untilIso,
+    scheduledAt: spec.scheduledAtIso || spec.untilIso
   }).trim();
 }
 

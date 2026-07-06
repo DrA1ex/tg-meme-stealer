@@ -45,7 +45,7 @@ Important behavior:
 
 - Source chat id.
 - Source key and template key, exposed as `source.templateKey`.
-- Rolling window `[scheduledAt - windowHours, scheduledAt)`.
+- Rolling window `[scheduledAt - offsetHours - windowHours, scheduledAt - offsetHours)`, with `offsetHours` defaulting to `0`.
 - Post count limits `{ min, target, max }`.
 - Reaction strategy and thresholds.
 - SQL snippets compiled from source expressions and reaction strategy.
@@ -67,6 +67,8 @@ Important behavior:
 
 The canonical publication key includes source, template key, and a local timestamp bucket. Forced publishes use a random key prefix so they can intentionally duplicate an already published selection.
 
+Selection header templates can use `key`, `source`, `type`, `templateKey`, `period`, `count`, `limit`, `posts`, `reactions`, `windowHours`, `offsetHours`, `windowStart`, `windowEnd`, and `scheduledAt`. `windowStart` and `windowEnd` reflect the actual offset-adjusted selection window.
+
 ## Sending Rich Posts
 
 `src/telegram/richPost.js` sends a selection header, then each selected post:
@@ -77,4 +79,3 @@ The canonical publication key includes source, template key, and a local timesta
 - Temporary media files are cleaned after send attempts.
 
 If a send fails after some posts were recorded, the next worker run resumes from the first unsent position rather than starting over.
-

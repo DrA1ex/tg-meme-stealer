@@ -44,6 +44,7 @@ const SELECTION_SCHEMA = {
     dayOfMonth: NUMBER
   },
   windowHours: NUMBER,
+  offsetHours: NUMBER,
   posts: {
     target: NUMBER,
     min: NUMBER,
@@ -346,6 +347,9 @@ function validatePublishTemplates(config) {
     if (!isPositiveNumber(template.windowHours)) {
       issues.push(`${pathPrefix}.windowHours: expected number greater than 0`);
     }
+    if (template.offsetHours !== undefined && !isNonNegativeNumber(template.offsetHours)) {
+      issues.push(`${pathPrefix}.offsetHours: expected number greater than or equal to 0`);
+    }
 
     const posts = template.posts || {};
     if (!isFiniteNumber(posts.min)) {
@@ -419,6 +423,10 @@ function isFiniteNumber(value) {
 
 function isPositiveNumber(value) {
   return isFiniteNumber(value) && value > 0;
+}
+
+function isNonNegativeNumber(value) {
+  return isFiniteNumber(value) && value >= 0;
 }
 
 function sleepSync(ms) {

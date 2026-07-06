@@ -199,6 +199,26 @@ test('schedule diagnostics preview upcoming runs, first-send gates and overlappi
   assert.equal(getMaxTrafficDays({ sync: { retentionDays: 90, initialScanDays: 10, refreshRecentDays: 3 } }), 90);
 });
 
+test('schedule diagnostics use offsetHours for preview and daily window overlap checks', () => {
+  const now = new Date('2026-07-08T09:00:00.000Z');
+  const baseConfig = { schedule: { timezone: 'UTC' }, publish: { sources: [{ key: 'best', where: 'likes > 0' }] } };
+  const draft = {
+    publish: {
+      template: [
+        template({ key: 'shifted_day', schedule: { type: 'daily', time: '10:00' }, windowHours: 24, offsetHours: 168 }),
+        template({ key: 'morning', schedule: { type: 'daily', time: '10:00' }, windowHours: 12, offsetHours: 12 }),
+        template({ key: 'night', schedule: { type: 'daily', time: '22:00' }, windowHours: 12 })
+      ]
+    }
+  };
+
+  const preview = formatSchedulePreview(draft, baseConfig, now);
+  const doctor = formatScheduleDoctor(draft, baseConfig, now);
+
+  assert.match(preview, /best\.shifted_day · window 06-30 10:00–07-01 10:00/);
+  assert.match(doctor, /best: morning and night overlap by 12h/);
+});
+
 test('traffic suggestions use recent/parser data and database volume to build actionable presets', async () => {
   const messages = Array.from({ length: 24 }, (_, index) => ({
     id: index + 1,

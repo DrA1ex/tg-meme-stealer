@@ -209,6 +209,168 @@ test('SelectionPublisher publication key does not depend on selected post count'
   assert.deepEqual(threePosts.insertedKeys, ['publish:best:week:2026-06-29T00-00']);
 });
 
+test('SelectionPublisher canonical publication key uses scheduledAt with offset windows', async () => {
+  const checkedKeys = [];
+  const inserted = [];
+  const queriedSpecs = [];
+  const publisher = new SelectionPublisher({
+    repository: {
+      getPublicationByKey: async (key) => {
+        checkedKeys.push(key);
+        return null;
+      },
+      getSelectionPosts: async (spec) => {
+        queriedSpecs.push(spec);
+        return [post(1, 'Alice')];
+      },
+      tryCreatePublicationRequest: async (request) => {
+        inserted.push(request);
+        return 123;
+      }
+    },
+    mediaDownloader: {},
+    setupAssistant: null,
+    config: {
+      ...config(),
+      publish: {
+        dryRun: false,
+        template: [
+          { source: 'best', key: 'last_week_day', enabled: true, windowHours: 24, offsetHours: 168, limit: 1, template: 'Best shifted day' }
+        ]
+      }
+    }
+  });
+
+  const result = await publisher.publishAll(new Date('2026-07-08T10:00:00.000Z'), ['best.last_week_day']);
+
+  assert.equal(result.selections[0].status, 'scheduled');
+  assert.deepEqual(checkedKeys, ['publish:best:last_week_day:2026-07-08T10-00']);
+  assert.equal(inserted[0].key, 'publish:best:last_week_day:2026-07-08T10-00');
+  assert.equal(inserted[0].periodStart, '2026-06-30T10:00:00.000Z');
+  assert.equal(inserted[0].periodEnd, '2026-07-01T10:00:00.000Z');
+  assert.equal(queriedSpecs[0].scheduledAtIso, '2026-07-08T10:00:00.000Z');
+});
+
+test('SelectionPublisher canonical key follows scheduled run bucket, not window or offset', async () => {
+  async function planWithTiming({ templateKey, schedule, scheduledAt, windowHours, offsetHours }) {
+    const inserted = [];
+    const publisher = new SelectionPublisher({
+      repository: {
+        getPublicationByKey: async () => null,
+        getSelectionPosts: async () => [post(1, 'Alice')],
+        tryCreatePublicationRequest: async (request) => {
+          inserted.push(request);
+          return 123;
+        }
+      },
+      mediaDownloader: {},
+      setupAssistant: null,
+      config: {
+        ...config(),
+        publish: {
+          dryRun: false,
+          template: [
+            {
+              source: 'best',
+              key: templateKey,
+              enabled: true,
+              schedule,
+              windowHours,
+              offsetHours,
+              limit: 1,
+              template: 'Best posts'
+            }
+          ]
+        }
+      }
+    });
+
+    await publisher.publishAll(new Date(scheduledAt), [`best.${templateKey}`]);
+    return inserted[0];
+  }
+
+  const currentWeek = await planWithTiming({
+    templateKey: 'weekly_best',
+    schedule: { type: 'weekly', weekday: 1, time: '10:10' },
+    scheduledAt: '2026-06-29T05:10:00.000Z',
+    windowHours: 168,
+    offsetHours: 0
+  });
+  const shiftedWeek = await planWithTiming({
+    templateKey: 'weekly_best',
+    schedule: { type: 'weekly', weekday: 1, time: '10:10' },
+    scheduledAt: '2026-06-29T05:10:00.000Z',
+    windowHours: 24,
+    offsetHours: 168
+  });
+  const currentMonth = await planWithTiming({
+    templateKey: 'monthly_best',
+    schedule: { type: 'monthly', dayOfMonth: 1, time: '10:20' },
+    scheduledAt: '2026-07-01T05:20:00.000Z',
+    windowHours: 720,
+    offsetHours: 0
+  });
+  const shiftedMonth = await planWithTiming({
+    templateKey: 'monthly_best',
+    schedule: { type: 'monthly', dayOfMonth: 1, time: '10:20' },
+    scheduledAt: '2026-07-01T05:20:00.000Z',
+    windowHours: 24,
+    offsetHours: 720
+  });
+
+  assert.equal(currentWeek.key, 'publish:best:weekly_best:2026-06-29T05-10');
+  assert.equal(shiftedWeek.key, 'publish:best:weekly_best:2026-06-29T05-10');
+  assert.equal(currentWeek.periodStart, '2026-06-22T05:10:00.000Z');
+  assert.equal(currentWeek.periodEnd, '2026-06-29T05:10:00.000Z');
+  assert.equal(shiftedWeek.periodStart, '2026-06-21T05:10:00.000Z');
+  assert.equal(shiftedWeek.periodEnd, '2026-06-22T05:10:00.000Z');
+  assert.equal(currentMonth.key, 'publish:best:monthly_best:2026-07-01T05-20');
+  assert.equal(shiftedMonth.key, 'publish:best:monthly_best:2026-07-01T05-20');
+  assert.equal(currentMonth.periodStart, '2026-06-01T05:20:00.000Z');
+  assert.equal(currentMonth.periodEnd, '2026-07-01T05:20:00.000Z');
+  assert.equal(shiftedMonth.periodStart, '2026-05-31T05:20:00.000Z');
+  assert.equal(shiftedMonth.periodEnd, '2026-06-01T05:20:00.000Z');
+});
+
+test('SelectionPublisher firstSendAt compares against scheduledAt, not shifted window end', async () => {
+  let postQueries = 0;
+  const publisher = new SelectionPublisher({
+    repository: {
+      getPublicationByKey: async () => null,
+      getSelectionPosts: async () => {
+        postQueries += 1;
+        return [post(1, 'Alice')];
+      },
+      tryCreatePublicationRequest: async () => 123
+    },
+    mediaDownloader: {},
+    setupAssistant: null,
+    config: {
+      ...config(),
+      publish: {
+        dryRun: false,
+        template: [
+          {
+            source: 'best',
+            key: 'last_week_day',
+            enabled: true,
+            windowHours: 24,
+            offsetHours: 168,
+            limit: 1,
+            firstSendAt: '2026-07-08T09:00:00.000Z',
+            template: 'Best shifted day'
+          }
+        ]
+      }
+    }
+  });
+
+  const result = await publisher.publishAll(new Date('2026-07-08T10:00:00.000Z'), ['best.last_week_day']);
+
+  assert.equal(postQueries, 1);
+  assert.equal(result.selections[0].status, 'scheduled');
+});
+
 test('SelectionPublisher scheduled enqueue skips existing publication before selecting posts', async () => {
   let postQueries = 0;
   let insertAttempts = 0;

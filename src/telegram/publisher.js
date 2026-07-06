@@ -507,7 +507,7 @@ function getPublicationKey(selection, config) {
     'publish',
     selection.source,
     selection.templateKey || String(selection.key).split('.')[1],
-    getLocalTimestampBucket(new Date(selection.untilIso), config.schedule?.timezone || 'UTC')
+    getLocalTimestampBucket(new Date(selection.scheduledAtIso || selection.untilIso), config.schedule?.timezone || 'UTC')
   ].join(':');
 }
 
@@ -541,7 +541,7 @@ function getForcedPublicationKey(selection, config) {
     randomCode(),
     selection.source,
     selection.templateKey || String(selection.key).split('.')[1],
-    getLocalTimestampBucket(new Date(selection.untilIso), config.schedule?.timezone || 'UTC')
+    getLocalTimestampBucket(new Date(selection.scheduledAtIso || selection.untilIso), config.schedule?.timezone || 'UTC')
   ].join(':');
 }
 

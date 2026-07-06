@@ -37,7 +37,7 @@ test('setup status reports stale preview, validation state, schedule lines and c
       sources: [{ key: 'best', where: 'likes > 0' }],
       template: [
         template({ key: 'daily_a', schedule: { type: 'daily', time: '11:00' } }),
-        template({ key: 'daily_b', schedule: { type: 'daily', time: '11:00' }, windowHours: 12, enabled: false })
+        template({ key: 'daily_b', schedule: { type: 'daily', time: '11:00' }, windowHours: 12, offsetHours: 6, enabled: false })
       ]
     },
     templates: {}
@@ -55,7 +55,7 @@ test('setup status reports stale preview, validation state, schedule lines and c
   assert.equal(formatSchedule({ type: 'weekly', weekday: 4, time: '13:00' }), 'weekly day 4 13:00');
   assert.deepEqual(formatTemplateLines(draft.publish.template, { includeDisabled: true }), [
     '- daily_a: enabled, source=best, daily 11:00, window=24h',
-    '- daily_b: disabled, source=best, daily 11:00, window=12h'
+    '- daily_b: disabled, source=best, daily 11:00, window=12h, offset=6h'
   ]);
 });
 

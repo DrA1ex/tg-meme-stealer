@@ -62,6 +62,32 @@ test('buildSelectionSpecs supports separate monthly rolling windows', () => {
   assert.deepEqual(specs.map((spec) => spec.windowHours), [720, 720]);
 });
 
+test('buildSelectionSpecs applies offsetHours to selection window only', () => {
+  const specs = buildSelectionSpecs({
+    telegram: { sourceChatId: -1001 },
+    publish: {
+      template: [
+        template({ source: 'best', key: 'last_week_day', windowHours: 24, offsetHours: 168 })
+      ]
+    }
+  }, new Date('2026-07-08T10:00:00.000Z'));
+
+  assert.equal(specs[0].sinceIso, '2026-06-30T10:00:00.000Z');
+  assert.equal(specs[0].untilIso, '2026-07-01T10:00:00.000Z');
+  assert.equal(specs[0].scheduledAtIso, '2026-07-08T10:00:00.000Z');
+  assert.equal(specs[0].windowHours, 24);
+  assert.equal(specs[0].offsetHours, 168);
+});
+
+test('buildSelectionSpecs defaults offsetHours to zero', () => {
+  const specs = buildSelectionSpecs(config(), new Date('2026-06-29T10:00:00.000Z'), ['daily_morning']);
+
+  assert.equal(specs[0].sinceIso, '2026-06-28T10:00:00.000Z');
+  assert.equal(specs[0].untilIso, '2026-06-29T10:00:00.000Z');
+  assert.equal(specs[0].scheduledAtIso, '2026-06-29T10:00:00.000Z');
+  assert.equal(specs[0].offsetHours, 0);
+});
+
 test('buildSelectionSpecs uses later global or template firstSendAt', () => {
   const specs = buildSelectionSpecs({
     telegram: { sourceChatId: -1001 },
@@ -144,6 +170,32 @@ test('loadSelections renders templates with count and windowHours', async () => 
     'Best morning 24h (2)',
     'Controversial 168h (1)'
   ]);
+});
+
+test('loadSelections renders offset and window timestamp template variables', async () => {
+  const repository = {
+    getSelectionPosts: async () => [post(1, 20)]
+  };
+
+  const selections = await loadSelections(repository, {
+    telegram: { sourceChatId: -1001 },
+    publish: {
+      template: [
+        template({
+          source: 'best',
+          key: 'last_week_day',
+          windowHours: 24,
+          offsetHours: 168,
+          template: '{{offsetHours}} {{windowStart}} {{windowEnd}} {{scheduledAt}} ({{count}})'
+        })
+      ]
+    }
+  }, new Date('2026-07-08T10:00:00.000Z'), ['last_week_day']);
+
+  assert.equal(
+    selections[0].title,
+    '168 2026-06-30T10:00:00.000Z 2026-07-01T10:00:00.000Z 2026-07-08T10:00:00.000Z (1)'
+  );
 });
 
 function config() {

@@ -46,7 +46,7 @@ Publishing setup changes `publish.sources`, `publish.template`, and caption/stat
 - Manual schedule wizard steps for source, cadence, day, time, window, post count, and threshold.
 - Source presets and custom source expressions.
 - Template enable/disable/remove actions.
-- Schedule preview and schedule doctor screens.
+- Schedule preview and schedule doctor screens. Preview shows offset-adjusted selection windows, and doctor uses `offsetHours` when checking daily gaps and overlaps.
 
 The pending draft may differ from saved config until the admin chooses `Save`.
 
@@ -72,4 +72,3 @@ Button UI is the normal path, but setup mode still accepts text commands for exa
 - Session control: `/done`, `/cancel`.
 
 When changing setup behavior, update both the callback routing and the relevant text command tests when the same feature is exposed in both places.
-

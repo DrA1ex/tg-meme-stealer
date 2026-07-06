@@ -62,7 +62,7 @@ Only `telegram.adminId` in a private chat can run commands.
 
 ## Scheduling And First-Send Gates
 
-Daemon mode uses `schedule.enabled` and `schedule.timezone`. Each enabled `publish.template[]` item may schedule a daily, weekly, or monthly run.
+Daemon mode uses `schedule.enabled` and `schedule.timezone`. Each enabled `publish.template[]` item may schedule a daily, weekly, or monthly run. `windowHours` controls the selection duration; optional `offsetHours` moves only that selection window back from the run time. For example, `windowHours: 24` and `offsetHours: 168` publish a one-day window from one week before the scheduled run.
 
 `publish.firstSendAt` gates all normal publication scheduling. A template-level `firstSendAt` can also be set; the later timestamp wins. Scheduler catch-up and regular `/publish` respect this gate. `/publish <key> --force` can publish earlier and can include disabled templates when explicitly requested.
 
@@ -77,4 +77,3 @@ Media downloads are temporary. `MediaDownloader` writes files under `sync.mediaD
 ## Logging
 
 `src/core/logger.js` supports configured levels `DEBUG`, `INFO`, `WARN`, `ERROR`, and `SILENT`, plus color modes `auto`, `always`, and `never`. Runtime logs include command startup fields, scheduler timers, history scan pages, publication request states, worker results, and Telegram errors.
-

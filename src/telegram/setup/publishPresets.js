@@ -1,5 +1,5 @@
 import { setPublishTemplate, upsertPublishSource } from '../../core/setupConfig.js';
-import { formatSchedule, formatTemplateLines, setupScreen } from './formattingBase.js';
+import { formatSchedule, formatTemplateLines, formatTemplateTiming, setupScreen } from './formattingBase.js';
 
 
 export const PUBLISH_PRESETS = [
@@ -342,7 +342,7 @@ export function formatPublishPresetDetails(preset, draft = {}) {
   });
   const templateLines = (preset.templates || []).map((template) => {
     const status = existingTemplates.has(template.key) ? 'update existing' : 'add new';
-    return `- ${template.key}: ${status}; ${formatSchedule(template.schedule)}, window=${template.windowHours}h`;
+    return `- ${template.key}: ${status}; ${formatSchedule(template.schedule)}${formatTemplateTiming(template)}`;
   });
   const selectionLines = (preset.templates || []).map((template) => {
     return `- ${template.key}: posts=${formatPostsConfig(template.posts)}, reactions=${formatReactionsConfig(template.reactions)}`;
@@ -443,7 +443,7 @@ export function formatPublishChanges(beforePublish = {}, afterPublish = {}, { co
 
   for (const key of [...addedTemplates, ...updatedTemplates].slice(0, 8)) {
     const template = afterTemplates.get(key);
-    lines.push(`  ${key}: ${formatSchedule(template.schedule)}, window=${template.windowHours}h, posts=${formatPostsConfig(template.posts)}, reactions=${formatReactionsConfig(template.reactions)}`);
+    lines.push(`  ${key}: ${formatSchedule(template.schedule)}${formatTemplateTiming(template)}, posts=${formatPostsConfig(template.posts)}, reactions=${formatReactionsConfig(template.reactions)}`);
   }
   if (addedTemplates.length + updatedTemplates.length > 8) {
     lines.push(`  ...and ${addedTemplates.length + updatedTemplates.length - 8} more changed template(s)`);
@@ -469,4 +469,3 @@ export function formatPostsConfig(posts = {}) {
 export function formatReactionsConfig(reactions = {}) {
   return `${reactions.strategy || 'likes'} min=${reactions.min ?? 0} includeAbove=${reactions.includeAbove ?? '∞'}`;
 }
-
