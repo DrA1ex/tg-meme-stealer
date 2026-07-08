@@ -9,7 +9,7 @@ DRY_RUN=0
 
 usage() {
   cat <<'EOF'
-Usage: ./tg-memes-new-instance.sh [--dry-run]
+Usage: ./scripts/clone.sh [--dry-run]
 
 Interactive helper for creating a new tg-meme-stealer instance from an
 already configured instance on the same Ubuntu server.
@@ -28,22 +28,62 @@ for arg in "$@"; do
   esac
 done
 
-if [[ -t 1 ]]; then
+if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
   BOLD=$'\033[1m'
   DIM=$'\033[2m'
   RED=$'\033[31m'
   GREEN=$'\033[32m'
   YELLOW=$'\033[33m'
   BLUE=$'\033[34m'
+  CYAN=$'\033[36m'
+  MAGENTA=$'\033[35m'
   RESET=$'\033[0m'
 else
-  BOLD=""; DIM=""; RED=""; GREEN=""; YELLOW=""; BLUE=""; RESET=""
+  BOLD=""; DIM=""; RED=""; GREEN=""; YELLOW=""; BLUE=""; CYAN=""; MAGENTA=""; RESET=""
+fi
+
+if [[ -t 1 ]]; then
+  SYM_OK="✓"; SYM_WARN="!"; SYM_STEP="◆"; SYM_BOX_ON="☑"; SYM_BOX_OFF="☐"
+else
+  SYM_OK="OK"; SYM_WARN="WARN"; SYM_STEP="*"; SYM_BOX_ON="[x]"; SYM_BOX_OFF="[ ]"
 fi
 
 fail() { echo "${RED}Error:${RESET} $*" >&2; exit 1; }
-warn() { echo "${YELLOW}Warning:${RESET} $*" >&2; }
-info() { echo "${BLUE}==>${RESET} $*"; }
-ok() { echo "${GREEN}OK:${RESET} $*"; }
+warn() { echo "${YELLOW}${SYM_WARN}${RESET} $*" >&2; }
+info() { echo "${BLUE}${SYM_STEP}${RESET} $*"; }
+ok() { echo "${GREEN}${SYM_OK}${RESET} $*"; }
+
+hr() {
+  printf '%s────────────────────────────────────────────────────────────%s
+' "$DIM" "$RESET"
+}
+
+banner() {
+  echo
+  hr
+  printf '%s%s%s
+' "$BOLD$CYAN" "tg-meme-stealer clone helper" "$RESET"
+  printf '%s%s%s
+' "$DIM" "Create a new parser instance from an existing working one." "$RESET"
+  hr
+}
+
+section() {
+  echo
+  printf '%s%s %s%s
+' "$BOLD$BLUE" "$SYM_STEP" "$*" "$RESET"
+}
+
+field() {
+  local label="$1"
+  local value="$2"
+  printf '  %s%-24s%s %s
+' "$DIM" "$label:" "$RESET" "$value"
+}
+
+ok_stderr() {
+  echo "${GREEN}${SYM_OK}${RESET} $*" >&2
+}
 
 on_error() {
   local code=$?
@@ -110,14 +150,36 @@ prompt_path() {
   strip_trailing_slash "$(expand_path "$value")"
 }
 
-prompt_secret_required() {
-  local label="$1"
+trim_value() {
+  local value="$1"
+  value="${value//$'\r'/}"
+  value="${value//$'\n'/}"
+  value="$(printf '%s' "$value" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
+  printf '%s\n' "$value"
+}
+
+looks_like_bot_token() {
+  local value="$1"
+  [[ "$value" =~ ^[0-9]{6,}:[A-Za-z0-9_-]{30,}$ ]]
+}
+
+prompt_bot_token() {
   local value=""
   while true; do
-    read -r -s -p "$label: " value
-    echo
-    [[ -n "$value" ]] && { printf '%s\n' "$value"; return; }
-    warn "Value cannot be empty."
+    value="$(prompt_required "New TELEGRAM_BOT_TOKEN (visible input)")"
+    value="$(trim_value "$value")"
+    if looks_like_bot_token "$value"; then
+      ok_stderr "Bot token accepted: $(redact "$value")"
+      printf '%s\n' "$value"
+      return
+    fi
+
+    warn "This does not look like a standard Telegram bot token: $(redact "$value") (${#value} chars)"
+    if prompt_yes_no "Enter TELEGRAM_BOT_TOKEN again?" y; then
+      continue
+    fi
+    printf '%s\n' "$value"
+    return
   done
 }
 
@@ -259,6 +321,135 @@ redact() {
   fi
 }
 
+list_json_sections() {
+  local file="$1"
+  [[ -f "$file" ]] || return 0
+  node - "$file" <<'NODE'
+const fs = require('fs');
+const file = process.argv[2];
+try {
+  const data = JSON.parse(fs.readFileSync(file, 'utf8'));
+  if (!data || Array.isArray(data) || typeof data !== 'object') process.exit(0);
+  for (const key of Object.keys(data)) console.log(key);
+} catch {
+  process.exit(0);
+}
+NODE
+}
+
+join_by_comma() {
+  local IFS=', '
+  printf '%s' "$*"
+}
+
+choose_config_sections() {
+  local -n out_ref="$1"
+  shift
+  local items=("$@")
+  local selected=()
+  local i choice token idx
+
+  out_ref=()
+
+  for ((i = 0; i < ${#items[@]}; i++)); do
+    selected[$i]=1
+  done
+
+  if (( ${#items[@]} == 0 )); then
+    warn "config.json exists, but no top-level sections were found."
+    return 0
+  fi
+
+  while true; do
+    echo
+    printf '%s%s%s\n' "$BOLD" "config.json sections" "$RESET"
+    printf '%s\n' "Toggle by number, use 'a' for all, 'n' for none, press Enter when done."
+    for ((i = 0; i < ${#items[@]}; i++)); do
+      if [[ "${selected[$i]}" == "1" ]]; then
+        printf '  %s %2d. %s\n' "$SYM_BOX_ON" "$((i + 1))" "${items[$i]}"
+      else
+        printf '  %s %2d. %s\n' "$SYM_BOX_OFF" "$((i + 1))" "${items[$i]}"
+      fi
+    done
+    if ! read -r -p "Toggle sections: " choice; then
+      choice=""
+      echo
+    fi
+    choice="$(trim_value "$choice")"
+    [[ -z "$choice" ]] && break
+
+    case "${choice,,}" in
+      a|all|все)
+        for ((i = 0; i < ${#items[@]}; i++)); do selected[$i]=1; done
+        continue
+        ;;
+      n|none|ничего)
+        for ((i = 0; i < ${#items[@]}; i++)); do selected[$i]=0; done
+        continue
+        ;;
+    esac
+
+    choice="${choice//,/ }"
+    for token in $choice; do
+      if [[ "$token" =~ ^[0-9]+$ ]]; then
+        idx=$((token - 1))
+        if (( idx >= 0 && idx < ${#items[@]} )); then
+          if [[ "${selected[$idx]}" == "1" ]]; then
+            selected[$idx]=0
+          else
+            selected[$idx]=1
+          fi
+        else
+          warn "Section number is out of range: $token"
+        fi
+      else
+        warn "Unsupported toggle value: $token"
+      fi
+    done
+  done
+
+  local count=0
+  for ((i = 0; i < ${#items[@]}; i++)); do
+    if [[ "${selected[$i]}" == "1" ]]; then
+      out_ref+=("${items[$i]}")
+      count=$((count + 1))
+    fi
+  done
+
+  if (( count == 0 )); then
+    warn "No config sections selected. A minimal config.json with local runtime paths will be created."
+  fi
+}
+
+write_config_sections() {
+  local source_file="$1"
+  local target_file="$2"
+  shift 2
+  local keys=("$@")
+
+  if [[ "$DRY_RUN" == "1" ]]; then
+    printf '%s$ write selected config sections to %q: %s%s\n' "$DIM" "$target_file" "$(join_by_comma "${keys[@]}")" "$RESET"
+    return 0
+  fi
+
+  node - "$source_file" "$target_file" "${keys[@]}" <<'NODE'
+const fs = require('fs');
+const [sourceFile, targetFile, ...keys] = process.argv.slice(2);
+const source = JSON.parse(fs.readFileSync(sourceFile, 'utf8'));
+const output = {};
+for (const key of keys) {
+  if (Object.prototype.hasOwnProperty.call(source, key)) {
+    output[key] = source[key];
+  }
+}
+output.database ??= {};
+output.database.path = 'data/posts.sqlite';
+output.telegram ??= {};
+output.telegram.sessionFile = 'sessions/mtcute-user.session';
+fs.writeFileSync(targetFile, JSON.stringify(output, null, 2) + '\n');
+NODE
+}
+
 sanitize_name() {
   local value="$1"
   value="$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]' | sed -E 's/^-100//; s/^-//; s/[^a-z0-9._-]+/-/g; s/^-+//; s/-+$//; s/-{2,}/-/g')"
@@ -319,25 +510,23 @@ print_source_summary() {
     git_branch="$(git -C "$source_path" branch --show-current 2>/dev/null || true)"
   fi
 
-  echo
-  echo "${BOLD}Source instance summary${RESET}"
-  echo "  path:                  $source_path"
-  echo "  git remote:            ${git_remote:-unknown}"
-  echo "  git branch:            ${git_branch:-unknown}"
-  echo "  .env:                  $([[ -f "$source_env" ]] && echo yes || echo no)"
-  echo "  config.json:           $([[ -f "$source_config" ]] && echo yes || echo no)"
-  echo "  node_modules:          $([[ -d "$source_path/node_modules" ]] && echo yes || echo no)"
-  echo "  data/posts.sqlite:     $([[ -f "$source_path/data/posts.sqlite" ]] && echo yes || echo no)"
-  echo "  session file:          $(json_get "$source_config" telegram.sessionFile "$DEFAULT_SESSION_FILE")"
+  section "Source instance summary"
+  field "path" "$source_path"
+  field "git remote" "${git_remote:-unknown}"
+  field "git branch" "${git_branch:-unknown}"
+  field ".env" "$([[ -f "$source_env" ]] && echo yes || echo no)"
+  field "config.json" "$([[ -f "$source_config" ]] && echo yes || echo no)"
+  field "node_modules" "$([[ -d "$source_path/node_modules" ]] && echo yes || echo no)"
+  field "data/posts.sqlite" "$([[ -f "$source_path/data/posts.sqlite" ]] && echo yes || echo no)"
+  field "session file" "$(json_get "$source_config" telegram.sessionFile "$DEFAULT_SESSION_FILE")"
   if [[ -f "$source_env" ]]; then
-    echo "  TELEGRAM_API_ID:       $(read_env_value "$source_env" TELEGRAM_API_ID '(missing)')"
-    echo "  TELEGRAM_API_HASH:     $(redact "$(read_env_value "$source_env" TELEGRAM_API_HASH '')")"
-    echo "  source chat:           $(read_env_value "$source_env" TELEGRAM_SOURCE_CHAT_ID '(missing)')"
-    echo "  admin id:              $(read_env_value "$source_env" TELEGRAM_ADMIN_ID '(missing)')"
-    echo "  publish channel:       $(read_env_value "$source_env" TELEGRAM_PUBLISH_CHANNEL_ID '(missing)')"
-    echo "  bot token:             $(redact "$(read_env_value "$source_env" TELEGRAM_BOT_TOKEN '')")"
+    field "TELEGRAM_API_ID" "$(read_env_value "$source_env" TELEGRAM_API_ID '(missing)')"
+    field "TELEGRAM_API_HASH" "$(redact "$(read_env_value "$source_env" TELEGRAM_API_HASH '')")"
+    field "source chat" "$(read_env_value "$source_env" TELEGRAM_SOURCE_CHAT_ID '(missing)')"
+    field "admin id" "$(read_env_value "$source_env" TELEGRAM_ADMIN_ID '(missing)')"
+    field "publish channel" "$(read_env_value "$source_env" TELEGRAM_PUBLISH_CHANNEL_ID '(missing)')"
+    field "bot token" "$(redact "$(read_env_value "$source_env" TELEGRAM_BOT_TOKEN '')")"
   fi
-  echo
 }
 
 write_ecosystem() {
@@ -380,13 +569,8 @@ if ! has_cmd pm2; then
   warn "pm2 is not installed or is not in PATH. The script can create the instance, but cannot start it."
 fi
 
+banner
 cat <<EOF
-${BOLD}tg-meme-stealer new instance helper${RESET}
-
-This will create a new project directory from an existing configured instance,
-copy safe local config, create a fresh database directory, optionally copy the
-Telegram user session, link node_modules, generate ecosystem.json, and start PM2.
-
 Repository: $REPO_URL
 EOF
 
@@ -419,11 +603,7 @@ if [[ ! "$new_source_chat_id" =~ ^-?[0-9]+$ ]]; then
   prompt_yes_no "Continue with this value?" n || exit 1
 fi
 
-new_bot_token="$(prompt_secret_required "New TELEGRAM_BOT_TOKEN")"
-if [[ ! "$new_bot_token" =~ ^[0-9]+:[A-Za-z0-9_-]+$ ]]; then
-  warn "This does not look like a standard Telegram bot token."
-  prompt_yes_no "Continue with this token?" n || exit 1
-fi
+new_bot_token="$(prompt_bot_token)"
 
 safe_id="$(sanitize_name "$new_source_chat_id")"
 default_instance_name="tg-memes-$safe_id"
@@ -470,8 +650,14 @@ if prompt_yes_no "Copy Telegram user session from source instance?" "$copy_sessi
 fi
 
 copy_config=0
-if [[ -f "$source_path/config.json" ]] && prompt_yes_no "Copy config.json parser/publishing settings?" y; then
+config_sections=()
+selected_config_sections=()
+if [[ -f "$source_path/config.json" ]] && prompt_yes_no "Copy config.json settings?" y; then
   copy_config=1
+  mapfile -t config_sections < <(list_json_sections "$source_path/config.json")
+  if (( ${#config_sections[@]} > 0 )); then
+    choose_config_sections selected_config_sections "${config_sections[@]}"
+  fi
 fi
 
 link_node_modules=0
@@ -496,21 +682,23 @@ if has_cmd pm2; then
   fi
 fi
 
-echo
-echo "${BOLD}Plan${RESET}"
-echo "  source:                $source_path"
-echo "  target:                $target_path"
-echo "  new source chat:       $new_source_chat_id"
-echo "  new bot token:         $(redact "$new_bot_token")"
-echo "  publish channel:       $(read_env_value "$source_env" TELEGRAM_PUBLISH_CHANNEL_ID '(from source .env)')"
-echo "  admin id:              $(read_env_value "$source_env" TELEGRAM_ADMIN_ID '(from source .env)')"
-echo "  copy config.json:      $([[ "$copy_config" == "1" ]] && echo yes || echo no)"
-echo "  database:              fresh $DEFAULT_DB_PATH"
-echo "  copy session:          $([[ "$copy_session" == "1" ]] && echo yes || echo no)"
-echo "  node_modules:          $([[ "$link_node_modules" == "1" ]] && echo symlink || ([[ "$install_deps" == "1" ]] && echo npm-install || echo skipped))"
-echo "  ecosystem.json app:    $pm2_name"
-echo "  pm2 start:             $([[ "$start_pm2" == "1" ]] && echo yes || echo no)"
-echo "  pm2 save:              $([[ "$save_pm2" == "1" ]] && echo yes || echo no)"
+section "Plan"
+field "source" "$source_path"
+field "target" "$target_path"
+field "new source chat" "$new_source_chat_id"
+field "new bot token" "$(redact "$new_bot_token")"
+field "publish channel" "$(read_env_value "$source_env" TELEGRAM_PUBLISH_CHANNEL_ID '(from source .env)')"
+field "admin id" "$(read_env_value "$source_env" TELEGRAM_ADMIN_ID '(from source .env)')"
+field "copy config.json" "$([[ "$copy_config" == "1" ]] && echo yes || echo no)"
+if [[ "$copy_config" == "1" ]]; then
+  field "config sections" "$(join_by_comma "${selected_config_sections[@]}")"
+fi
+field "database" "fresh $DEFAULT_DB_PATH"
+field "copy session" "$([[ "$copy_session" == "1" ]] && echo yes || echo no)"
+field "node_modules" "$([[ "$link_node_modules" == "1" ]] && echo symlink || ([[ "$install_deps" == "1" ]] && echo npm-install || echo skipped))"
+field "ecosystem.json app" "$pm2_name"
+field "pm2 start" "$([[ "$start_pm2" == "1" ]] && echo yes || echo no)"
+field "pm2 save" "$([[ "$save_pm2" == "1" ]] && echo yes || echo no)"
 echo
 
 if [[ "$DRY_RUN" == "1" ]]; then
@@ -538,9 +726,7 @@ rsync_excludes=(
   --exclude 'logs'
   --exclude '*.log'
 )
-if [[ "$copy_config" != "1" ]]; then
-  rsync_excludes+=(--exclude 'config.json' --exclude 'config.json.old')
-fi
+rsync_excludes+=(--exclude 'config.json' --exclude 'config.json.old')
 run rsync -a "${rsync_excludes[@]}" "$source_path/" "$target_path/"
 
 info "Creating .env"
@@ -557,8 +743,8 @@ info "Creating local runtime directories"
 run mkdir -p "$target_path/data" "$target_path/tmp" "$target_path/sessions"
 
 if [[ "$copy_config" == "1" ]]; then
-  info "Patching config.json to use local database and session paths"
-  patch_config_paths "$target_path/config.json"
+  info "Writing selected config.json sections with local database and session paths"
+  write_config_sections "$source_path/config.json" "$target_path/config.json" "${selected_config_sections[@]}"
 fi
 
 if [[ "$copy_session" == "1" ]]; then

@@ -2,36 +2,13 @@
 
 `clone.sh` is an interactive helper for creating additional `tg-meme-stealer` instances on the same server.
 
-The intended setup is one running instance per source Telegram chat. Each instance has its own `.env`, bot token, PM2 app, session/runtime directory and SQLite database, while several instances can publish into the same target channel.
+The intended setup is one running instance per source Telegram chat. Each instance has its own `.env`, bot token, PM2 app, runtime directories and SQLite database. Several instances can still publish into the same target channel.
 
-Use this script when you already have one configured and working instance on the server and want to add another source chat without repeating the setup by hand.
+Use this script when one instance is already configured and working, and you want to add another source chat without repeating the setup by hand.
 
-## What the script does
+## Repository layout
 
-The script asks for an existing working instance, uses it as a template, and prepares a new instance next to it or in another parent directory.
-
-During the run it:
-
-1. validates the existing `tg-meme-stealer` directory;
-2. shows a short summary of the source instance;
-3. asks for the new `TELEGRAM_SOURCE_CHAT_ID`;
-4. asks for the new `TELEGRAM_BOT_TOKEN`;
-5. asks for the new instance directory name and parent directory;
-6. copies the project files from the source instance;
-7. creates a fresh `.env` for the new instance;
-8. creates fresh `data/`, `tmp/`, and `sessions/` directories;
-9. optionally copies `config.json`;
-10. optionally copies the Telegram user session;
-11. optionally symlinks `node_modules` from the source instance;
-12. writes a new `ecosystem.json` for PM2;
-13. optionally starts the new PM2 app;
-14. optionally runs `pm2 save`.
-
-The script does not copy the old SQLite database. The new instance starts with a fresh `data/posts.sqlite` database.
-
-## Expected repository layout
-
-The script is meant to live inside the project repository:
+Put the script and this README into the repository:
 
 ```text
 tg-meme-stealer/
@@ -46,13 +23,36 @@ Run it from the project root:
 ./scripts/clone.sh
 ```
 
-A dry run is available:
+Dry run:
 
 ```bash
 ./scripts/clone.sh --dry-run
 ```
 
 `--dry-run` prints the planned filesystem and PM2 actions, but does not create files, copy data, install dependencies, or start PM2.
+
+## What the script does
+
+The script asks for an existing working instance, uses it as a template, and prepares a new instance next to it or in another parent directory.
+
+During the run it:
+
+1. validates the existing `tg-meme-stealer` directory;
+2. shows a formatted summary of the source instance;
+3. asks for the new `TELEGRAM_SOURCE_CHAT_ID`;
+4. asks for the new `TELEGRAM_BOT_TOKEN` using visible input;
+5. validates the bot token shape and offers to re-enter it if it looks wrong;
+6. asks for the new instance directory name and parent directory;
+7. optionally copies selected `config.json` sections;
+8. optionally copies the Telegram user session;
+9. optionally symlinks `node_modules` from the source instance;
+10. creates a fresh `.env`;
+11. creates fresh `data/`, `tmp/`, and `sessions/` directories;
+12. writes a new `ecosystem.json` for PM2;
+13. optionally starts the new PM2 app;
+14. optionally runs `pm2 save`.
+
+The script does not copy the old SQLite database. The new instance starts with a fresh `data/posts.sqlite` database.
 
 ## Server requirements
 
@@ -71,17 +71,17 @@ PM2 is optional while preparing files, but required if you want `clone.sh` to st
 npm install -g pm2
 ```
 
-Run the script as the same Linux user that owns the existing instance and PM2 process. Do not use `sudo` unless the existing app is also intentionally managed by root.
+Run the script as the same Linux user that owns the existing instance and PM2 process. Do not use `sudo` unless the existing app is intentionally managed by root.
 
 ## Before running
 
-Make sure you have:
+Prepare:
 
 1. one existing `tg-meme-stealer` instance that already works;
 2. a new Telegram source chat ID, usually in the form `-100...`;
 3. a new Telegram bot token for the new instance;
 4. access rights for the Telegram user session if the new source chat is private;
-5. PM2 available if you want the script to start the instance immediately.
+5. PM2, if you want the script to start the instance immediately.
 
 The source instance should normally contain:
 
@@ -115,12 +115,12 @@ Example answers:
 ```text
 Existing configured instance path: /opt/tgmems
 New TELEGRAM_SOURCE_CHAT_ID: -1001234567890
-New TELEGRAM_BOT_TOKEN: 123456789:AA...
+New TELEGRAM_BOT_TOKEN (visible input): 123456789:AA...
 New instance directory name: tg-memes-some-channel
 Parent directory for new instance: /opt
 PM2 app name: tg-memes-some-channel
 Copy Telegram user session from source instance? [Y/n] y
-Copy config.json parser/publishing settings? [Y/n] y
+Copy config.json settings? [Y/n] y
 Symlink node_modules from source instance? [Y/n] y
 Start the new instance with PM2 after creation? [Y/n] y
 Run pm2 save after start? [Y/n] y
@@ -147,6 +147,75 @@ with approximately this structure:
   node_modules -> /opt/tgmems/node_modules
 ```
 
+## Bot token input
+
+The token prompt uses visible input intentionally:
+
+```text
+New TELEGRAM_BOT_TOKEN (visible input):
+```
+
+This makes it easier to notice copy-paste mistakes. After input, the script shows only a shortened token preview, for example:
+
+```text
+✓ Bot token accepted: 1234…abcd
+```
+
+If the value does not look like a standard Telegram bot token, the script shows a shortened preview and asks whether to enter it again:
+
+```text
+! This does not look like a standard Telegram bot token: 1234…oops (14 chars)
+Enter TELEGRAM_BOT_TOKEN again? [Y/n]
+```
+
+Because the token is visible while typing, avoid running the script while sharing your terminal screen or recording logs.
+
+## `config.json` section selection
+
+When copying `config.json`, the script shows top-level sections as a checkbox-style list:
+
+```text
+config.json sections
+Toggle by number, use 'a' for all, 'n' for none, press Enter when done.
+  ☑  1. telegram
+  ☑  2. database
+  ☑  3. parser
+  ☑  4. publishing
+  ☑  5. debug
+Toggle sections:
+```
+
+Enter section numbers to toggle them. For example:
+
+```text
+Toggle sections: 5
+```
+
+will exclude `debug`. You can toggle several sections at once:
+
+```text
+Toggle sections: 4 5
+```
+
+Useful commands inside this selector:
+
+```text
+a      select all
+n      select none
+Enter  confirm current selection
+```
+
+The final plan shows which sections will be copied.
+
+Even when copying only selected sections, the script always writes safe local runtime paths into the new config:
+
+```text
+database.path = "data/posts.sqlite"
+telegram.sessionFile = "sessions/mtcute-user.session"
+```
+
+This prevents the new instance from accidentally writing into the old instance database or using an absolute session path from the source instance.
+
 ## What is copied and what is not
 
 Copied from the source instance:
@@ -155,8 +224,8 @@ Copied from the source instance:
 project source files
 .git directory / current checkout state
 package.json and package-lock.json
-config.json, if confirmed
-Telegram session, if confirmed
+selected config.json sections, if confirmed
+Telegram session file, if confirmed
 ```
 
 Created fresh:
@@ -204,17 +273,6 @@ TELEGRAM_ADMIN_ID
 ```
 
 This matches the intended setup: a new parser/bot process for a new source chat, but the same Telegram API credentials, same admin, and same publish channel.
-
-## `config.json` behavior
-
-If you choose to copy `config.json`, the script patches runtime paths so the new instance cannot accidentally write into the old instance:
-
-```text
-database.path = "data/posts.sqlite"
-telegram.sessionFile = "sessions/mtcute-user.session"
-```
-
-Parser and publishing settings are otherwise reused from the source instance. After creation, run the setup flow if the new source chat needs different parsing rules.
 
 ## Telegram session behavior
 
