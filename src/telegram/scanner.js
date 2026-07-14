@@ -314,6 +314,7 @@ export class TelegramScanner {
     seedExhausted = false,
     seedPages = 0
   } = {}) {
+    const parsing = draft.parsing || this.config.parsing;
     const messages = Array.isArray(seedMessages) ? [...seedMessages] : [];
     let offset = seedOffset;
     let pages = Number(seedPages || 0);
@@ -336,7 +337,7 @@ export class TelegramScanner {
       while (!exhausted && messages.length < nextTarget && messages.length < maxMessages) {
         pages += 1;
         const batchLimit = Math.min(this.config.sync.pageSize, nextTarget - messages.length, maxMessages - messages.length);
-        const history = await this.getHistory({ limit: batchLimit, offset });
+        const history = await this.getHistory({ limit: batchLimit, offset }, parsing);
         const batch = [...history];
         if (batch.length === 0) {
           exhausted = true;
@@ -350,7 +351,7 @@ export class TelegramScanner {
 
       posts = parseMessagesToPosts(messages, {
         chatId: this.config.telegram.sourceChatId,
-        parsing: draft.parsing || this.config.parsing
+        parsing
       });
 
       if (typeof onProgress === 'function') {
@@ -385,38 +386,40 @@ export class TelegramScanner {
     };
   }
 
-  async getMessageById(messageId) {
+  async getMessageById(messageId, parsing = this.config.parsing) {
     const peerId = normalizeTelegramPeerId(this.config.telegram.sourceChatId);
     this.logger.info('Requesting message by id', { chatId: peerId, messageId });
     const messages = await withTelegramRetry(
       () => this.client.getMessages(peerId, [messageId]),
       { label: 'getMessages', rateLimiter: this.throttle, kind: 'media' }
     );
-    await this.enrichMessagesWithNativeReactions(messages.filter(Boolean));
+    await this.enrichMessagesWithNativeReactions(messages.filter(Boolean), parsing);
     return messages[0] || null;
   }
 
   async previewMessage(messageId, draft = {}) {
-    const message = await this.getMessageById(messageId);
+    const parsing = draft.parsing || this.config.parsing;
+    const message = await this.getMessageById(messageId, parsing);
     if (!message) return { message: null, posts: [] };
 
     const posts = parseMessagesToPosts([message], {
       chatId: this.config.telegram.sourceChatId,
-      parsing: draft.parsing || this.config.parsing
+      parsing
     });
 
     return { message, posts };
   }
 
   async debugMessage(messageId, draft = {}) {
-    const message = await this.getMessageById(messageId);
+    const parsing = draft.parsing || this.config.parsing;
+    const message = await this.getMessageById(messageId, parsing);
     if (!message) return { message: null, debug: null };
 
     return {
       message,
       debug: debugParseMessage(message, {
         chatId: this.config.telegram.sourceChatId,
-        parsing: draft.parsing || this.config.parsing
+        parsing
       })
     };
   }
@@ -446,12 +449,22 @@ export class TelegramScanner {
     return pruned;
   }
 
-  async enrichMessagesWithNativeReactions(messages = []) {
+  async enrichMessagesWithNativeReactions(messages = [], parsing = this.config.parsing) {
     if (!this.client || typeof this.client.getMessageReactions !== 'function') return messages;
+    if (!needsNativeReactionEnrichment(parsing)) {
+      this.logger.debug('Native reaction enrichment skipped', {
+        messages: messages.length,
+        reason: 'not_used_by_parser'
+      });
+      return messages;
+    }
     const candidates = messages.filter((message) => message && hasReactionSummaryMarker(message) && !hasEnrichedNativeReactions(message));
     if (!candidates.length) return messages;
 
     try {
+      this.logger.debug('Requesting native reactions batch', {
+        messages: candidates.length
+      });
       const reactionSummaries = await withTelegramRetry(
         () => this.client.getMessageReactions(candidates),
         { label: 'getMessageReactions', rateLimiter: this.throttle, kind: 'reactions' }
@@ -479,7 +492,7 @@ export class TelegramScanner {
     return messages;
   }
 
-  async getHistory(params) {
+  async getHistory(params, parsing = this.config.parsing) {
     const peerId = normalizeTelegramPeerId(this.config.telegram.sourceChatId);
     this.logger.info('Requesting history', {
       chatId: peerId,
@@ -490,10 +503,31 @@ export class TelegramScanner {
       () => this.client.getHistory(peerId, params),
       { label: 'getHistory', rateLimiter: this.throttle, kind: 'history' }
     );
-    await this.enrichMessagesWithNativeReactions([...history]);
+    await this.enrichMessagesWithNativeReactions([...history], parsing);
     this.logger.debug('History request completed', { hasNext: Boolean(history.next) });
     return history;
   }
+}
+
+const NATIVE_REACTION_PATH_PREFIXES = [
+  'nativeReactions',
+  'reactionCounts',
+  'messageReactions',
+  'reactions',
+  'raw.reactions',
+  'reaction_count'
+];
+
+export function needsNativeReactionEnrichment(parsing = {}) {
+  return ['filters', 'author', 'likes', 'dislikes'].some((section) => (
+    (parsing?.[section] || []).some(usesNativeReactionRule)
+  ));
+}
+
+function usesNativeReactionRule(rule = {}) {
+  if (rule.transform === 'reactionCount') return true;
+  const path = String(rule.path || '').replaceAll('[]', '');
+  return NATIVE_REACTION_PATH_PREFIXES.some((prefix) => path === prefix || path.startsWith(`${prefix}.`));
 }
 
 

@@ -30,6 +30,7 @@ export class SelectionPublisher {
     this.bot = new Telegraf(config.telegram.botToken);
     this.logger = getLogger('publisher');
     this.activeHandlers = 0;
+    this.backgroundTasks = new Set();
     this.idleResolvers = [];
     this.processingPublications = false;
     this.workerId = getPublisherWorkerId();
@@ -493,7 +494,7 @@ export class SelectionPublisher {
     }
     const job = await this.syncWorker.sync('admin');
     await ctx.reply(formatJobStatus('Sync', job));
-    await this.replyManualJobResult(ctx, 'Sync', job);
+    this.scheduleManualJobResult(ctx, 'Sync', job);
   }
 
   async runManualBackfill(ctx) {
@@ -504,7 +505,24 @@ export class SelectionPublisher {
     const days = parseOptionalPositiveInteger(getCommandArgument(ctx));
     const job = await this.syncWorker.backfill(days, 'admin');
     await ctx.reply(formatJobStatus('Backfill', job));
-    await this.replyManualJobResult(ctx, 'Backfill', job);
+    this.scheduleManualJobResult(ctx, 'Backfill', job);
+  }
+
+  scheduleManualJobResult(ctx, label, job) {
+    if (!shouldWaitForManualJob(job)) return;
+    const task = this.replyManualJobResult(ctx, label, job)
+      .catch((error) => {
+        this.logger.error('Failed to send manual job result', {
+          operation: label.toLowerCase(),
+          jobKey: job.key || '',
+          error: error?.message || String(error)
+        });
+      })
+      .finally(() => {
+        this.backgroundTasks.delete(task);
+        this.resolveIdle();
+      });
+    this.backgroundTasks.add(task);
   }
 
   async replyManualJobResult(ctx, label, job) {
@@ -555,23 +573,32 @@ export class SelectionPublisher {
   }
 
   async waitForIdle(timeoutMs = 30000) {
-    if (this.activeHandlers === 0) return;
+    if (this.activeHandlers === 0 && this.backgroundTasks.size === 0) return;
 
+    let idleResolver;
     const idle = new Promise((resolve) => {
-      this.idleResolvers.push(resolve);
+      idleResolver = resolve;
+      this.idleResolvers.push(idleResolver);
     });
+    let timeoutId;
     const timeout = new Promise((resolve) => {
-      setTimeout(() => resolve('timeout'), timeoutMs);
+      timeoutId = setTimeout(() => resolve('timeout'), timeoutMs);
     });
 
     const result = await Promise.race([idle, timeout]);
+    clearTimeout(timeoutId);
     if (result === 'timeout') {
-      this.logger.warn('Timed out waiting for active bot handlers', { activeHandlers: this.activeHandlers, timeoutMs });
+      this.idleResolvers = this.idleResolvers.filter((resolve) => resolve !== idleResolver);
+      this.logger.warn('Timed out waiting for bot work to finish', {
+        activeHandlers: this.activeHandlers,
+        backgroundTasks: this.backgroundTasks.size,
+        timeoutMs
+      });
     }
   }
 
   resolveIdle() {
-    if (this.activeHandlers !== 0) return;
+    if (this.activeHandlers !== 0 || this.backgroundTasks.size !== 0) return;
     const resolvers = this.idleResolvers.splice(0);
     for (const resolve of resolvers) resolve();
   }

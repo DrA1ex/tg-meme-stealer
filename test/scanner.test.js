@@ -1,7 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { configureLogger } from '../src/core/logger.js';
-import { TelegramScanner, getBackfillPostAction, getInitialScanDays, getPostRetentionDays } from '../src/telegram/scanner.js';
+import {
+  TelegramScanner,
+  getBackfillPostAction,
+  getInitialScanDays,
+  getPostRetentionDays,
+  needsNativeReactionEnrichment
+} from '../src/telegram/scanner.js';
 
 configureLogger({ logging: { logLevel: 'SILENT' } });
 
@@ -14,6 +20,84 @@ test('getPostRetentionDays reads configured days and keeps minimum one day', () 
   assert.equal(getPostRetentionDays({ sync: { retentionDays: 90 } }), 90);
   assert.equal(getPostRetentionDays({ sync: { retentionDays: 0 } }), 1);
   assert.equal(getPostRetentionDays({ sync: {} }), 60);
+});
+
+test('needsNativeReactionEnrichment detects native reaction parser and filter rules', () => {
+  assert.equal(needsNativeReactionEnrichment({
+    likes: [{ path: 'replyMarkup.rows[].buttons[].text', transform: 'count' }],
+    dislikes: []
+  }), false);
+  assert.equal(needsNativeReactionEnrichment({
+    likes: [{ path: 'reactionCounts[]', transform: 'reactionCount' }]
+  }), true);
+  assert.equal(needsNativeReactionEnrichment({
+    filters: [{ path: 'messageReactions.results[]', transform: 'exists' }]
+  }), true);
+  assert.equal(needsNativeReactionEnrichment({
+    dislikes: [{ path: 'customReactionRows[]', transform: 'reactionCount' }]
+  }), true);
+});
+
+test('TelegramScanner skips reaction enrichment when parser only uses button counters', async () => {
+  let reactionRequests = 0;
+  const message = { id: 1, reactions: { results: [] } };
+  const history = [message];
+  history.next = null;
+  const scanner = new TelegramScanner({
+    client: {
+      getHistory: async () => history,
+      getMessageReactions: async () => {
+        reactionRequests += 1;
+        return [];
+      }
+    },
+    repository: {},
+    config: scannerConfig({
+      likes: [{ path: 'replyMarkup.rows[].buttons[].text', transform: 'count' }],
+      dislikes: []
+    })
+  });
+
+  await scanner.getHistory({ limit: 100 });
+
+  assert.equal(reactionRequests, 0);
+  assert.equal(message.nativeReactions, undefined);
+});
+
+test('TelegramScanner enriches all eligible messages in one reaction batch', async () => {
+  let reactionRequests = 0;
+  const first = { id: 1, reactions: { results: [] } };
+  const withoutReactions = { id: 2 };
+  const second = { id: 3, reactions: { results: [] } };
+  const alreadyEnriched = { id: 4, reactions: { results: [] }, nativeReactions: [] };
+  const history = [first, withoutReactions, second, alreadyEnriched];
+  history.next = null;
+  const scanner = new TelegramScanner({
+    client: {
+      getHistory: async () => history,
+      getMessageReactions: async (messages) => {
+        reactionRequests += 1;
+        assert.deepEqual(messages, [first, second]);
+        return [
+          { reactions: [{ reaction: '🔥', count: 7 }] },
+          { reactions: [{ reaction: '👍', count: 11 }] }
+        ];
+      }
+    },
+    repository: {},
+    config: scannerConfig({
+      likes: [{ path: 'nativeReactions[]', transform: 'reactionCount' }],
+      dislikes: []
+    })
+  });
+
+  await scanner.getHistory({ limit: 100 });
+
+  assert.equal(reactionRequests, 1);
+  assert.deepEqual(first.nativeReactions, [{ reaction: '🔥', count: 7 }]);
+  assert.deepEqual(second.nativeReactions, [{ reaction: '👍', count: 11 }]);
+  assert.equal(withoutReactions.nativeReactions, undefined);
+  assert.deepEqual(alreadyEnriched.nativeReactions, []);
 });
 
 test('TelegramScanner.cleanupOldPosts deletes rows older than retention window', async () => {
@@ -74,6 +158,14 @@ test('getBackfillPostAction adds missing old posts and updates only recent exist
 
 function post(messageId, messageDate) {
   return { messageId, messageDate };
+}
+
+function scannerConfig(parsing) {
+  return {
+    telegram: { sourceChatId: -1001 },
+    parsing,
+    sync: { pageSize: 100, throttle: { enabled: false } }
+  };
 }
 
 test('TelegramScanner.scanBackfill reports stop reason when reaching the backfill window boundary', async () => {

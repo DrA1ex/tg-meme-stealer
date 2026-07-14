@@ -228,7 +228,7 @@ export async function resolveSetupMessageById(ctx, messageId) {
   }
 
   try {
-    const message = await this.scanner.getMessageById(id);
+    const message = await this.scanner.getMessageById(id, this.getDraft(ctx).parsing || this.config.parsing);
     if (message) {
       const cache = this.setupSampleCache.get(ctx.from.id) || { messages: [], loadedAt: Date.now(), pages: 0 };
       if (!cache.messages.some((item) => Number(item?.id || 0) === id)) cache.messages.push(message);

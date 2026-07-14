@@ -51,6 +51,7 @@ test('SelectionPublisher.waitForIdle times out', async () => {
 
   await publisher.waitForIdle(1);
   assert.equal(publisher.activeHandlers, 1);
+  assert.equal(publisher.idleResolvers.length, 0);
 });
 
 test('SelectionPublisher.launchBot does not wait for polling promise', () => {
@@ -541,6 +542,10 @@ test('SelectionPublisher stops automatic retries when a started delivery has an 
 
 test('SelectionPublisher.runManualSync runs sync worker and replies with final stats', async () => {
   const replies = [];
+  let finishSync;
+  const syncResult = new Promise((resolve) => {
+    finishSync = resolve;
+  });
   const publisher = new SelectionPublisher({
     repository: {},
     mediaDownloader: {},
@@ -551,18 +556,7 @@ test('SelectionPublisher.runManualSync runs sync worker and replies with final s
         return {
           status: 'running',
           key: 'sync',
-          promise: Promise.resolve({
-            isInitial: false,
-            since: '2026-06-27T16:00:00.000Z',
-            pages: 2,
-            fetched: 150,
-            matched: 120,
-            saved: 118,
-            skippedOld: 2,
-            deleted: 1,
-            seen: 118,
-            stopReason: 'reached-since-date'
-          })
+          promise: syncResult
         };
       }
     },
@@ -573,6 +567,23 @@ test('SelectionPublisher.runManualSync runs sync worker and replies with final s
     from: { id: 1 },
     reply: async (message) => replies.push(message)
   });
+
+  assert.deepEqual(replies, ['Sync job status: running']);
+  assert.equal(publisher.backgroundTasks.size, 1);
+
+  finishSync({
+    isInitial: false,
+    since: '2026-06-27T16:00:00.000Z',
+    pages: 2,
+    fetched: 150,
+    matched: 120,
+    saved: 118,
+    skippedOld: 2,
+    deleted: 1,
+    seen: 118,
+    stopReason: 'reached-since-date'
+  });
+  await publisher.waitForIdle(100);
 
   assert.equal(replies.length, 2);
   assert.equal(replies[0], 'Sync job status: running');
@@ -625,6 +636,7 @@ test('SelectionPublisher.runManualBackfill replies with final stats after comple
     message: { text: '/backfill 90' },
     reply: async (message) => replies.push(message)
   });
+  await publisher.waitForIdle(100);
 
   assert.equal(replies.length, 2);
   assert.equal(replies[0], 'Backfill job status: running');
@@ -685,11 +697,48 @@ test('SelectionPublisher.runManualSync reports final job failure', async () => {
   await publisher.runManualSync({
     reply: async (message) => replies.push(message)
   });
+  await publisher.waitForIdle(100);
 
   assert.deepEqual(replies, [
     'Sync job status: running',
     'Sync failed: FLOOD_WAIT_12'
   ]);
+});
+
+test('SelectionPublisher logs a failed background result reply without an unhandled rejection', async () => {
+  const logs = [];
+  let replyCount = 0;
+  const publisher = new SelectionPublisher({
+    repository: {},
+    mediaDownloader: {},
+    setupAssistant: null,
+    syncWorker: {
+      sync: async () => ({
+        status: 'running',
+        key: 'sync',
+        promise: Promise.resolve({ pages: 1, fetched: 10, matched: 8, saved: 8 })
+      })
+    },
+    config: config()
+  });
+  publisher.logger = {
+    error: (message, fields) => logs.push({ message, fields })
+  };
+
+  await publisher.runManualSync({
+    reply: async () => {
+      replyCount += 1;
+      if (replyCount > 1) throw new Error('reply unavailable');
+    }
+  });
+  await publisher.waitForIdle(100);
+
+  assert.equal(replyCount, 2);
+  assert.equal(publisher.backgroundTasks.size, 0);
+  assert.deepEqual(logs, [{
+    message: 'Failed to send manual job result',
+    fields: { operation: 'sync', jobKey: 'sync', error: 'reply unavailable' }
+  }]);
 });
 
 test('SelectionPublisher.runManualPublish plans selections and replies with job status', async () => {

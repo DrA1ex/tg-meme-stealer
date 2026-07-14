@@ -1002,6 +1002,8 @@ Media is not stored permanently. The database stores Telegram media references i
 
 Telegram can return `FLOOD_WAIT` for read-only API calls too, including history reads, reaction enrichment, and media downloads. All MTProto traffic shares one adaptive limiter: calls are paced per method, a server-requested wait pauses the whole client, and the affected method backs off before slowly returning to its configured rate. Tune `sync.throttle.historyMinMs` / `historyMaxMs`, `reactionsMinMs` / `reactionsMaxMs`, and `mediaMinMs` / `mediaMaxMs` as needed.
 
+Reaction enrichment is requested only when `parsing.filters`, `parsing.author`, `parsing.likes`, or `parsing.dislikes` contains a native-reaction path or uses `transform: "reactionCount"`. Button-only parsing avoids the extra `getMessageReactions` request entirely.
+
 Bot API publishing is rate-limited separately. The defaults keep sends to one chat 1100 ms apart (just below Telegram's documented average limit of one message per second), cap aggregate traffic at 25 requests per second, and extend either limiter automatically when Telegram returns `retry_after`. Configure this under `publish.throttle` with `perChatMinMs`, `globalMinMs`, and `retryBufferMs`.
 
 ### Optional shared Redis rate limiter
