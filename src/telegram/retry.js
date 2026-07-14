@@ -9,11 +9,15 @@ export async function withTelegramRetry(operation, options = {}) {
 
   for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
     try {
-      return await operation();
+      await options.rateLimiter?.wait?.(options.kind);
+      const result = await operation();
+      await options.rateLimiter?.noteSuccess?.(options.kind);
+      return result;
     } catch (error) {
       const waitSeconds = getFloodWaitSeconds(error);
-      if (!waitSeconds || attempt === maxRetries) throw error;
-
+      if (!waitSeconds) throw error;
+      const limiterHandledWait = await options.rateLimiter?.noteFloodWait?.(options.kind, waitSeconds) === true;
+      if (attempt === maxRetries) throw error;
       const waitMs = (waitSeconds + 1) * 1000;
       logger.warn(`${label} hit FLOOD_WAIT`, {
         waitSeconds,
@@ -21,6 +25,7 @@ export async function withTelegramRetry(operation, options = {}) {
         attempt: attempt + 1,
         maxRetries
       });
+      if (limiterHandledWait) continue;
       await sleepFn(waitMs);
     }
   }
@@ -33,11 +38,13 @@ export async function withBotApiRetry(operation, options = {}) {
 
   for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
     try {
+      await options.rateLimiter?.wait?.(options.chatId);
       return await operation();
     } catch (error) {
       const retryAfter = getBotApiRetryAfterSeconds(error);
-      if (!retryAfter || attempt === maxRetries) throw error;
-
+      if (!retryAfter) throw error;
+      const limiterHandledWait = await options.rateLimiter?.noteRateLimit?.(retryAfter, options.chatId) === true;
+      if (attempt === maxRetries) throw error;
       const waitMs = (retryAfter + 1) * 1000;
       logger.warn(`${label} hit Too Many Requests`, {
         retryAfter,
@@ -45,6 +52,7 @@ export async function withBotApiRetry(operation, options = {}) {
         attempt: attempt + 1,
         maxRetries
       });
+      if (limiterHandledWait) continue;
       await sleepFn(waitMs);
     }
   }

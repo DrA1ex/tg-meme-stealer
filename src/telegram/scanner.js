@@ -6,11 +6,11 @@ import { withTelegramRetry } from './retry.js';
 import { TelegramThrottle } from './throttle.js';
 
 export class TelegramScanner {
-  constructor({ client, repository, config }) {
+  constructor({ client, repository, config, throttle = new TelegramThrottle(config) }) {
     this.client = client;
     this.repository = repository;
     this.config = config;
-    this.throttle = new TelegramThrottle(config);
+    this.throttle = throttle;
     this.logger = getLogger('scanner');
   }
 
@@ -382,10 +382,9 @@ export class TelegramScanner {
   async getMessageById(messageId) {
     const peerId = normalizeTelegramPeerId(this.config.telegram.sourceChatId);
     this.logger.info('Requesting message by id', { chatId: peerId, messageId });
-    await this.throttle.wait('media');
     const messages = await withTelegramRetry(
       () => this.client.getMessages(peerId, [messageId]),
-      { label: 'getMessages' }
+      { label: 'getMessages', rateLimiter: this.throttle, kind: 'media' }
     );
     await this.enrichMessagesWithNativeReactions(messages.filter(Boolean));
     return messages[0] || null;
@@ -449,7 +448,7 @@ export class TelegramScanner {
     try {
       const reactionSummaries = await withTelegramRetry(
         () => this.client.getMessageReactions(candidates),
-        { label: 'getMessageReactions' }
+        { label: 'getMessageReactions', rateLimiter: this.throttle, kind: 'reactions' }
       );
 
       for (let index = 0; index < candidates.length; index += 1) {
@@ -481,10 +480,9 @@ export class TelegramScanner {
       limit: params.limit,
       hasOffset: Boolean(params.offset)
     });
-    await this.throttle.wait('history');
     const history = await withTelegramRetry(
       () => this.client.getHistory(peerId, params),
-      { label: 'getHistory' }
+      { label: 'getHistory', rateLimiter: this.throttle, kind: 'history' }
     );
     await this.enrichMessagesWithNativeReactions([...history]);
     this.logger.debug('History request completed', { hasNext: Boolean(history.next) });

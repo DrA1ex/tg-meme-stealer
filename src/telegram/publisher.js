@@ -11,13 +11,22 @@ import { withBotApiRetry } from './retry.js';
 import { sendRichPost } from './richPost.js';
 
 export class SelectionPublisher {
-  constructor({ repository, mediaDownloader, setupAssistant, syncWorker = null, jobGate = new JobGate(), config }) {
+  constructor({
+    repository,
+    mediaDownloader,
+    setupAssistant,
+    syncWorker = null,
+    jobGate = new JobGate(),
+    config,
+    botRateLimiter = null
+  }) {
     this.repository = repository;
     this.mediaDownloader = mediaDownloader;
     this.setupAssistant = setupAssistant;
     this.syncWorker = syncWorker;
     this.jobGate = jobGate;
     this.config = config;
+    this.botRateLimiter = botRateLimiter;
     this.bot = new Telegraf(config.telegram.botToken);
     this.logger = getLogger('publisher');
     this.activeHandlers = 0;
@@ -322,7 +331,11 @@ export class SelectionPublisher {
         });
         await withBotApiRetry(
           () => this.bot.telegram.sendMessage(this.config.telegram.publishChannelId, formatSelectionHeader(selection.title)),
-          { label: 'sendSelectionHeader' }
+          {
+            label: 'sendSelectionHeader',
+            rateLimiter: this.botRateLimiter,
+            chatId: this.config.telegram.publishChannelId
+          }
         );
         await this.repository.markPublicationRunning(request.id);
       }
@@ -368,7 +381,8 @@ export class SelectionPublisher {
       mediaDownloader: this.mediaDownloader,
       post,
       index,
-      templates: this.config.templates
+      templates: this.config.templates,
+      rateLimiter: this.botRateLimiter
     });
   }
 

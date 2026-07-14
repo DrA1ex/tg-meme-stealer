@@ -6,10 +6,10 @@ import { withTelegramRetry } from './retry.js';
 import { TelegramThrottle } from './throttle.js';
 
 export class MediaDownloader {
-  constructor({ client, config }) {
+  constructor({ client, config, throttle = new TelegramThrottle(config) }) {
     this.client = client;
     this.config = config;
-    this.throttle = new TelegramThrottle(config);
+    this.throttle = throttle;
     this.logger = getLogger('media');
   }
 
@@ -29,10 +29,9 @@ export class MediaDownloader {
       const message = await this.loadMessage(post.chatId, media.messageId || post.messageId);
       if (!message?.media) continue;
 
-      await this.throttle.wait('media');
       const buffer = await withTelegramRetry(
         () => this.client.downloadAsBuffer(message.media),
-        { label: 'downloadAsBuffer' }
+        { label: 'downloadAsBuffer', rateLimiter: this.throttle, kind: 'media' }
       );
       if (!buffer?.length) continue;
 
@@ -60,10 +59,9 @@ export class MediaDownloader {
   async loadMessage(chatId, messageId) {
     this.logger.info('Requesting message', { chatId, messageId });
     const peerId = normalizeTelegramPeerId(chatId);
-    await this.throttle.wait('media');
     const messages = await withTelegramRetry(
       () => this.client.getMessages(peerId, [messageId]),
-      { label: 'getMessages' }
+      { label: 'getMessages', rateLimiter: this.throttle, kind: 'media' }
     );
     return messages[0] || null;
   }

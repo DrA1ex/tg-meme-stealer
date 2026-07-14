@@ -48,6 +48,10 @@ TELEGRAM_SOURCE_CHAT_ID=-1001234567890
 TELEGRAM_ADMIN_ID=123456789
 TELEGRAM_PUBLISH_CHANNEL_ID=-1009876543210
 TELEGRAM_BOT_TOKEN=123456:bot_token
+
+# Optional: coordinate rate limits between processes.
+# RATE_LIMIT_REDIS_ENABLED=true
+# RATE_LIMIT_REDIS_URL=redis://127.0.0.1:6379
 ```
 
 Message eligibility is controlled only by `parsing.filters`. To scan posts from one sender, add a filter that matches a sender or message field discovered with setup diagnostics, `/raw`, or `/debug`.
@@ -177,6 +181,17 @@ Common options:
     "logLevel": "INFO",
     "color": "auto"
   },
+  "rateLimit": {
+    "mtprotoGroup": "default",
+    "redis": {
+      "enabled": false,
+      "url": "redis://127.0.0.1:6379",
+      "keyPrefix": "tg-memes:rate-limit",
+      "connectTimeoutMs": 500,
+      "operationTimeoutMs": 200,
+      "fallbackMultiplier": 3
+    }
+  },
   "sync": {
     "initialScanDays": 60,
     "refreshRecentDays": 7,
@@ -191,11 +206,21 @@ Common options:
       "historyMinMs": 800,
       "historyMaxMs": 1800,
       "mediaMinMs": 300,
-      "mediaMaxMs": 900
+      "mediaMaxMs": 900,
+      "reactionsMinMs": 3000,
+      "reactionsMaxMs": 4000,
+      "retryBufferMs": 1000
     }
   },
   "publish": {
     "dryRun": false,
+    "throttle": {
+      "enabled": true,
+      "perChatMinMs": 1100,
+      "globalMinMs": 40,
+      "sharedDestinationMinMs": 350,
+      "retryBufferMs": 1000
+    },
     "requestTtlHours": 12,
     "workerIntervalMinutes": 10,
     "firstSendAt": "2026-07-01T00:00:00+03:00",
@@ -966,7 +991,22 @@ The daemon periodically deletes rows in `posts` older than `sync.retentionDays` 
 
 Media is not stored permanently. The database stores Telegram media references in `data.media`; media is downloaded to `sync.mediaDir` only for preview or publishing and deleted immediately after the rich post is sent or the send attempt fails.
 
-Telegram can return `FLOOD_WAIT` for read-only API calls too, including history reads and media downloads. The app retries after the requested wait and also adds a small random delay before Telegram read calls. Tune `sync.throttle.historyMinMs` / `historyMaxMs` for scanning and `sync.throttle.mediaMinMs` / `mediaMaxMs` for preview and publishing media downloads.
+Telegram can return `FLOOD_WAIT` for read-only API calls too, including history reads, reaction enrichment, and media downloads. All MTProto traffic shares one adaptive limiter: calls are paced per method, a server-requested wait pauses the whole client, and the affected method backs off before slowly returning to its configured rate. Tune `sync.throttle.historyMinMs` / `historyMaxMs`, `reactionsMinMs` / `reactionsMaxMs`, and `mediaMinMs` / `mediaMaxMs` as needed.
+
+Bot API publishing is rate-limited separately. The defaults keep sends to one chat 1100 ms apart (just below Telegram's documented average limit of one message per second), cap aggregate traffic at 25 requests per second, and extend either limiter automatically when Telegram returns `retry_after`. Configure this under `publish.throttle` with `perChatMinMs`, `globalMinMs`, and `retryBufferMs`.
+
+### Optional shared Redis rate limiter
+
+Multiple PM2 processes can coordinate their rate limits through Redis. Redis is disabled by default; without it every process continues to use its in-memory limiter. To enable coordination, set the same values in every instance:
+
+```dotenv
+RATE_LIMIT_REDIS_ENABLED=true
+RATE_LIMIT_REDIS_URL=redis://127.0.0.1:6379
+```
+
+Processes with the same `rateLimit.mtprotoGroup` share MTProto reservations, adaptive penalties, and `FLOOD_WAIT` cooldowns. Use the same group only when the processes use the same Telegram user account. Bot API global and per-chat quotas remain scoped to each bot token, while `publish.throttle.sharedDestinationMinMs` spaces sends from all bots targeting the same chat.
+
+Normal Redis operations and immediate slot acquisitions are logged at `DEBUG`. Actual rate-limit waits are logged at `INFO`; `FLOOD_WAIT` and Bot API `retry_after` are logged at `WARN`. If Redis cannot be reached or an operation times out, the app logs an `ERROR` explaining that it switched to the local fallback and continues running. Repeated outage messages are reduced to `DEBUG` between periodic `ERROR` reminders; recovery is logged at `INFO`. While Redis is unavailable, MTProto intervals are multiplied by `rateLimit.redis.fallbackMultiplier` (default `3`) so three independent processes remain conservative instead of immediately flooding the shared Telegram account.
 
 ## Limitations
 

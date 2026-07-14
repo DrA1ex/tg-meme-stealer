@@ -1,8 +1,11 @@
 import { PostRepository } from '../database/postRepository.js';
 import { getLogger } from '../core/logger.js';
 import { MediaDownloader } from '../telegram/media.js';
+import { BotApiRateLimiter } from '../telegram/botRateLimiter.js';
+import { createRedisRateLimitStore } from '../telegram/redisRateLimitStore.js';
 import { SelectionPublisher } from '../telegram/publisher.js';
 import { TelegramScanner } from '../telegram/scanner.js';
+import { TelegramThrottle } from '../telegram/throttle.js';
 import { SetupAssistant } from '../telegram/setupAssistant.js';
 import { startUserClient } from '../telegram/userClient.js';
 import { JobGate } from './jobGate.js';
@@ -30,13 +33,24 @@ export async function createApp(config) {
     sourceChatId: config.telegram.sourceChatId,
     sessionFile: config.telegram.sessionFile
   });
-  const scanner = new TelegramScanner({ client: userClient, repository, config });
+  const sharedRateLimitStore = await createRedisRateLimitStore(config);
+  const telegramThrottle = new TelegramThrottle(config, undefined, undefined, sharedRateLimitStore);
+  const botRateLimiter = new BotApiRateLimiter(config, undefined, undefined, sharedRateLimitStore);
+  const scanner = new TelegramScanner({ client: userClient, repository, config, throttle: telegramThrottle });
   const jobGate = new JobGate();
   const syncWorker = new SyncWorker({ scanner, jobGate, config });
   const retentionWorker = new RetentionWorker({ scanner, jobGate });
-  const mediaDownloader = new MediaDownloader({ client: userClient, config });
-  const setupAssistant = new SetupAssistant({ scanner, mediaDownloader, config });
-  const publisher = new SelectionPublisher({ repository, mediaDownloader, setupAssistant, syncWorker, jobGate, config });
+  const mediaDownloader = new MediaDownloader({ client: userClient, config, throttle: telegramThrottle });
+  const setupAssistant = new SetupAssistant({ scanner, mediaDownloader, config, botRateLimiter });
+  const publisher = new SelectionPublisher({
+    repository,
+    mediaDownloader,
+    setupAssistant,
+    syncWorker,
+    jobGate,
+    config,
+    botRateLimiter
+  });
   let closed = false;
 
   return {
@@ -52,6 +66,7 @@ export async function createApp(config) {
       closed = true;
       logger.debug('Closing app');
       await safeDestroyUserClient(userClient);
+      await sharedRateLimitStore?.close();
       await repository.close();
       logger.debug('App closed');
     }

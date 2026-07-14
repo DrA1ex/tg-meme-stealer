@@ -4,7 +4,8 @@ import { configureLogger } from '../src/core/logger.js';
 import {
   getBotApiRetryAfterSeconds,
   getFloodWaitSeconds,
-  withBotApiRetry
+  withBotApiRetry,
+  withTelegramRetry
 } from '../src/telegram/retry.js';
 
 test('getFloodWaitSeconds reads mtcute RpcError seconds', () => {
@@ -65,4 +66,33 @@ test('withBotApiRetry waits and retries 429 responses', async () => {
   assert.match(warnings[0], /\[WARN\] \[retry\] sendPhoto hit Too Many Requests/);
   assert.match(warnings[0], /retryAfter=2/);
   assert.match(warnings[0], /retryInSeconds=3/);
+});
+
+test('withTelegramRetry delegates FLOOD_WAIT cooldown to the adaptive limiter', async () => {
+  const calls = [];
+  let attempts = 0;
+  const result = await withTelegramRetry(
+    async () => {
+      attempts += 1;
+      if (attempts === 1) throw { code: 420, seconds: 5 };
+      return 'ok';
+    },
+    {
+      kind: 'reactions',
+      sleepFn: async () => assert.fail('direct sleep must not run when limiter owns the cooldown'),
+      rateLimiter: {
+        wait: async (kind) => calls.push(['wait', kind]),
+        noteFloodWait: (kind, seconds) => { calls.push(['flood', kind, seconds]); return true; },
+        noteSuccess: (kind) => calls.push(['success', kind])
+      }
+    }
+  );
+
+  assert.equal(result, 'ok');
+  assert.deepEqual(calls, [
+    ['wait', 'reactions'],
+    ['flood', 'reactions', 5],
+    ['wait', 'reactions'],
+    ['success', 'reactions']
+  ]);
 });

@@ -8,11 +8,12 @@ import { sampleFlowMethods } from './setupAssistant/sampleFlow.js';
 import { commandFlowMethods } from './setupAssistant/commandFlow.js';
 
 export class SetupAssistant {
-  constructor({ scanner, mediaDownloader, config, configLoader = loadConfig }) {
+  constructor({ scanner, mediaDownloader, config, configLoader = loadConfig, botRateLimiter = null }) {
     this.scanner = scanner;
     this.mediaDownloader = mediaDownloader;
     this.config = config;
     this.configLoader = configLoader;
+    this.botRateLimiter = botRateLimiter;
     this.sessions = new Map();
     this.setupMessages = new Map();
     this.setupSuggestions = new Map();

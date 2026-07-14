@@ -285,7 +285,8 @@ export async function technicalSendPreviewMessage(ctx, messageId, page = 0) {
     mediaDownloader: this.mediaDownloader,
     post: posts[0],
     index: 0,
-    templates: this.getDraft(ctx).templates
+    templates: this.getDraft(ctx).templates,
+    rateLimiter: this.botRateLimiter
   });
   await this.replyWithKeyboard(ctx, `Preview sent for message #${messageId}.`, technicalMessagePreviewKeyboard(safePage, messageId, true));
 }

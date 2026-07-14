@@ -166,7 +166,8 @@ export async function sendPreview(ctx, { postCount, messageCount }) {
         mediaDownloader: this.mediaDownloader,
         post: posts[index],
         index,
-        templates: draft.templates
+        templates: draft.templates,
+        rateLimiter: this.botRateLimiter
       });
       await ctx.telegram.editMessageText(ctx.chat.id, progress.message_id, undefined, formatPreviewProgress({
         total: posts.length,

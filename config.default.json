@@ -9,6 +9,20 @@
     "logLevel": "INFO",
     "color": "auto"
   },
+  "rateLimit": {
+    "mtprotoGroup": "default",
+    "redis": {
+      "enabled": false,
+      "url": "redis://127.0.0.1:6379",
+      "keyPrefix": "tg-memes:rate-limit",
+      "connectTimeoutMs": 500,
+      "operationTimeoutMs": 200,
+      "fallbackMultiplier": 3,
+      "warningIntervalMs": 30000,
+      "keyTtlMs": 86400000,
+      "penaltyTtlMs": 3600000
+    }
+  },
   "sync": {
     "initialScanDays": 60,
     "refreshRecentDays": 7,
@@ -24,7 +38,10 @@
       "historyMinMs": 800,
       "historyMaxMs": 1800,
       "mediaMinMs": 300,
-      "mediaMaxMs": 900
+      "mediaMaxMs": 900,
+      "reactionsMinMs": 3000,
+      "reactionsMaxMs": 4000,
+      "retryBufferMs": 1000
     }
   },
   "parsing": {
@@ -78,6 +95,13 @@
   },
   "publish": {
     "dryRun": false,
+    "throttle": {
+      "enabled": true,
+      "perChatMinMs": 1100,
+      "globalMinMs": 40,
+      "sharedDestinationMinMs": 350,
+      "retryBufferMs": 1000
+    },
     "requestTtlHours": 12,
     "workerIntervalMinutes": 10,
     "sources": [

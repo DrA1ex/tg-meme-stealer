@@ -81,6 +81,20 @@ const CONFIG_SCHEMA = {
     logLevel: STRING,
     color: STRING
   },
+  rateLimit: {
+    mtprotoGroup: STRING,
+    redis: {
+      enabled: BOOLEAN,
+      url: STRING,
+      keyPrefix: STRING,
+      connectTimeoutMs: NUMBER,
+      operationTimeoutMs: NUMBER,
+      fallbackMultiplier: NUMBER,
+      warningIntervalMs: NUMBER,
+      keyTtlMs: NUMBER,
+      penaltyTtlMs: NUMBER
+    }
+  },
   sync: {
     initialScanDays: NUMBER,
     refreshRecentDays: NUMBER,
@@ -96,7 +110,10 @@ const CONFIG_SCHEMA = {
       historyMinMs: NUMBER,
       historyMaxMs: NUMBER,
       mediaMinMs: NUMBER,
-      mediaMaxMs: NUMBER
+      mediaMaxMs: NUMBER,
+      reactionsMinMs: NUMBER,
+      reactionsMaxMs: NUMBER,
+      retryBufferMs: NUMBER
     }
   },
   parsing: {
@@ -107,6 +124,13 @@ const CONFIG_SCHEMA = {
   },
   publish: {
     dryRun: BOOLEAN,
+    throttle: {
+      enabled: BOOLEAN,
+      perChatMinMs: NUMBER,
+      globalMinMs: NUMBER,
+      sharedDestinationMinMs: NUMBER,
+      retryBufferMs: NUMBER
+    },
     requestTtlHours: NUMBER,
     workerIntervalMinutes: NUMBER,
     firstSendAt: STRING,
@@ -179,6 +203,14 @@ export function applyEnv(config, env) {
       adminId: numberFromEnv(env.TELEGRAM_ADMIN_ID),
       publishChannelId: numberFromEnv(env.TELEGRAM_PUBLISH_CHANNEL_ID),
       botToken: env.TELEGRAM_BOT_TOKEN
+    },
+    rateLimit: {
+      redis: {
+        ...(env.RATE_LIMIT_REDIS_URL ? { url: env.RATE_LIMIT_REDIS_URL } : {}),
+        ...(env.RATE_LIMIT_REDIS_ENABLED !== undefined
+          ? { enabled: booleanFromEnv(env.RATE_LIMIT_REDIS_ENABLED) }
+          : {})
+      }
     }
   });
 }
@@ -245,6 +277,14 @@ function numberFromEnv(value) {
   const parsed = Number(value);
   if (Number.isNaN(parsed)) return value;
   return parsed;
+}
+
+function booleanFromEnv(value) {
+  if (typeof value === 'boolean') return value;
+  const normalized = String(value).trim().toLowerCase();
+  if (['1', 'true', 'yes', 'on'].includes(normalized)) return true;
+  if (['0', 'false', 'no', 'off'].includes(normalized)) return false;
+  return value;
 }
 
 export function validateConfig(config, options = {}) {

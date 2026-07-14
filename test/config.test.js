@@ -178,6 +178,18 @@ test('applyEnv maps secrets and telegram ids from environment', () => {
   });
 });
 
+test('applyEnv configures optional shared Redis rate limiter', () => {
+  const config = applyEnv({
+    rateLimit: { redis: { enabled: false, url: 'redis://127.0.0.1:6379' } }
+  }, {
+    RATE_LIMIT_REDIS_ENABLED: 'true',
+    RATE_LIMIT_REDIS_URL: 'redis://redis.internal:6379/2'
+  });
+
+  assert.equal(config.rateLimit.redis.enabled, true);
+  assert.equal(config.rateLimit.redis.url, 'redis://redis.internal:6379/2');
+});
+
 test('validateConfig rejects identical source and publish chats', () => {
   assert.throws(
     () => validateConfig({
