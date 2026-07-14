@@ -89,6 +89,67 @@ test('PostRepository publication requests are durable and block duplicates until
   await fs.rm(dbPath, { force: true });
 });
 
+test('PostRepository atomically leases publication requests across processes', async () => {
+  const dbPath = path.join('/private/tmp', `tg-memes-${process.pid}-${Date.now()}-leases.sqlite`);
+  await fs.rm(dbPath, { force: true });
+  const firstRepository = new PostRepository(dbPath);
+  const secondRepository = new PostRepository(dbPath);
+  await Promise.all([firstRepository.init(), secondRepository.init()]);
+  try {
+    const publicationId = await firstRepository.tryCreatePublicationRequest(publicationClaim());
+    const first = await firstRepository.getNextPublicationRequest({ ownerId: 'worker-1', leaseMs: 60_000 });
+    await firstRepository.run(
+      'UPDATE publications SET created_at = ? WHERE id = ?',
+      ['2000-01-01T00:00:00.000Z', publicationId]
+    );
+    const blocked = await secondRepository.getNextPublicationRequest({ ownerId: 'worker-2', leaseMs: 60_000 });
+    assert.equal(first.id, publicationId);
+    assert.equal(blocked, null);
+
+    await firstRepository.run(
+      'UPDATE publications SET lease_until = ?, created_at = ? WHERE id = ?',
+      ['2000-01-01T00:00:00.000Z', new Date().toISOString(), publicationId]
+    );
+    const reclaimed = await secondRepository.getNextPublicationRequest({ ownerId: 'worker-2', leaseMs: 60_000 });
+    assert.equal(reclaimed.id, publicationId);
+    assert.equal(reclaimed.leaseOwner, 'worker-2');
+  } finally {
+    await firstRepository.close();
+    await secondRepository.close();
+    await fs.rm(dbPath, { force: true });
+  }
+});
+
+test('PostRepository preserves an interrupted send as uncertain and blocks automatic duplication', async () => {
+  const dbPath = path.join('/private/tmp', `tg-memes-${process.pid}-${Date.now()}-uncertain.sqlite`);
+  await fs.rm(dbPath, { force: true });
+  const repository = new PostRepository(dbPath);
+  await repository.init();
+  try {
+    const publicationId = await repository.tryCreatePublicationRequest(publicationClaim());
+    await repository.getNextPublicationRequest({ ownerId: 'worker-1', leaseMs: 60_000 });
+    await repository.markPublicationRunning(publicationId, 'worker-1');
+    await repository.markPublicationPostSending({
+      publicationId,
+      post: post({ messageId: 10 }),
+      position: 1
+    });
+    await repository.markPublicationUncertain(publicationId, 'worker-1', new Error('process interrupted'));
+
+    const row = await repository.getPublicationById(publicationId);
+    const next = await repository.getNextPublicationRequest({ ownerId: 'worker-2' });
+    const duplicate = await repository.tryCreatePublicationRequest(publicationClaim());
+    const posts = await repository.listPublicationPosts(publicationId);
+    assert.equal(row.status, 'uncertain');
+    assert.equal(next, null);
+    assert.equal(duplicate, null);
+    assert.equal(posts[0].sendState, 'sending');
+  } finally {
+    await repository.close();
+    await fs.rm(dbPath, { force: true });
+  }
+});
+
 test('PostRepository dry-run publications do not block later real publication', async () => {
   const dbPath = path.join('/private/tmp', `tg-memes-${process.pid}-${Date.now()}-dryrun.sqlite`);
   await fs.rm(dbPath, { force: true });

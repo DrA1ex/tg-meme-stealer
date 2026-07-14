@@ -178,7 +178,7 @@ test('applyEnv maps secrets and telegram ids from environment', () => {
   });
 });
 
-test('applyEnv configures optional shared Redis rate limiter', () => {
+test('applyEnv configures Redis connection but keeps namespace and group in config files', () => {
   const config = applyEnv({
     rateLimit: { redis: { enabled: false, url: 'redis://127.0.0.1:6379' } }
   }, {
@@ -188,6 +188,31 @@ test('applyEnv configures optional shared Redis rate limiter', () => {
 
   assert.equal(config.rateLimit.redis.enabled, true);
   assert.equal(config.rateLimit.redis.url, 'redis://redis.internal:6379/2');
+  assert.equal(config.rateLimit.redis.keyPrefix, undefined);
+  assert.equal(config.rateLimit.mtprotoGroup, undefined);
+});
+
+test('validateConfig requires explicit Redis namespace and MTProto group', () => {
+  const config = validConfig();
+  config.rateLimit = {
+    mtprotoGroup: 'local',
+    maxQueueDelayMs: 300000,
+    longWaitWarnMs: 10000,
+    redis: {
+      enabled: true,
+      mode: 'standalone',
+      keyPrefix: 'tg-memes:local',
+      fallbackMultiplier: 3
+    }
+  };
+  assert.throws(() => validateConfig(config), /mtprotoGroup must be set explicitly/);
+
+  config.rateLimit.mtprotoGroup = 'main-account';
+  assert.throws(() => validateConfig(config), /keyPrefix must be set explicitly/);
+
+  config.rateLimit.redis.keyPrefix = 'tg-memes:production';
+  config.telegram.botToken = '123456:token';
+  assert.doesNotThrow(() => validateConfig(config));
 });
 
 test('validateConfig rejects identical source and publish chats', () => {

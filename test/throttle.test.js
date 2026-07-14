@@ -81,9 +81,14 @@ test('TelegramThrottle honors FLOOD_WAIT globally and backs off the affected met
 test('TelegramThrottle uses shared reservations and publishes shared FLOOD_WAIT state', async () => {
   const calls = [];
   const sharedStore = {
-    reserve: async (request) => { calls.push(['reserve', request]); return { delayMs: 750, penalty: 2 }; },
+    reserve: async (request) => {
+      calls.push(['reserve', request]);
+      return { status: 'ok', delayMs: 750, penalty: 2, scheduledAt: 1750 };
+    },
+    validate: async () => ({ status: 'ok', invalidated: false, delayMs: 0 }),
     block: async (request) => { calls.push(['block', request]); return true; },
     penalize: async (...args) => { calls.push(['penalize', args]); return 2; },
+    recordFlood: async (request) => { calls.push(['recordFlood', request]); return 'ok'; },
     reward: async (...args) => { calls.push(['reward', args]); return 1.9; }
   };
   let now = 1000;
@@ -102,10 +107,10 @@ test('TelegramThrottle uses shared reservations and publishes shared FLOOD_WAIT 
   await throttle.noteSuccess('reactions');
 
   assert.equal(calls[0][1].slots[0].key, 'mtproto:shared-account:reactions');
-  assert.equal(calls[1][0], 'block');
-  assert.deepEqual(calls[1][1].keys, ['mtproto:shared-account']);
-  assert.deepEqual(calls[2], ['penalize', ['mtproto:shared-account:reactions', 2, 8]]);
-  assert.deepEqual(calls[3], ['reward', ['mtproto:shared-account:reactions', 0.95]]);
+  assert.equal(calls[1][0], 'recordFlood');
+  assert.deepEqual(calls[1][1].blockKeys, ['mtproto:shared-account']);
+  assert.equal(calls[1][1].penaltyKey, 'mtproto:shared-account:reactions');
+  assert.deepEqual(calls[2], ['reward', ['mtproto:shared-account:reactions', 0.95]]);
 });
 
 test('TelegramThrottle uses conservative local pacing while configured Redis is unavailable', async () => {
@@ -124,4 +129,65 @@ test('TelegramThrottle uses conservative local pacing while configured Redis is 
   assert.equal(await throttle.wait('reactions'), 3000);
   assert.equal(await throttle.wait('reactions'), 3000);
   assert.deepEqual(waits, [3000, 3000]);
+});
+
+test('TelegramThrottle decays penalties by time instead of aggregate success count', async () => {
+  let now = 1000;
+  let rewards = 0;
+  const sharedStore = {
+    recordFlood: async () => 'ok',
+    reward: async () => { rewards += 1; return 2; }
+  };
+  const throttle = new TelegramThrottle({
+    rateLimit: {
+      redis: { penaltyQuietPeriodMs: 100, penaltyDecayIntervalMs: 50 }
+    },
+    sync: { throttle: {} }
+  }, async () => {}, () => now, sharedStore);
+
+  await throttle.noteFloodWait('reactions', 1);
+  await throttle.noteSuccess('reactions');
+  await throttle.noteSuccess('reactions');
+  assert.equal(rewards, 1);
+  assert.equal(throttle.penalties.get('reactions'), 2);
+
+  now += 101;
+  await throttle.noteSuccess('reactions');
+  assert.equal(rewards, 2);
+  assert.equal(throttle.penalties.get('reactions'), 1.9);
+});
+
+test('TelegramThrottle requeues a reservation invalidated by another process FLOOD_WAIT', async () => {
+  const waits = [];
+  let now = 1000;
+  let reserves = 0;
+  let validations = 0;
+  const sharedStore = {
+    reserve: async () => {
+      reserves += 1;
+      return reserves === 1
+        ? { status: 'ok', delayMs: 10, scheduledAt: 1010, penalty: 1 }
+        : { status: 'ok', delayMs: 30, scheduledAt: 1040, penalty: 2 };
+    },
+    validate: async () => {
+      validations += 1;
+      return validations === 1
+        ? { status: 'ok', invalidated: true, delayMs: 100, blockedUntil: 1110 }
+        : { status: 'ok', invalidated: false, delayMs: 0, blockedUntil: 0 };
+    }
+  };
+  const throttle = new TelegramThrottle(
+    {
+      rateLimit: { mtprotoGroup: 'main' },
+      sync: { throttle: { reactionsMinMs: 100, reactionsMaxMs: 100 } }
+    },
+    async (ms) => { waits.push(ms); now += ms; },
+    () => now,
+    sharedStore
+  );
+
+  await throttle.wait('reactions');
+  assert.equal(reserves, 2);
+  assert.equal(validations, 2);
+  assert.deepEqual(waits, [10, 30]);
 });

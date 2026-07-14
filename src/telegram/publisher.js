@@ -32,6 +32,8 @@ export class SelectionPublisher {
     this.activeHandlers = 0;
     this.idleResolvers = [];
     this.processingPublications = false;
+    this.workerId = getPublisherWorkerId();
+    this.workerLeaseMs = Math.max(1, Number(config.publish?.workerLeaseMs) || 900_000);
     this.configureCommands();
   }
 
@@ -268,10 +270,17 @@ export class SelectionPublisher {
     try {
       while (true) {
         const request = await this.repository.getNextPublicationRequest({
-          requestTtlHours: getPublicationRequestTtlHours(this.config)
+          requestTtlHours: getPublicationRequestTtlHours(this.config),
+          ownerId: this.workerId,
+          leaseMs: this.workerLeaseMs
         });
         if (!request) break;
-        await this.processPublicationRequest(request);
+        const stopLeaseHeartbeat = this.startLeaseHeartbeat(request.id);
+        try {
+          await this.processPublicationRequest(request);
+        } finally {
+          stopLeaseHeartbeat();
+        }
       }
     } finally {
       this.processingPublications = false;
@@ -319,7 +328,17 @@ export class SelectionPublisher {
       return;
     }
 
+    let deliveryStarted = false;
     try {
+      if (request.status === 'header_sending') {
+        const error = new Error('Recovered publication with an indeterminate selection-header delivery');
+        await this.repository.markPublicationUncertain?.(request.id, this.workerId, error);
+        this.logger.warn('Publication requires manual review after interrupted header send', {
+          publicationId: request.id,
+          key: request.key
+        });
+        return;
+      }
       if (request.status === 'created') {
         this.logger.info('Publishing selection header', {
           publicationId: request.id,
@@ -329,19 +348,36 @@ export class SelectionPublisher {
           targetChatId: this.config.telegram.publishChannelId,
           key: request.key
         });
+        await this.repository.markPublicationHeaderSending?.(request.id, this.workerId);
+        deliveryStarted = true;
         await withBotApiRetry(
           () => this.bot.telegram.sendMessage(this.config.telegram.publishChannelId, formatSelectionHeader(selection.title)),
           {
             label: 'sendSelectionHeader',
             rateLimiter: this.botRateLimiter,
-            chatId: this.config.telegram.publishChannelId
+            chatId: this.config.telegram.publishChannelId,
+            operationTimeoutMs: this.config.rateLimit?.telegramOperationTimeoutMs
           }
         );
-        await this.repository.markPublicationRunning(request.id);
+        await this.repository.markPublicationRunning(request.id, this.workerId);
+        deliveryStarted = false;
       }
 
       const sentRows = await this.repository.listPublicationPosts(request.id);
-      const sentPositions = new Set(sentRows.map((row) => row.position));
+      const interrupted = sentRows.find((row) => row.sendState === 'sending');
+      if (interrupted) {
+        const error = new Error(`Recovered publication with an indeterminate post delivery at position ${interrupted.position}`);
+        await this.repository.markPublicationUncertain?.(request.id, this.workerId, error);
+        this.logger.warn('Publication requires manual review after interrupted post send', {
+          publicationId: request.id,
+          key: request.key,
+          position: interrupted.position
+        });
+        return;
+      }
+      const sentPositions = new Set(sentRows
+        .filter((row) => row.sendState !== 'sending')
+        .map((row) => row.position));
 
       for (let index = 0; index < selection.posts.length; index += 1) {
         const position = index + 1;
@@ -353,22 +389,55 @@ export class SelectionPublisher {
           });
           continue;
         }
-        const result = await this.publishPost(selection.posts[index], index);
+        await this.repository.renewPublicationLease?.(request.id, this.workerId, this.workerLeaseMs);
+        const result = await this.publishPost(selection.posts[index], index, async () => {
+          await this.repository.markPublicationPostSending?.({
+            publicationId: request.id,
+            post: selection.posts[index],
+            position
+          });
+          deliveryStarted = true;
+        });
         await this.repository.recordPublicationPost({
           publicationId: request.id,
           post: selection.posts[index],
           position,
           botMessageId: getBotMessageId(result)
         });
+        deliveryStarted = false;
       }
       await this.recordPublication(request.id, selection, 'published', { key: request.key });
     } catch (error) {
-      await this.repository.updatePublicationError(request.id, error);
+      if (deliveryStarted && this.repository.markPublicationUncertain) {
+        await this.repository.markPublicationUncertain(request.id, this.workerId, error);
+        this.logger.warn('Publication delivery outcome is uncertain; automatic retries stopped', {
+          publicationId: request.id,
+          key: request.key,
+          error: error?.message || String(error)
+        });
+      } else {
+        await this.repository.updatePublicationError(request.id, error, this.workerId);
+      }
       throw error;
     }
   }
 
-  async publishPost(post, index) {
+  startLeaseHeartbeat(publicationId) {
+    if (typeof this.repository.renewPublicationLease !== 'function') return () => {};
+    const intervalMs = Math.max(1000, Math.floor(this.workerLeaseMs / 3));
+    const timer = setInterval(() => {
+      void this.repository.renewPublicationLease(publicationId, this.workerId, this.workerLeaseMs)
+        .catch((error) => this.logger.error('Publication lease heartbeat failed', {
+          publicationId,
+          workerId: this.workerId,
+          error: error?.message || String(error)
+        }));
+    }, intervalMs);
+    timer.unref?.();
+    return () => clearInterval(timer);
+  }
+
+  async publishPost(post, index, onBeforeSend) {
     this.logger.info('Publishing post', {
       targetChatId: this.config.telegram.publishChannelId,
       sourceChatId: post.chatId,
@@ -382,7 +451,9 @@ export class SelectionPublisher {
       post,
       index,
       templates: this.config.templates,
-      rateLimiter: this.botRateLimiter
+      rateLimiter: this.botRateLimiter,
+      operationTimeoutMs: this.config.rateLimit?.telegramOperationTimeoutMs,
+      onBeforeSend
     });
   }
 
@@ -504,6 +575,11 @@ export class SelectionPublisher {
     const resolvers = this.idleResolvers.splice(0);
     for (const resolve of resolvers) resolve();
   }
+}
+
+function getPublisherWorkerId() {
+  const instance = process.env.pm_id !== undefined ? `pm2:${process.env.pm_id}` : `pid:${process.pid}`;
+  return `${instance}:${Math.random().toString(36).slice(2, 10)}`;
 }
 
 function isBotAlreadyStoppedError(error) {

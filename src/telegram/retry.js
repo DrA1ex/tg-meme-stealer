@@ -2,6 +2,16 @@ import { getLogger } from '../core/logger.js';
 
 const logger = getLogger('retry');
 
+export class TelegramOperationTimeoutError extends Error {
+  constructor(label, timeoutMs) {
+    super(`${label} did not settle within ${timeoutMs}ms; delivery outcome is unknown`);
+    this.name = 'TelegramOperationTimeoutError';
+    this.code = 'TELEGRAM_OPERATION_TIMEOUT';
+    this.timeoutMs = timeoutMs;
+    this.indeterminate = true;
+  }
+}
+
 export async function withTelegramRetry(operation, options = {}) {
   const maxRetries = options.maxRetries ?? 5;
   const label = options.label || 'telegram request';
@@ -10,16 +20,28 @@ export async function withTelegramRetry(operation, options = {}) {
   for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
     try {
       await options.rateLimiter?.wait?.(options.kind);
-      const result = await operation();
-      await options.rateLimiter?.noteSuccess?.(options.kind);
+      const result = await runTelegramOperation(operation, options, label);
+      await safeLimiterNotification(
+        options.rateLimiter,
+        'noteSuccess',
+        [options.kind],
+        `${label} success accounting`
+      );
       return result;
     } catch (error) {
       const waitSeconds = getFloodWaitSeconds(error);
       if (!waitSeconds) throw error;
-      const limiterHandledWait = await options.rateLimiter?.noteFloodWait?.(options.kind, waitSeconds) === true;
+      const hasLimiterHandler = typeof options.rateLimiter?.noteFloodWait === 'function';
+      const limiterHandledWait = await safeLimiterNotification(
+        options.rateLimiter,
+        'noteFloodWait',
+        [options.kind, waitSeconds],
+        `${label} FLOOD_WAIT accounting`
+      ) === true;
       if (attempt === maxRetries) throw error;
       const waitMs = (waitSeconds + 1) * 1000;
-      logger.warn(`${label} hit FLOOD_WAIT`, {
+      const log = hasLimiterHandler ? logger.debug : logger.warn;
+      log(`${label} hit FLOOD_WAIT`, {
         waitSeconds,
         retryInSeconds: waitSeconds + 1,
         attempt: attempt + 1,
@@ -39,14 +61,21 @@ export async function withBotApiRetry(operation, options = {}) {
   for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
     try {
       await options.rateLimiter?.wait?.(options.chatId);
-      return await operation();
+      return await runTelegramOperation(operation, options, label);
     } catch (error) {
       const retryAfter = getBotApiRetryAfterSeconds(error);
       if (!retryAfter) throw error;
-      const limiterHandledWait = await options.rateLimiter?.noteRateLimit?.(retryAfter, options.chatId) === true;
+      const hasLimiterHandler = typeof options.rateLimiter?.noteRateLimit === 'function';
+      const limiterHandledWait = await safeLimiterNotification(
+        options.rateLimiter,
+        'noteRateLimit',
+        [retryAfter, options.chatId],
+        `${label} retry_after accounting`
+      ) === true;
       if (attempt === maxRetries) throw error;
       const waitMs = (retryAfter + 1) * 1000;
-      logger.warn(`${label} hit Too Many Requests`, {
+      const log = hasLimiterHandler ? logger.debug : logger.warn;
+      log(`${label} hit Too Many Requests`, {
         retryAfter,
         retryInSeconds: retryAfter + 1,
         attempt: attempt + 1,
@@ -60,10 +89,27 @@ export async function withBotApiRetry(operation, options = {}) {
 
 export function getFloodWaitSeconds(error) {
   if (typeof error?.seconds === 'number') return error.seconds;
-  const match = String(error?.message || error?.text || '').match(/FLOOD_WAIT_(\d+)/);
+  const match = String(error?.message || error?.text || '').match(/FLOOD(?:_PREMIUM)?_WAIT_(\d+)/);
   if (match) return Number(match[1]);
   if (error?.code === 420 && typeof error?.seconds === 'number') return error.seconds;
   return 0;
+}
+
+async function safeLimiterNotification(rateLimiter, method, args, label) {
+  if (typeof rateLimiter?.[method] !== 'function') return undefined;
+  try {
+    return await rateLimiter[method](...args);
+  } catch (error) {
+    const message = method === 'noteSuccess'
+      ? 'Rate-limiter success accounting failed; preserving Telegram operation result'
+      : 'Rate-limiter cooldown accounting failed; using direct retry wait';
+    logger.error(message, {
+      label,
+      method,
+      error: error?.message || String(error)
+    });
+    return undefined;
+  }
 }
 
 export function getBotApiRetryAfterSeconds(error) {
@@ -80,4 +126,26 @@ export function getBotApiRetryAfterSeconds(error) {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function runTelegramOperation(operation, options, label) {
+  const timeoutMs = positiveNumber(
+    options.operationTimeoutMs ?? options.rateLimiter?.operationTimeoutMs,
+    60_000
+  );
+  let timeout;
+  const timeoutPromise = new Promise((_, reject) => {
+    timeout = setTimeout(() => reject(new TelegramOperationTimeoutError(label, timeoutMs)), timeoutMs);
+    timeout.unref?.();
+  });
+  try {
+    return await Promise.race([Promise.resolve().then(operation), timeoutPromise]);
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function positiveNumber(value, fallback) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }

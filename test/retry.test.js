@@ -4,9 +4,22 @@ import { configureLogger } from '../src/core/logger.js';
 import {
   getBotApiRetryAfterSeconds,
   getFloodWaitSeconds,
+  TelegramOperationTimeoutError,
   withBotApiRetry,
   withTelegramRetry
 } from '../src/telegram/retry.js';
+
+test('withBotApiRetry stops a hung Telegram request with an indeterminate timeout', async () => {
+  await assert.rejects(
+    withBotApiRetry(() => new Promise(() => {}), {
+      label: 'sendPhoto',
+      operationTimeoutMs: 5
+    }),
+    (error) => error instanceof TelegramOperationTimeoutError
+      && error.code === 'TELEGRAM_OPERATION_TIMEOUT'
+      && error.indeterminate === true
+  );
+});
 
 test('getFloodWaitSeconds reads mtcute RpcError seconds', () => {
   assert.equal(getFloodWaitSeconds({ code: 420, text: 'FLOOD_WAIT_%d', seconds: 20 }), 20);
@@ -14,6 +27,20 @@ test('getFloodWaitSeconds reads mtcute RpcError seconds', () => {
 
 test('getFloodWaitSeconds reads numeric suffix from message', () => {
   assert.equal(getFloodWaitSeconds({ message: 'FLOOD_WAIT_42' }), 42);
+  assert.equal(getFloodWaitSeconds({ message: 'FLOOD_PREMIUM_WAIT_17' }), 17);
+});
+
+test('withTelegramRetry preserves a successful Telegram result when success accounting fails', async () => {
+  const result = await withTelegramRetry(
+    async () => 'sent',
+    {
+      rateLimiter: {
+        wait: async () => {},
+        noteSuccess: async () => { throw new Error('redis accounting failed'); }
+      }
+    }
+  );
+  assert.equal(result, 'sent');
 });
 
 test('getBotApiRetryAfterSeconds reads Telegraf retry_after', () => {

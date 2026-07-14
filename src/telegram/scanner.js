@@ -128,9 +128,12 @@ export class TelegramScanner {
     let saved = 0;
     let skippedOld = 0;
     let stopReason = 'unknown';
+    const seenCursors = new Set();
+    const maxPages = Math.max(1, Number(this.config.sync.maxPagesPerRun) || 10_000);
 
     while (true) {
       pages += 1;
+      assertPaginationProgress({ pages, maxPages, offset, seenCursors, operation: 'sync' });
       const history = await this.getHistory({ limit: this.config.sync.pageSize, offset });
 
       const messages = [...history];
@@ -198,9 +201,12 @@ export class TelegramScanner {
     let skippedExistingOld = 0;
     let skippedOld = 0;
     let stopReason = 'unknown';
+    const seenCursors = new Set();
+    const maxPages = Math.max(1, Number(this.config.sync.maxPagesPerRun) || 10_000);
 
     while (true) {
       pages += 1;
+      assertPaginationProgress({ pages, maxPages, offset, seenCursors, operation: 'backfill' });
       const history = await this.getHistory({ limit: this.config.sync.pageSize, offset });
       const messages = [...history];
       fetched += messages.length;
@@ -490,6 +496,32 @@ export class TelegramScanner {
   }
 }
 
+
+function assertPaginationProgress({ pages, maxPages, offset, seenCursors, operation }) {
+  if (pages > maxPages) {
+    const error = new Error(`${operation} pagination exceeded ${maxPages} pages`);
+    error.code = 'TELEGRAM_PAGINATION_LIMIT';
+    throw error;
+  }
+  if (offset === undefined || offset === null) return;
+  const fingerprint = cursorFingerprint(offset);
+  if (seenCursors.has(fingerprint)) {
+    const error = new Error(`${operation} pagination cursor repeated; stopping to prevent an infinite loop`);
+    error.code = 'TELEGRAM_PAGINATION_STALLED';
+    throw error;
+  }
+  seenCursors.add(fingerprint);
+}
+
+function cursorFingerprint(value) {
+  if (typeof value === 'string') return `string:${value}`;
+  if (typeof value === 'number' || typeof value === 'bigint') return `${typeof value}:${value}`;
+  try {
+    return `json:${JSON.stringify(value, (_key, item) => typeof item === 'bigint' ? `${item}n` : item)}`;
+  } catch {
+    return `string:${String(value)}`;
+  }
+}
 
 function hasReactionSummaryMarker(message) {
   return Boolean(message?.reactions || message?.raw?.reactions || message?.messageReactions);

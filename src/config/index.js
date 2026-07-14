@@ -83,22 +83,30 @@ const CONFIG_SCHEMA = {
   },
   rateLimit: {
     mtprotoGroup: STRING,
+    maxQueueDelayMs: NUMBER,
+    longWaitWarnMs: NUMBER,
+    telegramOperationTimeoutMs: NUMBER,
     redis: {
       enabled: BOOLEAN,
+      mode: STRING,
       url: STRING,
       keyPrefix: STRING,
       connectTimeoutMs: NUMBER,
       operationTimeoutMs: NUMBER,
+      circuitBreakMs: NUMBER,
       fallbackMultiplier: NUMBER,
       warningIntervalMs: NUMBER,
       keyTtlMs: NUMBER,
-      penaltyTtlMs: NUMBER
+      penaltyTtlMs: NUMBER,
+      penaltyQuietPeriodMs: NUMBER,
+      penaltyDecayIntervalMs: NUMBER
     }
   },
   sync: {
     initialScanDays: NUMBER,
     refreshRecentDays: NUMBER,
     pageSize: NUMBER,
+    maxPagesPerRun: NUMBER,
     mediaDir: STRING,
     intervalHours: NUMBER,
     runOnStart: BOOLEAN,
@@ -129,9 +137,11 @@ const CONFIG_SCHEMA = {
       perChatMinMs: NUMBER,
       globalMinMs: NUMBER,
       sharedDestinationMinMs: NUMBER,
+      shareRetryAfterAcrossBots: BOOLEAN,
       retryBufferMs: NUMBER
     },
     requestTtlHours: NUMBER,
+    workerLeaseMs: NUMBER,
     workerIntervalMinutes: NUMBER,
     firstSendAt: STRING,
     sources: { type: 'array', items: SOURCE_SCHEMA },
@@ -314,9 +324,48 @@ export function validateConfig(config, options = {}) {
     throw new Error('telegram.sourceChatId and telegram.publishChannelId must be different');
   }
 
+  validateSharedRateLimitConfig(config);
+
   validatePublishTemplateDuplicates(config, options);
   validatePublishSourceDefinitions(config);
   validatePublishTemplates(config);
+}
+
+function validateSharedRateLimitConfig(config) {
+  const redis = config.rateLimit?.redis;
+  const maxQueueDelayMs = Number(config.rateLimit?.maxQueueDelayMs ?? 300_000);
+  const longWaitWarnMs = Number(config.rateLimit?.longWaitWarnMs ?? 10_000);
+  if (!(maxQueueDelayMs > 0) || !(longWaitWarnMs > 0) || longWaitWarnMs > maxQueueDelayMs) {
+    throw new Error('rateLimit wait thresholds must be positive and longWaitWarnMs must not exceed maxQueueDelayMs');
+  }
+  if (!(Number(config.rateLimit?.telegramOperationTimeoutMs ?? 60_000) > 0)) {
+    throw new Error('rateLimit.telegramOperationTimeoutMs must be positive');
+  }
+  if (!(Number(config.publish?.workerLeaseMs ?? 900_000) > maxQueueDelayMs)) {
+    throw new Error('publish.workerLeaseMs must be greater than rateLimit.maxQueueDelayMs');
+  }
+  if (redis?.enabled !== true) return;
+  if (redis.mode !== 'standalone') {
+    throw new Error('rateLimit.redis.mode must be "standalone"; Redis Cluster is not supported');
+  }
+  if (!config.rateLimit?.mtprotoGroup || config.rateLimit.mtprotoGroup === 'local') {
+    throw new Error('rateLimit.mtprotoGroup must be set explicitly when Redis rate limiting is enabled');
+  }
+  if (!redis.keyPrefix || redis.keyPrefix === 'tg-memes:local') {
+    throw new Error('rateLimit.redis.keyPrefix must be set explicitly when Redis rate limiting is enabled');
+  }
+  if (!/^[a-zA-Z0-9:._-]+$/.test(config.rateLimit.mtprotoGroup)) {
+    throw new Error('rateLimit.mtprotoGroup contains unsupported characters');
+  }
+  if (!/^[a-zA-Z0-9:._-]+$/.test(redis.keyPrefix)) {
+    throw new Error('rateLimit.redis.keyPrefix contains unsupported characters');
+  }
+  if (!/^\d+:.+/.test(String(config.telegram.botToken))) {
+    throw new Error('telegram.botToken must start with the numeric bot id when Redis rate limiting is enabled');
+  }
+  if (!(Number(redis.fallbackMultiplier) >= 1)) {
+    throw new Error('rateLimit.redis.fallbackMultiplier must be at least 1');
+  }
 }
 
 function validatePublishTemplateDuplicates(config, options = {}) {

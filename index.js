@@ -29,6 +29,7 @@ if (command === 'session') {
     shuttingDown = true;
     logger.info('Shutdown requested', { command, signal });
     try {
+      app.cancelRateLimitWaits();
       await app.publisher.stopBot(signal);
       await app.close();
       logger.info('Shutdown complete', { command, signal });
@@ -92,6 +93,7 @@ if (command === 'session') {
     logger.info('Shutdown requested', { command, signal });
     try {
       scheduler.stop();
+      app.cancelRateLimitWaits();
       await app.publisher.stopBot(signal);
       await app.close();
       logger.info('Shutdown complete', { command, signal });

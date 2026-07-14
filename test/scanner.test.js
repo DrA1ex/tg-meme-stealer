@@ -119,3 +119,28 @@ function telegramMessage(id, isoDate) {
     text: `By Author ${id}\nPost ${id}`
   };
 }
+
+test('TelegramScanner stops when Telegram repeats a pagination cursor', async () => {
+  let calls = 0;
+  const scanner = new TelegramScanner({
+    client: {},
+    repository: { upsertPost: async () => {} },
+    config: {
+      telegram: { sourceChatId: -1001 },
+      parsing: {},
+      sync: { pageSize: 100, maxPagesPerRun: 100, throttle: { enabled: false } }
+    }
+  });
+  scanner.getHistory = async () => {
+    calls += 1;
+    const rows = [telegramMessage(calls, '2026-07-01T00:00:00.000Z')];
+    rows.next = 'same-cursor';
+    return rows;
+  };
+
+  await assert.rejects(
+    scanner.scanSince(new Date('2026-06-01T00:00:00.000Z')),
+    (error) => error.code === 'TELEGRAM_PAGINATION_STALLED'
+  );
+  assert.equal(calls, 2);
+});

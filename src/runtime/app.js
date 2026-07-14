@@ -61,10 +61,16 @@ export async function createApp(config) {
     syncWorker,
     retentionWorker,
     publisher,
+    cancelRateLimitWaits() {
+      telegramThrottle.close();
+      botRateLimiter.close();
+    },
     async close() {
       if (closed) return;
       closed = true;
       logger.debug('Closing app');
+      telegramThrottle.close();
+      botRateLimiter.close();
       await safeDestroyUserClient(userClient);
       await sharedRateLimitStore?.close();
       await repository.close();

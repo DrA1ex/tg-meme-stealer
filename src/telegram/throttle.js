@@ -1,31 +1,40 @@
 import { getLogger } from '../core/logger.js';
+import { assertQueueDeadline, getQueueDeadline, sleepWithSignal } from './rateLimitUtils.js';
 
 const DEFAULT_KIND = 'history';
 
 export class TelegramThrottle {
-  constructor(config = {}, sleepFn = sleep, nowFn = Date.now, sharedStore = null) {
+  constructor(config = {}, sleepFn = null, nowFn = Date.now, sharedStore = null) {
     this.config = config.sync?.throttle || {};
     this.sharedConfig = config.rateLimit || {};
     this.sleepFn = sleepFn;
     this.nowFn = nowFn;
     this.sharedStore = sharedStore;
+    this.operationTimeoutMs = positiveNumber(this.sharedConfig.telegramOperationTimeoutMs, 60_000);
     this.logger = getLogger('rateLimit.mtproto');
     this.group = String(this.sharedConfig.mtprotoGroup || 'default');
     this.nextAllowedAt = new Map();
     this.blockedUntil = 0;
     this.penalties = new Map();
+    this.lastFloodAt = new Map();
+    this.lastPenaltyDecayAt = new Map();
+    this.lastRewardAttemptAt = new Map();
+    this.abortController = new AbortController();
   }
 
   async wait(kind = DEFAULT_KIND) {
     if (this.config.enabled === false) return 0;
     const now = this.nowFn();
+    const deadlineAt = getQueueDeadline(now, this.sharedConfig);
     const baseIntervalMs = getTelegramThrottleDelay(this.config, kind);
+    const blockKeys = [this.globalScope()];
     const shared = await this.sharedStore?.reserve({
       slots: [{ key: this.scope(kind), intervalMs: baseIntervalMs }],
-      blockKeys: [this.globalScope()]
+      blockKeys
     });
+    const sharedOk = shared?.status === 'ok';
     const redisExpected = this.sharedConfig.redis?.enabled === true;
-    const usingFallback = redisExpected && !shared;
+    const usingFallback = redisExpected && !sharedOk;
     const fallbackMultiplier = usingFallback
       ? Math.max(1, Number(this.sharedConfig.redis?.fallbackMultiplier) || 3)
       : 1;
@@ -41,22 +50,23 @@ export class TelegramThrottle {
     );
     const localDelayMs = Math.max(0, scheduledAt - now);
     this.nextAllowedAt.set(kind, scheduledAt + intervalMs);
-    const delayMs = Math.max(localDelayMs, shared?.delayMs || 0);
-    const backend = shared ? 'redis+memory' : usingFallback ? 'memory-fallback' : 'memory';
+    const delayMs = Math.max(localDelayMs, sharedOk ? shared.delayMs : 0);
+    const backend = sharedOk ? 'redis+memory' : usingFallback ? 'memory-fallback' : 'memory';
+    const logFields = {
+      kind,
+      backend,
+      sharedDelayMs: sharedOk ? shared.delayMs : undefined,
+      penalty: sharedOk ? shared.penalty : this.penalties.get(kind) || 1,
+      fallbackMultiplier: usingFallback ? fallbackMultiplier : undefined,
+      group: this.group,
+      redisStatus: shared?.status
+    };
     if (delayMs > 0) {
-      this.logger.info('Waiting for MTProto rate-limit slot', {
-        kind,
-        delayMs,
-        backend,
-        sharedDelayMs: shared?.delayMs,
-        penalty: shared?.penalty || this.penalties.get(kind) || 1,
-        fallbackMultiplier: usingFallback ? fallbackMultiplier : undefined,
-        group: this.group
-      });
-      await this.sleepFn(delayMs);
+      await this.waitDelay(delayMs, logFields, deadlineAt);
     } else {
       this.logger.debug('MTProto rate-limit slot acquired', { kind, backend, group: this.group });
     }
+    if (sharedOk) await this.confirmSharedReservation(kind, baseIntervalMs, blockKeys, shared, deadlineAt);
     return delayMs;
   }
 
@@ -67,6 +77,7 @@ export class TelegramThrottle {
     this.blockedUntil = Math.max(this.blockedUntil, untilMs);
     const current = this.penalties.get(kind) || 1;
     this.penalties.set(kind, Math.min(current * 2, 8));
+    this.lastFloodAt.set(kind, this.nowFn());
     this.logger.warn('MTProto FLOOD_WAIT applied to rate limiter', {
       kind,
       waitSeconds,
@@ -77,21 +88,113 @@ export class TelegramThrottle {
         : this.sharedConfig.redis?.enabled === true ? 'memory-fallback' : 'memory',
       group: this.group
     });
-    await Promise.all([
-      this.sharedStore?.block({
-        keys: [this.globalScope()],
-        untilMs,
-        durationMs: waitSeconds * 1000 + bufferMs
-      }),
-      this.sharedStore?.penalize(this.scope(kind), 2, 8)
-    ]);
+    await this.sharedStore?.recordFlood({
+      blockKeys: [this.globalScope()],
+      penaltyKey: this.scope(kind),
+      durationMs: waitSeconds * 1000 + bufferMs,
+      factor: 2,
+      max: 8
+    });
     return true;
   }
 
   async noteSuccess(kind = DEFAULT_KIND) {
+    const now = this.nowFn();
+    const quietPeriodMs = positiveNumber(this.sharedConfig.redis?.penaltyQuietPeriodMs, 60_000);
+    const decayIntervalMs = positiveNumber(this.sharedConfig.redis?.penaltyDecayIntervalMs, 30_000);
     const current = this.penalties.get(kind) || 1;
-    if (current > 1) this.penalties.set(kind, Math.max(1, current * 0.95));
-    await this.sharedStore?.reward(this.scope(kind), 0.95);
+    const canDecayLocal = now - (this.lastFloodAt.get(kind) || 0) >= quietPeriodMs
+      && now - (this.lastPenaltyDecayAt.get(kind) || 0) >= decayIntervalMs;
+    if (current > 1 && canDecayLocal) {
+      this.penalties.set(kind, Math.max(1, current * 0.95));
+      this.lastPenaltyDecayAt.set(kind, now);
+    }
+    const lastRewardAttemptAt = this.lastRewardAttemptAt.get(kind);
+    if (lastRewardAttemptAt === undefined || now - lastRewardAttemptAt >= decayIntervalMs) {
+      this.lastRewardAttemptAt.set(kind, now);
+      await this.sharedStore?.reward(this.scope(kind), 0.95);
+    }
+  }
+
+  async confirmSharedReservation(kind, baseIntervalMs, blockKeys, initialReservation, deadlineAt) {
+    let reservation = initialReservation;
+    for (let iteration = 0; iteration < 20; iteration += 1) {
+      const validation = await this.sharedStore.validate({ blockKeys, scheduledAt: reservation.scheduledAt });
+      if (validation.status !== 'ok') {
+        const fallbackMs = baseIntervalMs * Math.max(
+          1,
+          Number(this.sharedConfig.redis?.fallbackMultiplier) || 3
+        );
+        await this.waitDelay(fallbackMs, {
+          kind,
+          backend: 'memory-fallback',
+          redisStatus: validation.status,
+          group: this.group,
+          reason: 'reservation_validation_failed'
+        }, deadlineAt);
+        return;
+      }
+      if (validation.invalidated) {
+        this.logger.info('MTProto reservation invalidated by a newer shared cooldown', {
+          kind,
+          blockedUntil: new Date(validation.blockedUntil).toISOString(),
+          group: this.group
+        });
+        reservation = await this.sharedStore.reserve({
+          slots: [{ key: this.scope(kind), intervalMs: baseIntervalMs }],
+          blockKeys
+        });
+        if (reservation.status !== 'ok') {
+          const fallbackMs = baseIntervalMs * Math.max(
+            1,
+            Number(this.sharedConfig.redis?.fallbackMultiplier) || 3
+          );
+          await this.waitDelay(fallbackMs, {
+            kind,
+            backend: 'memory-fallback',
+            redisStatus: reservation.status,
+            group: this.group,
+            reason: 'reservation_requeue_failed'
+          }, deadlineAt);
+          return;
+        }
+        if (reservation.delayMs > 0) {
+          await this.waitDelay(reservation.delayMs, {
+            kind,
+            backend: 'redis+memory',
+            group: this.group,
+            reason: 'reservation_requeued'
+          }, deadlineAt);
+        }
+        continue;
+      }
+      if (validation.delayMs > 0) {
+        await this.waitDelay(validation.delayMs, {
+          kind,
+          backend: 'redis+memory',
+          group: this.group,
+          reason: 'reservation_not_due'
+        }, deadlineAt);
+        continue;
+      }
+      return;
+    }
+    throw new Error(`Unable to confirm MTProto rate-limit reservation for ${kind}`);
+  }
+
+  async waitDelay(delayMs, fields, deadlineAt = getQueueDeadline(this.nowFn(), this.sharedConfig)) {
+    const longWait = assertQueueDeadline(delayMs, deadlineAt, this.nowFn(), this.sharedConfig, this.logger, {
+      ...fields,
+      scope: this.scope(fields.kind)
+    });
+    const log = longWait ? this.logger.warn : this.logger.info;
+    log('Waiting for MTProto rate-limit slot', { delayMs, ...fields });
+    if (this.sleepFn) await this.sleepFn(delayMs);
+    else await sleepWithSignal(delayMs, this.abortController.signal);
+  }
+
+  close() {
+    this.abortController.abort();
   }
 
   scope(kind) {
@@ -124,6 +227,7 @@ function toNonNegativeNumber(value) {
   return Math.max(0, Math.floor(number));
 }
 
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function positiveNumber(value, fallback) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }

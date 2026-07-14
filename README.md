@@ -182,14 +182,21 @@ Common options:
     "color": "auto"
   },
   "rateLimit": {
-    "mtprotoGroup": "default",
+    "mtprotoGroup": "local",
+    "maxQueueDelayMs": 300000,
+    "longWaitWarnMs": 10000,
+    "telegramOperationTimeoutMs": 60000,
     "redis": {
       "enabled": false,
+      "mode": "standalone",
       "url": "redis://127.0.0.1:6379",
-      "keyPrefix": "tg-memes:rate-limit",
+      "keyPrefix": "tg-memes:local",
       "connectTimeoutMs": 500,
       "operationTimeoutMs": 200,
-      "fallbackMultiplier": 3
+      "circuitBreakMs": 5000,
+      "fallbackMultiplier": 3,
+      "penaltyQuietPeriodMs": 60000,
+      "penaltyDecayIntervalMs": 30000
     }
   },
   "sync": {
@@ -219,9 +226,11 @@ Common options:
       "perChatMinMs": 1100,
       "globalMinMs": 40,
       "sharedDestinationMinMs": 350,
+      "shareRetryAfterAcrossBots": false,
       "retryBufferMs": 1000
     },
     "requestTtlHours": 12,
+    "workerLeaseMs": 900000,
     "workerIntervalMinutes": 10,
     "firstSendAt": "2026-07-01T00:00:00+03:00",
     "sources": [
@@ -1004,9 +1013,17 @@ RATE_LIMIT_REDIS_ENABLED=true
 RATE_LIMIT_REDIS_URL=redis://127.0.0.1:6379
 ```
 
-Processes with the same `rateLimit.mtprotoGroup` share MTProto reservations, adaptive penalties, and `FLOOD_WAIT` cooldowns. Use the same group only when the processes use the same Telegram user account. Bot API global and per-chat quotas remain scoped to each bot token, while `publish.throttle.sharedDestinationMinMs` spaces sends from all bots targeting the same chat.
+Set `rateLimit.redis.keyPrefix` and `rateLimit.mtprotoGroup` in `config.json`; they are intentionally not environment variables. Both must be explicit when Redis is enabled. Processes with the same MTProto group share reservations, adaptive penalties, and `FLOOD_WAIT` cooldowns. Use the same group only when the processes use the same Telegram user account. Only standalone Redis is supported; Redis Cluster is rejected by config validation.
 
-Normal Redis operations and immediate slot acquisitions are logged at `DEBUG`. Actual rate-limit waits are logged at `INFO`; `FLOOD_WAIT` and Bot API `retry_after` are logged at `WARN`. If Redis cannot be reached or an operation times out, the app logs an `ERROR` explaining that it switched to the local fallback and continues running. Repeated outage messages are reduced to `DEBUG` between periodic `ERROR` reminders; recovery is logged at `INFO`. While Redis is unavailable, MTProto intervals are multiplied by `rateLimit.redis.fallbackMultiplier` (default `3`) so three independent processes remain conservative instead of immediately flooding the shared Telegram account.
+Bot API global and per-chat quotas remain scoped to each bot token, while `publish.throttle.sharedDestinationMinMs` spaces sends from all bots targeting the same chat. A `retry_after` blocks only the bot token that received it by default; set `shareRetryAfterAcrossBots` only if Telegram has demonstrably applied a destination-wide restriction.
+
+Normal Redis operations and immediate slot acquisitions are logged at `DEBUG`, including operation latency, scopes, and the PM2/process id. Actual waits are logged at `INFO`, waits above `longWaitWarnMs` at `WARN`, and waits above `maxQueueDelayMs` are rejected. `FLOOD_WAIT` and Bot API `retry_after` are logged at `WARN`.
+
+If Redis cannot be reached or an operation times out, the app logs an `ERROR`, opens a short circuit breaker, and continues through a conservative local fallback. MTProto and Bot API token/chat intervals are multiplied by `fallbackMultiplier`; Bot API destination sends also receive a randomized fallback delay. A timed-out Redis operation is treated as indeterminate rather than as a confirmed failure. Before every Telegram request, a process validates that no newer shared cooldown invalidated its reservation. Repeated outage messages are reduced to `DEBUG` between periodic `ERROR` reminders; recovery is logged at `INFO`.
+
+The Redis integration test is mandatory in GitHub Actions. Locally, set `TEST_REDIS_URL` to run the same real-server concurrency and cooldown tests.
+
+Every limiter wait has one cumulative `maxQueueDelayMs` budget, including Redis revalidation. Telegram operations have a `telegramOperationTimeoutMs` watchdog. Publication workers coordinate through SQLite leases (`publish.workerLeaseMs`), and interrupted sends are moved to `uncertain` instead of being retried automatically; inspect those jobs before deciding whether to resend. Sync pagination also stops on repeated cursors or after `sync.maxPagesPerRun` pages.
 
 ## Limitations
 

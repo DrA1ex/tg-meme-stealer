@@ -10,9 +10,11 @@ export class Scheduler {
     this.handlers = typeof handlers === 'function' ? { sync: handlers, publish: handlers } : handlers;
     this.logger = logger;
     this.timers = new Set();
+    this.stopped = false;
   }
 
   async start() {
+    this.stopped = false;
     if (!this.config.schedule.enabled) {
       this.logger.debug('Scheduler disabled');
       return;
@@ -31,10 +33,12 @@ export class Scheduler {
       this.logger.info('Running startup sync');
       void runHandler(this.handlers.sync)
         .then(() => this.planMissedPublications())
-        .then(() => this.handlers.publishWorker());
+        .then(() => this.handlers.publishWorker())
+        .catch((error) => this.logScheduledError('startup', error));
     } else {
       void this.planMissedPublications()
-        .then(() => this.handlers.publishWorker());
+        .then(() => this.handlers.publishWorker())
+        .catch((error) => this.logScheduledError('startup', error));
     }
   }
 
@@ -48,8 +52,7 @@ export class Scheduler {
       nextRunAt
     });
     this.scheduleTimeout(async () => {
-      await runHandler(this.handlers.sync);
-      this.scheduleSync();
+      await this.runScheduled('sync', () => runHandler(this.handlers.sync), () => this.scheduleSync());
     }, intervalMs);
   }
 
@@ -63,8 +66,7 @@ export class Scheduler {
       nextRunAt: new Date(Date.now() + delayMs)
     });
     this.scheduleTimeout(async () => {
-      await runHandler(this.handlers.retention);
-      this.scheduleRetention();
+      await this.runScheduled('retention', () => runHandler(this.handlers.retention), () => this.scheduleRetention());
     }, delayMs);
   }
 
@@ -108,11 +110,10 @@ export class Scheduler {
       nextRunAt
     });
     this.scheduleTimeout(async () => {
-      const result = await resolveHandlerResult(this.handlers.publish(key, nextRunAt));
-      if (hasScheduledPublicationRequest(result)) {
-        await this.handlers.publishWorker();
-      }
-      this.schedulePublication(key, schedule, undefined, firstSendAtIso);
+      await this.runScheduled(`publication:${key}`, async () => {
+        const result = await resolveHandlerResult(this.handlers.publish(key, nextRunAt));
+        if (hasScheduledPublicationRequest(result)) await this.handlers.publishWorker();
+      }, () => this.schedulePublication(key, schedule, undefined, firstSendAtIso));
     }, delayMs);
   }
 
@@ -177,8 +178,11 @@ export class Scheduler {
       nextRunAt: new Date(Date.now() + intervalMs)
     });
     this.scheduleTimeout(async () => {
-      await this.handlers.publishWorker();
-      this.schedulePublicationWorker();
+      await this.runScheduled(
+        'publication_worker',
+        () => this.handlers.publishWorker(),
+        () => this.schedulePublicationWorker()
+      );
     }, intervalMs);
   }
 
@@ -224,6 +228,7 @@ export class Scheduler {
   }
 
   stop() {
+    this.stopped = true;
     this.logger.debug('Scheduler stopping', { timers: this.timers.size });
     for (const timeout of this.timers) {
       timeout.cancelled = true;
@@ -231,6 +236,23 @@ export class Scheduler {
     }
     this.timers.clear();
     this.logger.debug('Scheduler stopped');
+  }
+
+  async runScheduled(timer, fn, reschedule) {
+    try {
+      await fn();
+    } catch (error) {
+      this.logScheduledError(timer, error);
+    } finally {
+      if (!this.stopped) reschedule();
+    }
+  }
+
+  logScheduledError(timer, error) {
+    this.logger.error('Scheduled handler failed', {
+      timer,
+      error: error?.message || String(error)
+    });
   }
 }
 

@@ -274,7 +274,7 @@ TELEGRAM_ADMIN_ID
 
 This matches the intended setup: a new parser/bot process for a new source chat, but the same Telegram API credentials, same admin, and same publish channel.
 
-If the source `.env` enables the optional Redis rate limiter, the cloned instance keeps the same Redis settings. Instances with the same `rateLimit.mtprotoGroup` then coordinate MTProto slots and `FLOOD_WAIT` cooldowns, while different bot tokens retain separate Bot API quotas and share only the destination-channel guard.
+If the source `.env` enables the optional Redis rate limiter, the cloned instance keeps the same Redis connection. The namespace and MTProto group come from `config.json`. Instances with the same `rateLimit.mtprotoGroup` coordinate MTProto slots and `FLOOD_WAIT` cooldowns, while different bot tokens retain separate Bot API quotas and share only the destination-channel guard. Keep the group only when both instances use the same Telegram user account; otherwise change it in the cloned config.
 
 ## Telegram session behavior
 

@@ -10,23 +10,31 @@
     "color": "auto"
   },
   "rateLimit": {
-    "mtprotoGroup": "default",
+    "mtprotoGroup": "local",
+    "maxQueueDelayMs": 300000,
+    "longWaitWarnMs": 10000,
+    "telegramOperationTimeoutMs": 60000,
     "redis": {
       "enabled": false,
+      "mode": "standalone",
       "url": "redis://127.0.0.1:6379",
-      "keyPrefix": "tg-memes:rate-limit",
+      "keyPrefix": "tg-memes:local",
       "connectTimeoutMs": 500,
       "operationTimeoutMs": 200,
+      "circuitBreakMs": 5000,
       "fallbackMultiplier": 3,
       "warningIntervalMs": 30000,
       "keyTtlMs": 86400000,
-      "penaltyTtlMs": 3600000
+      "penaltyTtlMs": 3600000,
+      "penaltyQuietPeriodMs": 60000,
+      "penaltyDecayIntervalMs": 30000
     }
   },
   "sync": {
     "initialScanDays": 60,
     "refreshRecentDays": 7,
     "pageSize": 100,
+    "maxPagesPerRun": 10000,
     "mediaDir": "tmp/media",
     "intervalHours": 6,
     "runOnStart": true,
@@ -100,8 +108,10 @@
       "perChatMinMs": 1100,
       "globalMinMs": 40,
       "sharedDestinationMinMs": 350,
+      "shareRetryAfterAcrossBots": false,
       "retryBufferMs": 1000
     },
+    "workerLeaseMs": 900000,
     "requestTtlHours": 12,
     "workerIntervalMinutes": 10,
     "sources": [

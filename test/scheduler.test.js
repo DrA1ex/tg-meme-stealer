@@ -235,6 +235,29 @@ test('Scheduler publishes with intended scheduled time instead of callback time'
   }]);
 });
 
+test('Scheduler logs handler failures and still reschedules unless stopped', async () => {
+  const errors = [];
+  let rescheduled = 0;
+  const logger = {
+    debug() {}, info() {}, warn() {},
+    error(message, fields) { errors.push({ message, fields }); }
+  };
+  const scheduler = new Scheduler({ schedule: { enabled: true }, sync: {}, publish: {} }, {}, logger);
+
+  await scheduler.runScheduled(
+    'sync',
+    async () => { throw new Error('boom'); },
+    () => { rescheduled += 1; }
+  );
+  assert.equal(rescheduled, 1);
+  assert.equal(errors.length, 1);
+  assert.match(errors[0].fields.error, /boom/);
+
+  scheduler.stop();
+  await scheduler.runScheduled('sync', async () => {}, () => { rescheduled += 1; });
+  assert.equal(rescheduled, 1);
+});
+
 test('Scheduler delays publication timers until firstSendAt eligible run', async () => {
   const scheduled = [];
   const scheduler = new Scheduler(

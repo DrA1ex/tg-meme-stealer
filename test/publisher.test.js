@@ -512,6 +512,32 @@ test('SelectionPublisher keeps request resumable when Telegram send fails', asyn
   assert.equal(errorId, 42);
 });
 
+test('SelectionPublisher stops automatic retries when a started delivery has an uncertain outcome', async () => {
+  let uncertain = null;
+  let updated = false;
+  const publisher = new SelectionPublisher({
+    repository: {
+      markPublicationHeaderSending: async () => {},
+      markPublicationUncertain: async (publicationId, _ownerId, error) => {
+        uncertain = { publicationId, error };
+      },
+      updatePublicationError: async () => { updated = true; },
+      listPublicationPosts: async () => []
+    },
+    mediaDownloader: {},
+    setupAssistant: null,
+    config: { ...config(), rateLimit: { telegramOperationTimeoutMs: 5 }, publish: { dryRun: false } }
+  });
+  publisher.bot.telegram = { sendMessage: async () => new Promise(() => {}) };
+
+  await assert.rejects(() => publisher.processPublicationRequest(request({ id: 43, status: 'created' })), {
+    code: 'TELEGRAM_OPERATION_TIMEOUT'
+  });
+  assert.equal(uncertain.publicationId, 43);
+  assert.equal(uncertain.error.indeterminate, true);
+  assert.equal(updated, false);
+});
+
 test('SelectionPublisher.runManualSync runs sync worker and replies with final stats', async () => {
   const replies = [];
   const publisher = new SelectionPublisher({
