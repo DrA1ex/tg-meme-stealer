@@ -4,6 +4,7 @@ import { configureLogger } from '../src/core/logger.js';
 import {
   Scheduler,
   getDelayUntilLocalTime,
+  getLocalTimestampBucket,
   getNextLocalTimeAsDate,
   getNextEligibleScheduledRunAsDate,
   getNextScheduledRunAsDate,
@@ -11,6 +12,13 @@ import {
 } from '../src/runtime/scheduler.js';
 
 configureLogger({ logging: { logLevel: 'SILENT' } });
+
+test('getLocalTimestampBucket formats midnight as 00 in every locale', () => {
+  assert.equal(
+    getLocalTimestampBucket(new Date('2026-06-29T00:00:00.000Z'), 'UTC'),
+    '2026-06-29T00-00'
+  );
+});
 
 test('Scheduler.start does not wait for startup sync before returning', async () => {
   let syncStarted = false;

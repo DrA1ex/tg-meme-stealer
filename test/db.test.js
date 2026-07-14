@@ -1,12 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { PostRepository } from '../src/database/postRepository.js';
 import { compileReactionScore, compileSourceWhere } from '../src/core/sourceExpression.js';
 
 test('PostRepository upserts and orders top posts', async () => {
-  const dbPath = path.join('/private/tmp', `tg-memes-${process.pid}-${Date.now()}-posts.sqlite`);
+  const dbPath = path.join(os.tmpdir(), `tg-memes-${process.pid}-${Date.now()}-posts.sqlite`);
   await fs.rm(dbPath, { force: true });
   const repository = new PostRepository(dbPath);
   await repository.init();
@@ -57,7 +58,7 @@ test('PostRepository upserts and orders top posts', async () => {
 });
 
 test('PostRepository publication requests are durable and block duplicates until failure', async () => {
-  const dbPath = path.join('/private/tmp', `tg-memes-${process.pid}-${Date.now()}-publications.sqlite`);
+  const dbPath = path.join(os.tmpdir(), `tg-memes-${process.pid}-${Date.now()}-publications.sqlite`);
   await fs.rm(dbPath, { force: true });
   const repository = new PostRepository(dbPath);
   await repository.init();
@@ -90,7 +91,7 @@ test('PostRepository publication requests are durable and block duplicates until
 });
 
 test('PostRepository atomically leases publication requests across processes', async () => {
-  const dbPath = path.join('/private/tmp', `tg-memes-${process.pid}-${Date.now()}-leases.sqlite`);
+  const dbPath = path.join(os.tmpdir(), `tg-memes-${process.pid}-${Date.now()}-leases.sqlite`);
   await fs.rm(dbPath, { force: true });
   const firstRepository = new PostRepository(dbPath);
   const secondRepository = new PostRepository(dbPath);
@@ -121,7 +122,7 @@ test('PostRepository atomically leases publication requests across processes', a
 });
 
 test('PostRepository preserves an interrupted send as uncertain and blocks automatic duplication', async () => {
-  const dbPath = path.join('/private/tmp', `tg-memes-${process.pid}-${Date.now()}-uncertain.sqlite`);
+  const dbPath = path.join(os.tmpdir(), `tg-memes-${process.pid}-${Date.now()}-uncertain.sqlite`);
   await fs.rm(dbPath, { force: true });
   const repository = new PostRepository(dbPath);
   await repository.init();
@@ -151,7 +152,7 @@ test('PostRepository preserves an interrupted send as uncertain and blocks autom
 });
 
 test('PostRepository dry-run publications do not block later real publication', async () => {
-  const dbPath = path.join('/private/tmp', `tg-memes-${process.pid}-${Date.now()}-dryrun.sqlite`);
+  const dbPath = path.join(os.tmpdir(), `tg-memes-${process.pid}-${Date.now()}-dryrun.sqlite`);
   await fs.rm(dbPath, { force: true });
   const repository = new PostRepository(dbPath);
   await repository.init();
@@ -173,7 +174,7 @@ test('PostRepository dry-run publications do not block later real publication', 
 });
 
 test('PostRepository blocking publication lookup ignores newer non-blocking rows', async () => {
-  const dbPath = path.join('/private/tmp', `tg-memes-${process.pid}-${Date.now()}-blocking-publication.sqlite`);
+  const dbPath = path.join(os.tmpdir(), `tg-memes-${process.pid}-${Date.now()}-blocking-publication.sqlite`);
   await fs.rm(dbPath, { force: true });
   const repository = new PostRepository(dbPath);
   await repository.init();
@@ -209,7 +210,7 @@ test('PostRepository blocking publication lookup ignores newer non-blocking rows
 });
 
 test('PostRepository finishPublication preserves sent post metadata', async () => {
-  const dbPath = path.join('/private/tmp', `tg-memes-${process.pid}-${Date.now()}-sent-posts.sqlite`);
+  const dbPath = path.join(os.tmpdir(), `tg-memes-${process.pid}-${Date.now()}-sent-posts.sqlite`);
   await fs.rm(dbPath, { force: true });
   const repository = new PostRepository(dbPath);
   await repository.init();
@@ -240,7 +241,7 @@ test('PostRepository finishPublication preserves sent post metadata', async () =
 });
 
 test('PostRepository listPublicationJobs returns active and latest finished jobs by updated_at', async () => {
-  const dbPath = path.join('/private/tmp', `tg-memes-${process.pid}-${Date.now()}-jobs.sqlite`);
+  const dbPath = path.join(os.tmpdir(), `tg-memes-${process.pid}-${Date.now()}-jobs.sqlite`);
   await fs.rm(dbPath, { force: true });
   const repository = new PostRepository(dbPath);
   await repository.init();
@@ -277,7 +278,7 @@ test('PostRepository listPublicationJobs returns active and latest finished jobs
 });
 
 test('PostRepository lists recent publications and detailed posts', async () => {
-  const dbPath = path.join('/private/tmp', `tg-memes-${process.pid}-${Date.now()}-publication-list.sqlite`);
+  const dbPath = path.join(os.tmpdir(), `tg-memes-${process.pid}-${Date.now()}-publication-list.sqlite`);
   await fs.rm(dbPath, { force: true });
   const repository = new PostRepository(dbPath);
   await repository.init();
@@ -331,7 +332,7 @@ test('PostRepository lists recent publications and detailed posts', async () => 
 });
 
 test('PostRepository deletes posts older than retention cutoff without deleting publication history', async () => {
-  const dbPath = path.join('/private/tmp', `tg-memes-${process.pid}-${Date.now()}-retention.sqlite`);
+  const dbPath = path.join(os.tmpdir(), `tg-memes-${process.pid}-${Date.now()}-retention.sqlite`);
   await fs.rm(dbPath, { force: true });
   const repository = new PostRepository(dbPath);
   await repository.init();
@@ -364,7 +365,7 @@ test('PostRepository deletes posts older than retention cutoff without deleting 
 });
 
 test('PostRepository selection windows are half-open at the boundary', async () => {
-  const dbPath = path.join('/private/tmp', `tg-memes-${process.pid}-${Date.now()}-boundary.sqlite`);
+  const dbPath = path.join(os.tmpdir(), `tg-memes-${process.pid}-${Date.now()}-boundary.sqlite`);
   await fs.rm(dbPath, { force: true });
   const repository = new PostRepository(dbPath);
   await repository.init();
@@ -394,7 +395,7 @@ test('PostRepository selection windows are half-open at the boundary', async () 
 });
 
 test('PostRepository applies custom source expressions and reaction selection in SQL', async () => {
-  const dbPath = path.join('/private/tmp', `tg-memes-${process.pid}-${Date.now()}-selection-sql.sqlite`);
+  const dbPath = path.join(os.tmpdir(), `tg-memes-${process.pid}-${Date.now()}-selection-sql.sqlite`);
   await fs.rm(dbPath, { force: true });
   const repository = new PostRepository(dbPath);
   await repository.init();

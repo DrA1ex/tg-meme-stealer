@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { configureLogger } from '../src/core/logger.js';
@@ -132,7 +133,7 @@ test('SelectionPublisher skips Telegram calls when publication request already e
 });
 
 test('SelectionPublisher handles concurrent publication scheduling collision without throwing', async () => {
-  const dbPath = path.join('/private/tmp', `tg-memes-${process.pid}-${Date.now()}-publisher-collision.sqlite`);
+  const dbPath = path.join(os.tmpdir(), `tg-memes-${process.pid}-${Date.now()}-publisher-collision.sqlite`);
   await fs.rm(dbPath, { force: true });
   const repository = new PostRepository(dbPath);
   await repository.init();

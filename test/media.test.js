@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { configureLogger } from '../src/core/logger.js';
@@ -8,7 +9,7 @@ import { MediaDownloader } from '../src/telegram/media.js';
 configureLogger({ logging: { logLevel: 'SILENT' } });
 
 test('MediaDownloader.cleanupFiles deletes temporary media files', async () => {
-  const dir = await fs.mkdtemp('/private/tmp/tg-memes-media-');
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'tg-memes-media-'));
   const filePath = path.join(dir, 'media.jpg');
   await fs.writeFile(filePath, 'data');
 
@@ -35,7 +36,7 @@ test('MediaDownloader.loadMessage passes numeric peer ids to mtcute', async () =
     },
     config: {
       logging: { logLevel: 'silent' },
-      sync: { mediaDir: '/private/tmp', throttle: { enabled: false } }
+      sync: { mediaDir: os.tmpdir(), throttle: { enabled: false } }
     }
   });
 
