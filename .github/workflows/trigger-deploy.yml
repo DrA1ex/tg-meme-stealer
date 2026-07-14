@@ -3,7 +3,7 @@ name: Trigger private deploy
 on:
   workflow_run:
     workflows:
-      - Tests
+      - test
     types:
       - completed
 
