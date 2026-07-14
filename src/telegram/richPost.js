@@ -1,23 +1,23 @@
 import { formatPostCaption } from '../core/format.js';
 import { withBotApiRetry } from './retry.js';
 
-export async function sendRichPost({ telegram, chatId, mediaDownloader, post, index, templates, rateLimiter, operationTimeoutMs, onBeforeSend }) {
+export async function sendRichPost({ telegram, chatId, mediaDownloader, post, index, templates, rateLimiter, operationTimeoutMs, signal, onBeforeSend }) {
   const files = await mediaDownloader.downloadPostMedia(post);
   try {
     const caption = formatPostCaption(post, index, templates);
-    await onBeforeSend?.();
-
     if (files.length === 0) {
       return withBotApiRetry(() => telegram.sendMessage(chatId, caption), {
-        label: 'sendMessage', rateLimiter, chatId, operationTimeoutMs
+        label: 'sendMessage', rateLimiter, chatId, operationTimeoutMs, signal, onBeforeOperation: onBeforeSend
       });
     }
 
     const [firstFile, ...extraFiles] = files;
-    const firstResult = await sendSingleMedia({ telegram, chatId, file: firstFile, caption, rateLimiter, operationTimeoutMs });
+    const firstResult = await sendSingleMedia({
+      telegram, chatId, file: firstFile, caption, rateLimiter, operationTimeoutMs, signal, onBeforeOperation: onBeforeSend
+    });
 
     for (const file of extraFiles) {
-      await sendSingleMedia({ telegram, chatId, file, rateLimiter, operationTimeoutMs });
+      await sendSingleMedia({ telegram, chatId, file, rateLimiter, operationTimeoutMs, signal });
     }
     return firstResult;
   } finally {
@@ -25,16 +25,16 @@ export async function sendRichPost({ telegram, chatId, mediaDownloader, post, in
   }
 }
 
-async function sendSingleMedia({ telegram, chatId, file, caption, rateLimiter, operationTimeoutMs }) {
+async function sendSingleMedia({ telegram, chatId, file, caption, rateLimiter, operationTimeoutMs, signal, onBeforeOperation }) {
   if (file.kind === 'video') {
     return withBotApiRetry(
       () => telegram.sendVideo(chatId, { source: file.path }, caption ? { caption } : undefined),
-      { label: 'sendVideo', rateLimiter, chatId, operationTimeoutMs }
+      { label: 'sendVideo', rateLimiter, chatId, operationTimeoutMs, signal, onBeforeOperation }
     );
   } else {
     return withBotApiRetry(
       () => telegram.sendPhoto(chatId, { source: file.path }, caption ? { caption } : undefined),
-      { label: 'sendPhoto', rateLimiter, chatId, operationTimeoutMs }
+      { label: 'sendPhoto', rateLimiter, chatId, operationTimeoutMs, signal, onBeforeOperation }
     );
   }
 }

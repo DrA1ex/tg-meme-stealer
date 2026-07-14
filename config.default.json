@@ -9,6 +9,9 @@
     "logLevel": "INFO",
     "color": "auto"
   },
+  "shutdown": {
+    "timeoutMs": 30000
+  },
   "rateLimit": {
     "mtprotoGroup": "local",
     "maxQueueDelayMs": 300000,

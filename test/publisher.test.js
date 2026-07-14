@@ -540,6 +540,80 @@ test('SelectionPublisher stops automatic retries when a started delivery has an 
   assert.equal(updated, false);
 });
 
+test('SelectionPublisher records an in-flight delivery as uncertain during shutdown', async () => {
+  const controller = new AbortController();
+  let uncertain = null;
+  let sendStarted;
+  const started = new Promise((resolve) => {
+    sendStarted = resolve;
+  });
+  const publisher = new SelectionPublisher({
+    repository: {
+      markPublicationHeaderSending: async () => {},
+      markPublicationUncertain: async (publicationId, _ownerId, error) => {
+        uncertain = { publicationId, error };
+      },
+      updatePublicationError: async () => assert.fail('started delivery must not remain retryable'),
+      listPublicationPosts: async () => []
+    },
+    mediaDownloader: {},
+    setupAssistant: null,
+    signal: controller.signal,
+    config: { ...config(), publish: { dryRun: false } }
+  });
+  publisher.bot.telegram = {
+    sendMessage: async () => {
+      sendStarted();
+      return new Promise(() => {});
+    }
+  };
+
+  const delivery = publisher.processPublicationRequest(request({ id: 44, status: 'created' }));
+  await started;
+  controller.abort(new Error('shutdown'));
+
+  await assert.rejects(delivery, { code: 'TELEGRAM_OPERATION_CANCELLED', indeterminate: true });
+  assert.equal(uncertain.publicationId, 44);
+  assert.equal(uncertain.error.code, 'TELEGRAM_OPERATION_CANCELLED');
+});
+
+test('SelectionPublisher keeps a delivery retryable when shutdown happens before sending', async () => {
+  const controller = new AbortController();
+  let markedSending = false;
+  let uncertain = false;
+  let retryableError = null;
+  let telegramCalled = false;
+  const publisher = new SelectionPublisher({
+    repository: {
+      markPublicationHeaderSending: async () => { markedSending = true; },
+      markPublicationUncertain: async () => { uncertain = true; },
+      updatePublicationError: async (_publicationId, error) => { retryableError = error; },
+      listPublicationPosts: async () => []
+    },
+    mediaDownloader: {},
+    setupAssistant: null,
+    signal: controller.signal,
+    botRateLimiter: {
+      wait: async () => controller.abort(new Error('shutdown'))
+    },
+    config: { ...config(), publish: { dryRun: false } }
+  });
+  publisher.bot.telegram = {
+    sendMessage: async () => {
+      telegramCalled = true;
+    }
+  };
+
+  await assert.rejects(
+    publisher.processPublicationRequest(request({ id: 45, status: 'created' })),
+    { code: 'TELEGRAM_OPERATION_CANCELLED', indeterminate: false }
+  );
+  assert.equal(markedSending, false);
+  assert.equal(telegramCalled, false);
+  assert.equal(uncertain, false);
+  assert.equal(retryableError.code, 'TELEGRAM_OPERATION_CANCELLED');
+});
+
 test('SelectionPublisher.runManualSync runs sync worker and replies with final stats', async () => {
   const replies = [];
   let finishSync;

@@ -29,9 +29,7 @@ if (command === 'session') {
     shuttingDown = true;
     logger.info('Shutdown requested', { command, signal });
     try {
-      app.cancelRateLimitWaits();
-      await app.publisher.stopBot(signal);
-      await app.close();
+      await app.shutdown(signal);
       logger.info('Shutdown complete', { command, signal });
       process.exit(0);
     } catch (error) {
@@ -93,9 +91,7 @@ if (command === 'session') {
     logger.info('Shutdown requested', { command, signal });
     try {
       scheduler.stop();
-      app.cancelRateLimitWaits();
-      await app.publisher.stopBot(signal);
-      await app.close();
+      await app.shutdown(signal);
       logger.info('Shutdown complete', { command, signal });
       process.exit(0);
     } catch (error) {

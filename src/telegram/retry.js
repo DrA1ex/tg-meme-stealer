@@ -1,4 +1,5 @@
 import { getLogger } from '../core/logger.js';
+import { sleepWithSignal } from './rateLimitUtils.js';
 
 const logger = getLogger('retry');
 
@@ -12,15 +13,28 @@ export class TelegramOperationTimeoutError extends Error {
   }
 }
 
+export class TelegramOperationCancelledError extends Error {
+  constructor(label, { indeterminate = false, reason } = {}) {
+    super(`${label} cancelled during shutdown${indeterminate ? '; delivery outcome is unknown' : ''}`);
+    this.name = 'TelegramOperationCancelledError';
+    this.code = 'TELEGRAM_OPERATION_CANCELLED';
+    this.indeterminate = indeterminate;
+    this.reason = reason;
+  }
+}
+
 export async function withTelegramRetry(operation, options = {}) {
   const maxRetries = options.maxRetries ?? 5;
   const label = options.label || 'telegram request';
   const sleepFn = options.sleepFn || sleep;
+  const onBeforeOperation = onceAsync(options.onBeforeOperation);
 
   for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
     try {
+      throwIfAborted(options.signal, label);
       await options.rateLimiter?.wait?.(options.kind);
-      const result = await runTelegramOperation(operation, options, label);
+      throwIfAborted(options.signal, label);
+      const result = await runTelegramOperation(operation, { ...options, onBeforeOperation }, label);
       await safeLimiterNotification(
         options.rateLimiter,
         'noteSuccess',
@@ -48,7 +62,7 @@ export async function withTelegramRetry(operation, options = {}) {
         maxRetries
       });
       if (limiterHandledWait) continue;
-      await sleepFn(waitMs);
+      await sleepFn(waitMs, options.signal);
     }
   }
 }
@@ -57,11 +71,14 @@ export async function withBotApiRetry(operation, options = {}) {
   const maxRetries = options.maxRetries ?? 5;
   const label = options.label || 'bot api request';
   const sleepFn = options.sleepFn || sleep;
+  const onBeforeOperation = onceAsync(options.onBeforeOperation);
 
   for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
     try {
+      throwIfAborted(options.signal, label);
       await options.rateLimiter?.wait?.(options.chatId);
-      return await runTelegramOperation(operation, options, label);
+      throwIfAborted(options.signal, label);
+      return await runTelegramOperation(operation, { ...options, onBeforeOperation }, label);
     } catch (error) {
       const retryAfter = getBotApiRetryAfterSeconds(error);
       if (!retryAfter) throw error;
@@ -82,7 +99,7 @@ export async function withBotApiRetry(operation, options = {}) {
         maxRetries
       });
       if (limiterHandledWait) continue;
-      await sleepFn(waitMs);
+      await sleepFn(waitMs, options.signal);
     }
   }
 }
@@ -124,8 +141,8 @@ export function getBotApiRetryAfterSeconds(error) {
   return 0;
 }
 
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function sleep(ms, signal) {
+  return sleepWithSignal(ms, signal);
 }
 
 async function runTelegramOperation(operation, options, label) {
@@ -133,15 +150,61 @@ async function runTelegramOperation(operation, options, label) {
     options.operationTimeoutMs ?? options.rateLimiter?.operationTimeoutMs,
     60_000
   );
+  throwIfAborted(options.signal, label);
+  await options.onBeforeOperation?.();
+  throwIfAborted(options.signal, label);
+  let operationStarted = false;
   let timeout;
+  let removeAbortListener = () => {};
   const timeoutPromise = new Promise((_, reject) => {
     timeout = setTimeout(() => reject(new TelegramOperationTimeoutError(label, timeoutMs)), timeoutMs);
   });
+  const abortPromise = createAbortPromise(options.signal, label, () => operationStarted);
+  removeAbortListener = abortPromise.removeListener;
+  const operationPromise = Promise.resolve().then(() => {
+    throwIfAborted(options.signal, label);
+    operationStarted = true;
+    return operation();
+  });
   try {
-    return await Promise.race([Promise.resolve().then(operation), timeoutPromise]);
+    return await Promise.race([operationPromise, timeoutPromise, abortPromise.promise]);
   } finally {
     clearTimeout(timeout);
+    removeAbortListener();
   }
+}
+
+function throwIfAborted(signal, label) {
+  if (!signal?.aborted) return;
+  throw new TelegramOperationCancelledError(label, { reason: signal.reason });
+}
+
+function createAbortPromise(signal, label, isIndeterminate) {
+  if (!signal) return { promise: new Promise(() => {}), removeListener() {} };
+  let onAbort;
+  const promise = new Promise((_, reject) => {
+    onAbort = () => reject(new TelegramOperationCancelledError(label, {
+      indeterminate: Boolean(isIndeterminate()),
+      reason: signal.reason
+    }));
+    signal.addEventListener('abort', onAbort, { once: true });
+    if (signal.aborted) onAbort();
+  });
+  return {
+    promise,
+    removeListener() {
+      signal.removeEventListener('abort', onAbort);
+    }
+  };
+}
+
+function onceAsync(fn) {
+  if (typeof fn !== 'function') return undefined;
+  let promise;
+  return () => {
+    promise ||= Promise.resolve().then(fn);
+    return promise;
+  };
 }
 
 function positiveNumber(value, fallback) {

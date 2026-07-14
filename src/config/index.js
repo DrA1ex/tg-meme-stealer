@@ -81,6 +81,9 @@ const CONFIG_SCHEMA = {
     logLevel: STRING,
     color: STRING
   },
+  shutdown: {
+    timeoutMs: NUMBER
+  },
   rateLimit: {
     mtprotoGroup: STRING,
     maxQueueDelayMs: NUMBER,
@@ -325,6 +328,10 @@ export function validateConfig(config, options = {}) {
   }
 
   validateSharedRateLimitConfig(config);
+
+  if (!(Number(config.shutdown?.timeoutMs ?? 30_000) > 0)) {
+    throw new Error('shutdown.timeoutMs must be positive');
+  }
 
   validatePublishTemplateDuplicates(config, options);
   validatePublishSourceDefinitions(config);

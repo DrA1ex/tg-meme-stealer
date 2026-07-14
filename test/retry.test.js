@@ -5,6 +5,7 @@ import { configureLogger } from '../src/core/logger.js';
 import {
   getBotApiRetryAfterSeconds,
   getFloodWaitSeconds,
+  TelegramOperationCancelledError,
   TelegramOperationTimeoutError,
   withBotApiRetry,
   withTelegramRetry
@@ -18,6 +19,44 @@ test('withBotApiRetry stops a hung Telegram request with an indeterminate timeou
     }),
     (error) => error instanceof TelegramOperationTimeoutError
       && error.code === 'TELEGRAM_OPERATION_TIMEOUT'
+      && error.indeterminate === true
+  );
+});
+
+test('withBotApiRetry does not start an operation after shutdown was requested', async () => {
+  const controller = new AbortController();
+  controller.abort(new Error('shutdown'));
+  let called = false;
+
+  await assert.rejects(
+    withBotApiRetry(() => {
+      called = true;
+    }, { label: 'sendPhoto', signal: controller.signal }),
+    (error) => error instanceof TelegramOperationCancelledError
+      && error.code === 'TELEGRAM_OPERATION_CANCELLED'
+      && error.indeterminate === false
+  );
+  assert.equal(called, false);
+});
+
+test('withBotApiRetry marks an aborted in-flight operation as indeterminate', async () => {
+  const controller = new AbortController();
+  let operationStarted;
+  const started = new Promise((resolve) => {
+    operationStarted = resolve;
+  });
+  const request = withBotApiRetry(() => {
+    operationStarted();
+    return new Promise(() => {});
+  }, { label: 'sendPhoto', signal: controller.signal });
+
+  await started;
+  controller.abort(new Error('shutdown'));
+
+  await assert.rejects(
+    request,
+    (error) => error instanceof TelegramOperationCancelledError
+      && error.code === 'TELEGRAM_OPERATION_CANCELLED'
       && error.indeterminate === true
   );
 });
@@ -81,6 +120,7 @@ test('withBotApiRetry waits and retries 429 responses', async () => {
     error: () => {}
   });
   let attempts = 0;
+  let beforeOperationCalls = 0;
 
   const result = await withBotApiRetry(
     async () => {
@@ -97,12 +137,16 @@ test('withBotApiRetry waits and retries 429 responses', async () => {
     },
     {
       label: 'sendPhoto',
+      onBeforeOperation: async () => {
+        beforeOperationCalls += 1;
+      },
       sleepFn: async (ms) => waits.push(ms)
     }
   );
 
   assert.equal(result, 'ok');
   assert.equal(attempts, 2);
+  assert.equal(beforeOperationCalls, 1);
   assert.deepEqual(waits, [3000]);
   assert.equal(warnings.length, 1);
   assert.match(warnings[0], /\[WARN\] \[retry\] sendPhoto hit Too Many Requests/);

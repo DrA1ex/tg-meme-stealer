@@ -181,6 +181,9 @@ Common options:
     "logLevel": "INFO",
     "color": "auto"
   },
+  "shutdown": {
+    "timeoutMs": 30000
+  },
   "rateLimit": {
     "mtprotoGroup": "local",
     "maxQueueDelayMs": 300000,
@@ -1026,6 +1029,8 @@ If Redis cannot be reached or an operation times out, the app logs an `ERROR`, o
 The Redis integration test is mandatory in GitHub Actions. Locally, set `TEST_REDIS_URL` to run the same real-server concurrency and cooldown tests.
 
 Every limiter wait has one cumulative `maxQueueDelayMs` budget, including Redis revalidation. Telegram operations have a `telegramOperationTimeoutMs` watchdog. Publication workers coordinate through SQLite leases (`publish.workerLeaseMs`), and interrupted sends are moved to `uncertain` instead of being retried automatically; inspect those jobs before deciding whether to resend. Sync pagination also stops on repeated cursors or after `sync.maxPagesPerRun` pages.
+
+Shutdown is bounded by `shutdown.timeoutMs`. On `SIGINT` or `SIGTERM`, the scheduler stops, queued jobs are cancelled, rate-limit and retry waits receive an abort signal, and no new jobs are accepted. A Bot API request cancelled after it started is recorded as `uncertain`; a request cancelled before it reached Telegram remains retryable. Most of the shutdown budget is used to drain running jobs and persist their state, while up to five seconds is reserved for closing MTProto, Redis, and SQLite. If either phase exceeds its deadline, the application logs `WARN`/`ERROR`, forces resource close, and exits instead of waiting indefinitely.
 
 ## Limitations
 

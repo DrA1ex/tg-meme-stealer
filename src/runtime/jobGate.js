@@ -8,11 +8,14 @@ export class JobGate {
     this.keyCounts = new Map();
     this.taskContext = new AsyncLocalStorage();
     this.logger = logger;
+    this.accepting = true;
+    this.idleResolvers = [];
   }
 
   run(key, fn, options = {}) {
     const nestedJob = this.handleNestedRun(key, fn);
     if (nestedJob) return nestedJob;
+    if (!this.accepting) return skippedJob(key, 'shutting_down');
 
     if (this.hasKey(key)) {
       if (options.queueIfRunning && this.runningKey === key && !this.hasQueuedKey(key)) {
@@ -48,6 +51,7 @@ export class JobGate {
   runIfIdle(key, fn) {
     const nestedJob = this.handleNestedRun(key, fn);
     if (nestedJob) return nestedJob;
+    if (!this.accepting) return skippedJob(key, 'shutting_down');
 
     if (this.runningKey || this.queue.length > 0) {
       this.logger.warn('Job enqueue skipped', {
@@ -84,11 +88,38 @@ export class JobGate {
     this.deleteKey(task.key);
     this.runningKey = null;
     this.startNext();
+    this.resolveIdle();
   }
 
   startNext() {
     const next = this.queue.shift();
     if (next) this.start(next);
+  }
+
+  close() {
+    if (!this.accepting) return;
+    this.accepting = false;
+    const queued = this.queue.splice(0);
+    for (const task of queued) {
+      this.deleteKey(task.key);
+      task.resolve({
+        failed: true,
+        cancelled: true,
+        error: 'Application shutting down'
+      });
+    }
+    this.resolveIdle();
+  }
+
+  waitForIdle() {
+    if (!this.runningKey && this.queue.length === 0) return Promise.resolve();
+    return new Promise((resolve) => this.idleResolvers.push(resolve));
+  }
+
+  resolveIdle() {
+    if (this.runningKey || this.queue.length > 0) return;
+    const resolvers = this.idleResolvers.splice(0);
+    for (const resolve of resolvers) resolve();
   }
 
   hasQueuedKey(key) {

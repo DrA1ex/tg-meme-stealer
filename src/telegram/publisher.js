@@ -18,7 +18,8 @@ export class SelectionPublisher {
     syncWorker = null,
     jobGate = new JobGate(),
     config,
-    botRateLimiter = null
+    botRateLimiter = null,
+    signal = null
   }) {
     this.repository = repository;
     this.mediaDownloader = mediaDownloader;
@@ -27,6 +28,7 @@ export class SelectionPublisher {
     this.jobGate = jobGate;
     this.config = config;
     this.botRateLimiter = botRateLimiter;
+    this.signal = signal;
     this.bot = new Telegraf(config.telegram.botToken);
     this.logger = getLogger('publisher');
     this.activeHandlers = 0;
@@ -349,15 +351,18 @@ export class SelectionPublisher {
           targetChatId: this.config.telegram.publishChannelId,
           key: request.key
         });
-        await this.repository.markPublicationHeaderSending?.(request.id, this.workerId);
-        deliveryStarted = true;
         await withBotApiRetry(
           () => this.bot.telegram.sendMessage(this.config.telegram.publishChannelId, formatSelectionHeader(selection.title)),
           {
             label: 'sendSelectionHeader',
             rateLimiter: this.botRateLimiter,
             chatId: this.config.telegram.publishChannelId,
-            operationTimeoutMs: this.config.rateLimit?.telegramOperationTimeoutMs
+            operationTimeoutMs: this.config.rateLimit?.telegramOperationTimeoutMs,
+            signal: this.signal,
+            onBeforeOperation: async () => {
+              await this.repository.markPublicationHeaderSending?.(request.id, this.workerId);
+              deliveryStarted = true;
+            }
           }
         );
         await this.repository.markPublicationRunning(request.id, this.workerId);
@@ -454,6 +459,7 @@ export class SelectionPublisher {
       templates: this.config.templates,
       rateLimiter: this.botRateLimiter,
       operationTimeoutMs: this.config.rateLimit?.telegramOperationTimeoutMs,
+      signal: this.signal,
       onBeforeSend
     });
   }
@@ -561,14 +567,14 @@ export class SelectionPublisher {
     this.logger.debug('Bot polling launch requested');
   }
 
-  async stopBot(signal = 'SIGTERM') {
+  async stopBot(signal = 'SIGTERM', timeoutMs = 30000) {
     this.logger.debug('Stopping bot polling', { signal });
     try {
       this.bot.stop(signal);
     } catch (error) {
       if (!isBotAlreadyStoppedError(error)) throw error;
     }
-    await this.waitForIdle();
+    await this.waitForIdle(timeoutMs);
     this.logger.debug('Bot polling stopped');
   }
 

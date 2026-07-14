@@ -215,6 +215,14 @@ test('validateConfig requires explicit Redis namespace and MTProto group', () =>
   assert.doesNotThrow(() => validateConfig(config));
 });
 
+test('validateConfig requires a positive shutdown deadline', () => {
+  const config = validConfig();
+  config.shutdown = { timeoutMs: 0 };
+  assert.throws(() => validateConfig(config), /shutdown\.timeoutMs must be positive/);
+  config.shutdown.timeoutMs = 30_000;
+  assert.doesNotThrow(() => validateConfig(config));
+});
+
 test('validateConfig rejects identical source and publish chats', () => {
   assert.throws(
     () => validateConfig({

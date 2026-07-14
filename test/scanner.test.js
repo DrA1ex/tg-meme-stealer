@@ -100,6 +100,34 @@ test('TelegramScanner enriches all eligible messages in one reaction batch', asy
   assert.deepEqual(alreadyEnriched.nativeReactions, []);
 });
 
+test('TelegramScanner aborts an in-flight Telegram request during shutdown', async () => {
+  const controller = new AbortController();
+  let requestStarted;
+  const started = new Promise((resolve) => {
+    requestStarted = resolve;
+  });
+  const scanner = new TelegramScanner({
+    client: {
+      getHistory: async () => {
+        requestStarted();
+        return new Promise(() => {});
+      }
+    },
+    repository: {},
+    signal: controller.signal,
+    config: scannerConfig({ likes: [], dislikes: [] })
+  });
+
+  const request = scanner.getHistory({ limit: 100 });
+  await started;
+  controller.abort(new Error('shutdown'));
+
+  await assert.rejects(request, {
+    code: 'TELEGRAM_OPERATION_CANCELLED',
+    indeterminate: true
+  });
+});
+
 test('TelegramScanner.cleanupOldPosts deletes rows older than retention window', async () => {
   const calls = [];
   const scanner = new TelegramScanner({

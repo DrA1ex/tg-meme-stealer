@@ -230,3 +230,37 @@ test('JobGate fails nested different-key runIfIdle calls to avoid self-deadlock'
   assert.equal(gate.queue.length, 0);
   assert.equal(gate.keyCounts.size, 0);
 });
+
+test('JobGate shutdown rejects new work, cancels queued work, and drains the running job', async () => {
+  const gate = new JobGate();
+  let releaseRunning;
+  const running = gate.run('sync', () => new Promise((resolve) => {
+    releaseRunning = resolve;
+  }));
+  const queued = gate.run('publish', async () => 'must not run');
+  await Promise.resolve();
+
+  gate.close();
+  const rejected = gate.run('retention', async () => 'must not run');
+  let drained = false;
+  const drain = gate.waitForIdle().then(() => {
+    drained = true;
+  });
+
+  assert.equal(rejected.status, 'skipped');
+  assert.equal(rejected.reason, 'shutting_down');
+  assert.deepEqual(await queued.promise, {
+    failed: true,
+    cancelled: true,
+    error: 'Application shutting down'
+  });
+  assert.equal(drained, false);
+
+  releaseRunning('done');
+  assert.equal(await running.promise, 'done');
+  await drain;
+  assert.equal(drained, true);
+  assert.equal(gate.runningKey, null);
+  assert.equal(gate.queue.length, 0);
+  assert.equal(gate.keyCounts.size, 0);
+});

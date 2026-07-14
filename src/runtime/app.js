@@ -14,6 +14,7 @@ import { SyncWorker } from './syncWorker.js';
 
 export async function createApp(config) {
   const logger = getLogger('app');
+  const shutdownController = new AbortController();
   logger.debug('Initializing app', {
     sourceChatId: config.telegram.sourceChatId,
     publishChannelId: config.telegram.publishChannelId,
@@ -36,11 +37,22 @@ export async function createApp(config) {
   const sharedRateLimitStore = await createRedisRateLimitStore(config);
   const telegramThrottle = new TelegramThrottle(config, undefined, undefined, sharedRateLimitStore);
   const botRateLimiter = new BotApiRateLimiter(config, undefined, undefined, sharedRateLimitStore);
-  const scanner = new TelegramScanner({ client: userClient, repository, config, throttle: telegramThrottle });
+  const scanner = new TelegramScanner({
+    client: userClient,
+    repository,
+    config,
+    throttle: telegramThrottle,
+    signal: shutdownController.signal
+  });
   const jobGate = new JobGate();
   const syncWorker = new SyncWorker({ scanner, jobGate, config });
   const retentionWorker = new RetentionWorker({ scanner, jobGate });
-  const mediaDownloader = new MediaDownloader({ client: userClient, config, throttle: telegramThrottle });
+  const mediaDownloader = new MediaDownloader({
+    client: userClient,
+    config,
+    throttle: telegramThrottle,
+    signal: shutdownController.signal
+  });
   const setupAssistant = new SetupAssistant({ scanner, mediaDownloader, config, botRateLimiter });
   const publisher = new SelectionPublisher({
     repository,
@@ -49,9 +61,40 @@ export async function createApp(config) {
     syncWorker,
     jobGate,
     config,
-    botRateLimiter
+    botRateLimiter,
+    signal: shutdownController.signal
   });
-  let closed = false;
+  let resourceClosePromise = null;
+  let shutdownPromise = null;
+
+  function beginShutdown(reason = 'shutdown') {
+    if (!shutdownController.signal.aborted) {
+      const error = new Error(`Application shutting down: ${reason}`);
+      error.code = 'APPLICATION_SHUTDOWN';
+      shutdownController.abort(error);
+    }
+    jobGate.close();
+    telegramThrottle.close();
+    botRateLimiter.close();
+  }
+
+  function closeResources() {
+    if (resourceClosePromise) return resourceClosePromise;
+    resourceClosePromise = (async () => {
+      logger.debug('Closing app resources');
+      const results = await Promise.allSettled([
+        safeDestroyUserClient(userClient),
+        sharedRateLimitStore?.close(),
+        repository.close()
+      ]);
+      const failures = results.filter((result) => result.status === 'rejected');
+      if (failures.length) {
+        throw new AggregateError(failures.map((result) => result.reason), 'One or more app resources failed to close');
+      }
+      logger.debug('App resources closed');
+    })();
+    return resourceClosePromise;
+  }
 
   return {
     repository,
@@ -65,18 +108,91 @@ export async function createApp(config) {
       telegramThrottle.close();
       botRateLimiter.close();
     },
+    beginShutdown,
+    async shutdown(signal = 'SIGTERM') {
+      if (shutdownPromise) return shutdownPromise;
+      shutdownPromise = (async () => {
+        const timeoutMs = positiveNumber(config.shutdown?.timeoutMs, 30_000);
+        const closeGraceMs = Math.min(5_000, Math.max(1_000, Math.floor(timeoutMs / 5)));
+        const startedAt = Date.now();
+        const deadlineAt = startedAt + timeoutMs;
+        const drainDeadlineAt = deadlineAt - closeGraceMs;
+        beginShutdown(signal);
+        logger.info('Application drain started', { signal, timeoutMs, closeGraceMs });
+
+        let drained = false;
+        let drainFailed = false;
+        try {
+          drained = await settleBeforeDeadline(Promise.all([
+            publisher.stopBot(signal, Math.max(1, drainDeadlineAt - Date.now())),
+            jobGate.waitForIdle()
+          ]), drainDeadlineAt);
+        } catch (error) {
+          drainFailed = true;
+          logger.error('Application drain failed; forcing resource close', {
+            signal,
+            error: error?.message || String(error)
+          });
+        }
+        if (!drained && !drainFailed) {
+          logger.warn('Application drain deadline exceeded; forcing resource close', {
+            signal,
+            elapsedMs: Date.now() - startedAt,
+            remainingJob: jobGate.runningKey || '',
+            queuedJobs: jobGate.queue.length
+          });
+        }
+
+        let resourcesClosed = false;
+        let resourceCloseError = null;
+        try {
+          resourcesClosed = await settleBeforeDeadline(closeResources(), deadlineAt);
+        } catch (error) {
+          resourceCloseError = error;
+          logger.error('Application resource close failed', {
+            signal,
+            error: error?.message || String(error)
+          });
+        }
+        if (!resourcesClosed) {
+          logger.error('Application resource close deadline exceeded; process will exit', {
+            signal,
+            timeoutMs,
+            elapsedMs: Date.now() - startedAt
+          });
+        }
+        logger.info('Application shutdown finished', {
+          signal,
+          drained,
+          resourcesClosed,
+          durationMs: Date.now() - startedAt
+        });
+        if (resourceCloseError) throw resourceCloseError;
+      })();
+      return shutdownPromise;
+    },
     async close() {
-      if (closed) return;
-      closed = true;
-      logger.debug('Closing app');
-      telegramThrottle.close();
-      botRateLimiter.close();
-      await safeDestroyUserClient(userClient);
-      await sharedRateLimitStore?.close();
-      await repository.close();
-      logger.debug('App closed');
+      beginShutdown('close');
+      await closeResources();
     }
   };
+}
+
+export async function settleBeforeDeadline(promise, deadlineAt) {
+  const remainingMs = Math.max(0, deadlineAt - Date.now());
+  if (remainingMs === 0) {
+    Promise.resolve(promise).catch(() => {});
+    return false;
+  }
+  let timeout;
+  const result = await Promise.race([
+    Promise.resolve(promise).then(() => true),
+    new Promise((resolve) => {
+      timeout = setTimeout(() => resolve(false), remainingMs);
+    })
+  ]);
+  clearTimeout(timeout);
+  return result;
 }
 
 async function safeDestroyUserClient(userClient) {
@@ -89,4 +205,9 @@ async function safeDestroyUserClient(userClient) {
 
 function isAlreadyClosedStorageError(error) {
   return String(error?.message || error).includes('database connection is not open');
+}
+
+function positiveNumber(value, fallback) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }

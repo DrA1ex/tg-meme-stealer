@@ -6,11 +6,12 @@ import { withTelegramRetry } from './retry.js';
 import { TelegramThrottle } from './throttle.js';
 
 export class TelegramScanner {
-  constructor({ client, repository, config, throttle = new TelegramThrottle(config) }) {
+  constructor({ client, repository, config, throttle = new TelegramThrottle(config), signal = null }) {
     this.client = client;
     this.repository = repository;
     this.config = config;
     this.throttle = throttle;
+    this.signal = signal;
     this.logger = getLogger('scanner');
   }
 
@@ -391,7 +392,7 @@ export class TelegramScanner {
     this.logger.info('Requesting message by id', { chatId: peerId, messageId });
     const messages = await withTelegramRetry(
       () => this.client.getMessages(peerId, [messageId]),
-      { label: 'getMessages', rateLimiter: this.throttle, kind: 'media' }
+      { label: 'getMessages', rateLimiter: this.throttle, kind: 'media', signal: this.signal }
     );
     await this.enrichMessagesWithNativeReactions(messages.filter(Boolean), parsing);
     return messages[0] || null;
@@ -467,7 +468,7 @@ export class TelegramScanner {
       });
       const reactionSummaries = await withTelegramRetry(
         () => this.client.getMessageReactions(candidates),
-        { label: 'getMessageReactions', rateLimiter: this.throttle, kind: 'reactions' }
+        { label: 'getMessageReactions', rateLimiter: this.throttle, kind: 'reactions', signal: this.signal }
       );
 
       for (let index = 0; index < candidates.length; index += 1) {
@@ -501,7 +502,7 @@ export class TelegramScanner {
     });
     const history = await withTelegramRetry(
       () => this.client.getHistory(peerId, params),
-      { label: 'getHistory', rateLimiter: this.throttle, kind: 'history' }
+      { label: 'getHistory', rateLimiter: this.throttle, kind: 'history', signal: this.signal }
     );
     await this.enrichMessagesWithNativeReactions([...history], parsing);
     this.logger.debug('History request completed', { hasNext: Boolean(history.next) });
