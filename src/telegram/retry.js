@@ -136,7 +136,6 @@ async function runTelegramOperation(operation, options, label) {
   let timeout;
   const timeoutPromise = new Promise((_, reject) => {
     timeout = setTimeout(() => reject(new TelegramOperationTimeoutError(label, timeoutMs)), timeoutMs);
-    timeout.unref?.();
   });
   try {
     return await Promise.race([Promise.resolve().then(operation), timeoutPromise]);

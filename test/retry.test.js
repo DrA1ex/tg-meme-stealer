@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { configureLogger } from '../src/core/logger.js';
 import {
   getBotApiRetryAfterSeconds,
@@ -19,6 +20,20 @@ test('withBotApiRetry stops a hung Telegram request with an indeterminate timeou
       && error.code === 'TELEGRAM_OPERATION_TIMEOUT'
       && error.indeterminate === true
   );
+});
+
+test('Telegram operation timeout keeps an isolated process alive until it settles', () => {
+  execFileSync(process.execPath, [
+    '--input-type=module',
+    '--eval',
+    `import { withBotApiRetry } from './src/telegram/retry.js';
+     try {
+       await withBotApiRetry(() => new Promise(() => {}), { operationTimeoutMs: 5 });
+       process.exitCode = 1;
+     } catch (error) {
+       if (error.code !== 'TELEGRAM_OPERATION_TIMEOUT') throw error;
+     }`
+  ], { cwd: process.cwd(), stdio: 'pipe' });
 });
 
 test('getFloodWaitSeconds reads mtcute RpcError seconds', () => {

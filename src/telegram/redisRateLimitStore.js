@@ -339,7 +339,6 @@ export class RedisRateLimitStore {
       timedOut = true;
       controller.abort(new Error(`Redis ${operation} timed out`));
     }, this.operationTimeoutMs);
-    timeout.unref?.();
     try {
       const client = typeof this.client.withAbortSignal === 'function'
         ? this.client.withAbortSignal(controller.signal)
@@ -418,7 +417,6 @@ function withTimeout(promise, timeoutMs, message) {
   let timeout;
   const timeoutPromise = new Promise((_, reject) => {
     timeout = setTimeout(() => reject(new Error(message)), timeoutMs);
-    timeout.unref?.();
   });
   return Promise.race([promise, timeoutPromise]).finally(() => clearTimeout(timeout));
 }

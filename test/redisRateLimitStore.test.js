@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import test from 'node:test';
 import { createRedisRateLimitStore, RedisRateLimitStore } from '../src/telegram/redisRateLimitStore.js';
 
@@ -125,6 +126,19 @@ test('RedisRateLimitStore distinguishes an indeterminate operation timeout and o
   });
   assert.equal(logger.errors.length, 1);
   assert.match(logger.errors[0][1].error, /timed out/);
+});
+
+test('Redis operation timeout keeps an isolated process alive until fallback is selected', () => {
+  execFileSync(process.execPath, [
+    '--input-type=module',
+    '--eval',
+    `import { RedisRateLimitStore } from './src/telegram/redisRateLimitStore.js';
+     const client = { isReady: true, isOpen: true, on() {}, eval() { return new Promise(() => {}); } };
+     const logger = { debug() {}, info() {}, warn() {}, error() {} };
+     const store = new RedisRateLimitStore({ client, config: { operationTimeoutMs: 5 }, logger });
+     const result = await store.reserve({ slots: [{ key: 'x', intervalMs: 1 }] });
+     if (result.status !== 'indeterminate') process.exitCode = 1;`
+  ], { cwd: process.cwd(), stdio: 'pipe' });
 });
 
 test('RedisRateLimitStore coordinates reservations across real clients', {
