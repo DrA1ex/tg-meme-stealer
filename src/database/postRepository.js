@@ -1,7 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import sqlite3 from 'sqlite3';
-import { open } from 'sqlite';
+import { openSqliteDatabase } from './sqliteDatabase.js';
 import { getLogger } from '../core/logger.js';
 import { runMigrations } from './migrations.js';
 
@@ -14,10 +13,7 @@ export class PostRepository {
   }
 
   async init() {
-    this.db = await open({
-      filename: this.dbPath,
-      driver: sqlite3.Database
-    });
+    this.db = openSqliteDatabase(this.dbPath);
 
     await withSqliteBusyRetry(() => this.db.run('PRAGMA busy_timeout = 5000'));
     await withSqliteBusyRetry(() => this.db.run('PRAGMA journal_mode = WAL'));

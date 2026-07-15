@@ -10,13 +10,18 @@
     "test": "node --test"
   },
   "dependencies": {
-    "@mtcute/node": "^0.24.0",
+    "@mtcute/node": "0.30.3",
+    "better-sqlite3": "12.11.1",
     "dotenv": "^16.4.7",
     "qr": "^0.5.0",
     "redis": "^5.12.1",
-    "sqlite": "^5.1.1",
-    "sqlite3": "^5.1.7",
     "telegraf": "^4.16.3"
   },
-  "devDependencies": {}
+  "devDependencies": {},
+  "engines": {
+    "node": "20.x || >=22.0.0"
+  },
+  "allowScripts": {
+    "better-sqlite3@12.11.1": true
+  }
 }

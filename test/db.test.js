@@ -3,8 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import sqlite3 from 'sqlite3';
-import { open } from 'sqlite';
+import { openSqliteDatabase } from '../src/database/sqliteDatabase.js';
 import { PostRepository } from '../src/database/postRepository.js';
 import { getMigrations } from '../src/database/migrations.js';
 import { compileReactionScore, compileSourceWhere } from '../src/core/sourceExpression.js';
@@ -473,7 +472,7 @@ test('PostRepository applies numbered migrations and exposes the reliability sch
 test('PostRepository upgrades a 0000_initial database without losing rows', async () => {
   const dbPath = path.join(os.tmpdir(), `tg-memes-${process.pid}-${Date.now()}-migration-upgrade.sqlite`);
   await fs.rm(dbPath, { force: true });
-  const legacy = await open({ filename: dbPath, driver: sqlite3.Database });
+  const legacy = openSqliteDatabase(dbPath);
   await legacy.exec(`
     CREATE TABLE posts (
       chat_id TEXT NOT NULL, message_id INTEGER NOT NULL, author TEXT, text TEXT,
