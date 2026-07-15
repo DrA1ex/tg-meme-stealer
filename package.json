@@ -7,7 +7,8 @@
     "start": "node index.js daemon",
     "session": "node index.js session",
     "setup": "node index.js setup",
-    "test": "node --test"
+    "test": "node --test",
+    "test:redis": "node --test test/redisRateLimitStore.test.js test/redisSyncIntegration.test.js"
   },
   "dependencies": {
     "@mtcute/node": "0.30.3",

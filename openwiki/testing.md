@@ -9,7 +9,7 @@ npm test
 # equivalent script: node --test
 ```
 
-CI (`.github/workflows/test.yml`) runs `npm ci` and `npm test` on Ubuntu/Node 20. It starts Redis 7 and exposes `TEST_REDIS_URL`, so shared rate-limit/store tests run in CI rather than being skipped for lack of a service.
+CI (`.github/workflows/test.yml`) runs `npm ci` and `npm test` on Ubuntu/Node 20. It starts Redis 7 and exposes `TEST_REDIS_URL`, so both the low-level shared store tests and the end-to-end synchronization/Redis tests run instead of being skipped for lack of a service.
 
 After a successful **push** test workflow on `main`, `.github/workflows/trigger-deploy.yml` dispatches that workflow’s tested SHA to the private deployment repository. Preserve this test-before-dispatch relationship when editing workflow names or triggers.
 
@@ -20,7 +20,7 @@ After a successful **push** test workflow on `main`, `.github/workflows/trigger-
 | Config loading, merge/migration, semantic validation | `test/config.test.js`, `test/setupConfig.test.js` |
 | App construction, graceful shutdown, job serialization | `test/app.test.js`, `test/jobGate.test.js` |
 | Scheduler/catch-up/timezones/worker wakeup | `test/scheduler.test.js` |
-| Source scanning, backfill, reconciliation, albums | `test/scanner.test.js`, `test/syncWorker.test.js`, `test/historyAssembler.test.js`, `test/retentionWorker.test.js` |
+| Source scanning, backfill, reconciliation, albums | `test/scanner.test.js`, `test/syncWorker.test.js`, `test/historyAssembler.test.js`, `test/retentionWorker.test.js`, `test/redisSyncIntegration.test.js` |
 | Parsing and source-expression grammar | `test/postParser.test.js`, `test/sourceExpression.test.js`, `test/selection.test.js` |
 | SQLite migrations, selection SQL, state transitions | `test/db.test.js` |
 | Publishing, leases, recovery, delivery uncertainty | `test/publisher.test.js`, `test/publicationReliability.test.js`, `test/publicationLease.test.js`, `test/publisherLifecycle.test.js` |
@@ -48,15 +48,18 @@ npm test -- test/scheduler.test.js test/publisher.test.js test/publisherLifecycl
 # Scan/reconciliation/retry safety
 npm test -- test/scanner.test.js test/syncWorker.test.js test/historyAssembler.test.js
 
-# Rate limiter changes
+# Rate limiter changes without a local Redis server
 npm test -- test/throttle.test.js test/botRateLimiter.test.js test/redisRateLimitStore.test.js
+
+# Real Redis synchronization and shared-rate-limit integration
+TEST_REDIS_URL=redis://127.0.0.1:6379 npm run test:redis
 ```
 
 ## What to test beyond the happy path
 
 - **SQLite changes:** include a migration/upgrade fixture and test state reads/writes, not only new schema creation. The current migration suite verifies version advancement and a v1 upgrade.
 - **Publication changes:** exercise duplicate request prevention, lease loss, retries, cancellation, and uncertain `sending` behavior. Do not make tests assert automatic resend after a possible side effect.
-- **Scanner changes:** test authoritative versus incomplete scans and deletion-safety threshold behavior.
+- **Scanner changes:** test authoritative versus incomplete scans and deletion-safety threshold behavior. For shared throttling changes, also cover the full `SyncWorker → TelegramScanner → TelegramThrottle → Redis` path with separate clients.
 - **Scheduler changes:** test startup order, missed-run boundaries, first-send gates, timezone/local-time calculations, and timer rescheduling after errors.
 - **Setup changes:** test both callback UI and text-command routes when they expose the same capability.
 - **Shutdown/concurrency changes:** confirm queued work is rejected/cancelled and active operations honor signals/deadlines.
