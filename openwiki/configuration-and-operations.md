@@ -1,79 +1,73 @@
-# Configuration And Operations
+# Configuration and operations
 
-## Config Loading
+## Configuration contract
 
-`src/config/index.js` loads `config.default.json`, deep-merges optional `config.json`, then overlays Telegram values from environment variables. The default config is the source of available runtime options.
+`src/config/index.js` loads defaults from `config.default.json`, deep-merges optional local `config.json`, applies environment-backed Telegram/Redis values, migrates legacy publish shape where needed, then validates the result before startup.
 
-Environment-backed Telegram fields:
+Keep credentials and chat identifiers out of committed files and documentation. `.env.example` shows placeholder variable names; the required Telegram inputs are API ID/hash, source chat, admin ID, target channel, and bot token. Redis coordination is optional (`RATE_LIMIT_REDIS_ENABLED`, `RATE_LIMIT_REDIS_URL`).
 
-- `TELEGRAM_API_ID`
-- `TELEGRAM_API_HASH`
-- `TELEGRAM_SOURCE_CHAT_ID`
-- `TELEGRAM_ADMIN_ID`
-- `TELEGRAM_PUBLISH_CHANNEL_ID`
-- `TELEGRAM_BOT_TOKEN`
+### Merge behavior that affects changes
 
-Do not store secrets in docs. `.env.example` is only a placeholder reference.
+- Normal nested objects deep-merge.
+- `publish.template` is replaced as a whole—an override owns the full template array.
+- `publish.sources` merges by `key`.
+- Validation enforces known keys/types, valid IANA timezone/locale, distinct source and target chats, unique sources/templates, valid source expressions, schedule shapes, and bounded timing/retry/lease values.
 
-## Merge Rules
+Read loader/validation before adding any config key; `config.default.json` alone is not the full contract.
 
-Most config objects deep-merge. Two publish sections are special:
+## Operator runbook
 
-- `publish.template` arrays are replaced as a whole.
-- `publish.sources` merge by `key`.
+### Bootstrap
 
-This lets local config override or clear template schedules intentionally while still allowing source definitions to be extended by key.
+1. Install dependencies with `npm install`.
+2. Create local `.env` from its example and populate required credentials privately.
+3. Create a user session via `npm run session` and QR login.
+4. Run `npm run setup`, message the bot privately as the configured admin, and use `/setup` to test/parser/publish configuration.
+5. Restart into `npm start` after a save—setup writes future config and does not hot-reload a daemon.
+6. Use `/backfill`, then `/stats`; inspect a manual `/publish <selection>` before relying on schedules.
 
-## Validation Rules
+### Admin commands
 
-Config validation rejects:
+Commands are accepted only from `telegram.adminId` in a private chat (`src/telegram/adminCommands.js`):
 
-- Missing required Telegram and database fields.
-- Identical source and publish chats.
-- Unsupported config keys or wrong primitive types.
-- Duplicate publish template keys.
-- Invalid source expressions.
-- Publish templates with unknown sources, invalid schedules, invalid reaction strategies, bad `firstSendAt`, or invalid `posts.min <= posts.target <= posts.max` ordering.
+| Command | Purpose |
+| --- | --- |
+| `/stats` | Database and publication summary |
+| `/jobs` | Active/recent work view |
+| `/publications`, `/publication <id>` | Publication list/detail for operator inspection |
+| `/sync [--force]` | Recent scan; force bypasses deletion-safety threshold only after investigation |
+| `/backfill [days]` | Historical fill/refresh |
+| `/publish [--force] <selection…>` | Create/drain publication requests; force intentionally bypasses normal duplicate/gate behavior |
+| `/setup` | Open the draft configuration assistant |
+| `/restart` | Request service-manager restart after saved configuration changes |
 
-Enabled schedules must be daily, weekly, or monthly. Monthly schedules use days `1..28`.
+`/sync`/`/backfill` avoid waiting behind unrelated work: a busy response is safer than an opaque queued interactive request.
 
-## Operational Commands
+## Operational safety and recovery
 
-Run modes:
+- **Failed sync pauses publishing:** `SyncWorker` retries with bounded exponential backoff. Exhaustion pauses automatic publication and notifies the admin; a successful sync clears the pause. Investigate scan errors before forcing publication.
+- **Deletion reconciliation:** `maxMissingRatio` blocks potentially broad source-post deletion. Use `/sync --force` only after confirming the observed history window is valid.
+- **Publication recovery:** the worker periodically revisits durable, retry-ready, unleased/expired requests. Inspect publication details before handling `uncertain` work; automatic resend is intentionally blocked to avoid duplicates.
+- **Graceful stop:** signal handling stops timers, rejects queued work, aborts waits, drains polling/active work within `shutdown.timeoutMs`, then closes resources. Allow the process manager to send normal termination signals rather than killing an active process abruptly.
+- **Retention/media:** `sync.retentionDays` only prunes source `posts`; publication audit state remains. Temporary downloaded media is stored under `sync.mediaDir` and cleaned after attempts.
 
-```bash
-npm run session
-npm run setup
-npm start
-```
+## Rate limits and deployment topology
 
-Admin bot commands:
+MTProto scans use per-operation jitter/throttle plus FLOOD_WAIT handling. Bot sends use local global/per-chat limits and honor Bot API `retry_after`. Optional Redis can coordinate reservations/penalties across processes, with local fallback if unavailable (`src/telegram/{throttle,botRateLimiter,redisRateLimitStore}.js`).
 
-- `/stats`: database and publication summary from `src/core/stats.js`.
-- `/jobs`: active and recent publication job summary.
-- `/publications`: recent publication list.
-- `/publication <id>`: detailed publication posts.
-- `/sync`: refresh recent source history.
-- `/backfill [days]`: fill or refresh a larger historical window.
-- `/publish <selection...> [--force]`: create and process publication requests.
-- `/setup`: open setup assistant.
+The included `scripts/clone.sh` supports a PM2-oriented model of **one instance per source chat**. It makes a fresh local database/runtime directories and may reuse a user session or dependencies; it deliberately does not copy the source SQLite DB (`scripts/README.md`). Use its dry run before applying changes. Its visible bot-token prompt means operators should avoid shared terminals or recorded sessions.
 
-Only `telegram.adminId` in a private chat can run commands.
+Do not infer active/active multi-host support: polling lock files are local; SQLite leases require a safely shared database file to coordinate; independent databases do not deduplicate publication across hosts.
 
-## Scheduling And First-Send Gates
+## CI and deploy boundary
 
-Daemon mode uses `schedule.enabled` and `schedule.timezone`. Each enabled `publish.template[]` item may schedule a daily, weekly, or monthly run. `windowHours` controls the selection duration; optional `offsetHours` moves only that selection window back from the run time. For example, `windowHours: 24` and `offsetHours: 168` publish a one-day window from one week before the scheduled run.
+`.github/workflows/test.yml` runs `npm ci` and `npm test` on Node 20 with Redis 7 for tests. `.github/workflows/trigger-deploy.yml` dispatches only successful push-triggered `test` workflow runs on `main` to a private deployment repository, passing the tested SHA.
 
-`publish.firstSendAt` gates all normal publication scheduling. A template-level `firstSendAt` can also be set; the later timestamp wins. Scheduler catch-up and regular `/publish` respect this gate. `/publish <key> --force` can publish earlier and can include disabled templates when explicitly requested.
+This repository does **not** document the private deployment repo’s migration, backup, restart, health-check, or rollback behavior. Avoid claiming deployment guarantees beyond this handoff. OpenWiki refresh is a separate scheduled/manual workflow that opens a docs update PR.
 
-The publication worker uses durable requests in SQLite. If a scheduler run, manual run, or retry sees an already active/published canonical publication key, it reports the existing request instead of creating a duplicate.
+## When changing operations/config
 
-## Retention And Temporary Files
-
-Retention removes old source posts from `posts` based on `sync.retentionDays`. Publication history is preserved in `publications` and `publication_posts`.
-
-Media downloads are temporary. `MediaDownloader` writes files under `sync.mediaDir`, sends them through the bot API, and deletes them after each rich post attempt.
-
-## Logging
-
-`src/core/logger.js` supports configured levels `DEBUG`, `INFO`, `WARN`, `ERROR`, and `SILENT`, plus color modes `auto`, `always`, and `never`. Runtime logs include command startup fields, scheduler timers, history scan pages, publication request states, worker results, and Telegram errors.
+- Config schema/default/merge/validation: `test/config.test.js`, `test/setupConfig.test.js`.
+- Admin command behavior and lifecycle: `test/publisherLifecycle.test.js`, `test/app.test.js` plus affected publisher/sync tests.
+- Rate limits/Redis behavior: `test/throttle.test.js`, `test/botRateLimiter.test.js`, `test/redisRateLimitStore.test.js`, `test/rateLimitUtils.test.js`.
+- Deployment workflow edits: ensure `trigger-deploy.yml` continues to reference the exact CI workflow name (`test`) and dispatches only the workflow-run SHA.

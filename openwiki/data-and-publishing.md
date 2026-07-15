@@ -1,81 +1,46 @@
-# Data And Publishing
+# Data and publishing
 
-## Message Parsing
+## From Telegram message to post
 
-`src/core/postParser.js` turns Telegram messages into stored posts. It:
+`src/telegram/scanner.js` reads source history through the mtcute user client. `src/core/postParser.js` decides eligibility using `parsing.filters` and extracts configured author, likes, dislikes, text, media, and diagnostic traces. Rules traverse message/sender paths, including arrays; parser fallbacks cover inline-button reactions and basic author extraction. Text, photos, videos, and grouped albums are supported.
 
-- Skips unreadable messages.
-- Applies `parsing.filters`.
-- Extracts likes, dislikes, and author from configured rule arrays.
-- Falls back to inline button reaction parsing and simple text author extraction when configured extractors do not produce values.
-- Supports text, photo, video, and album-style grouped media references.
-- Provides debug traces for setup diagnostics.
+`sync()` uses `sync.initialScanDays` when the source has no stored posts, then refreshes only `sync.refreshRecentDays`. `backfill(days)` adds missing older rows but refreshes existing rows only in the recent window. Pagination guards repeated cursors and excessive pages. A scan that is incomplete or non-authoritative never deletes local rows.
 
-Rule paths can traverse message and sender objects, including arrays. Transforms cover common parser needs such as count parsing, trimming, usernames, booleans, content checks, media checks, and reaction counts.
+Recent deleted-post reconciliation compares source IDs with stored IDs. It refuses deletion when the scan is incomplete or the missing ratio exceeds `sync.maxMissingRatio`; `/sync --force` bypasses only the ratio guard. Separate retention later deletes source posts older than `sync.retentionDays`.
 
-## Scanning And Backfill
+## SQLite model
 
-`src/telegram/scanner.js` owns source history reads through mtcute:
+`PostRepository` opens `better-sqlite3` through `sqliteDatabase.js`, enables WAL, foreign keys, and a five-second busy timeout, then applies `migrations.js` under `BEGIN IMMEDIATE`.
 
-- `sync()` decides whether the database is empty. Empty databases scan `sync.initialScanDays`; later syncs refresh `sync.refreshRecentDays`.
-- `backfill(days)` scans a requested historical window, adds missing old posts, and updates existing posts only inside the recent refresh window.
-- Recent deleted source messages are removed from `posts`.
-- Old rows are pruned by `cleanupOldPosts()` through the retention worker.
+- `posts`, keyed by `(chat_id, message_id)`, stores parsed source state. Upsert preserves original collection time while refreshing parsed fields.
+- `publications` stores durable selection snapshots, request key, lifecycle state, lease metadata, retry/progress metadata, and errors.
+- `publication_posts` stores each selected item's rank scores, send state, attempt/error data, and target message ID.
 
-Telegram history and media requests pass through `TelegramThrottle` and retry wrappers from `src/telegram/retry.js`.
 
-## SQLite Schema
+Publication history survives source retention because it is snapshotted separately; detailed views that join live posts may no longer show original text/author after retention.
 
-`src/database/postRepository.js` creates three tables:
+## Selection configuration
 
-- `posts`: source chat/message identity, author, text, likes, dislikes, JSON data, message date, collected time, and update time.
-- `publications`: durable publication jobs with key, selection key, title, period, status, timestamps, last error, and JSON snapshot data.
-- `publication_posts`: rows sent or planned for a publication, including position, reaction counts, bot message id, and send timestamp.
+`src/core/selection.js` turns enabled `publish.template` entries into rolling-window specs. The public key is `source.templateKey`; aliases may select a template key, source key, or `source.*`. A window is `[scheduledAt - offsetHours - windowHours, scheduledAt - offsetHours)`. Templates define `posts.min/target/max`, reaction strategy/minimum/include-above, title template, source, and schedule.
 
-Important behavior:
+Source predicates in `publish.sources[].where` are compiled by `sourceExpression.js`. The allowlist contains `likes`, `dislikes`, numeric values, operators, and `abs`, `min`, `max`; unsupported syntax is rejected before SQL is built. Treat expressions as validated configuration code, not arbitrary SQL.
 
-- `posts` are upserted by `(chat_id, message_id)`.
-- Active publication keys are unique while status is `created`, `running`, or `published`.
-- `dry_run`, `failed`, and `cancelled` publication rows do not block a later real publication.
-- Publication post rows let the worker resume after partial Telegram send failure.
+## Durable publication lifecycle
 
-## Selection Logic
+Planning and sending are separate:
 
-`src/core/selection.js` builds selection specs from `publish.template`. Each spec includes:
+1. Scheduler or `/publish` builds a selection and snapshots it into a `created` SQLite request.
+2. The publication worker claims an eligible request under a SQLite lease.
+3. It persists header/post `sending` state before external calls, sends rich content, and records per-item outcomes.
+4. It finishes as `published`, `dry_run`, `failed`, `cancelled`, or `uncertain`.
 
-- Source chat id.
-- Source key and template key, exposed as `source.templateKey`.
-- Rolling window `[scheduledAt - offsetHours - windowHours, scheduledAt - offsetHours)`, with `offsetHours` defaulting to `0`.
-- Post count limits `{ min, target, max }`.
-- Reaction strategy and thresholds.
-- SQL snippets compiled from source expressions and reaction strategy.
+Canonical keys use source, template, and local scheduled-time bucket. A partial unique index blocks duplicate active/published keys; forced manual requests intentionally use a distinct key. Lease renewal occurs about every third of `publish.workerLeaseMs`; lease loss aborts new side effects.
 
-`src/core/sourceExpression.js` compiles a deliberately small SQL-like language for `publish.sources[].where`. It only permits `likes`, `dislikes`, numeric literals, boolean/comparison/arithmetic operators, and `abs`, `min`, `max`.
+If shutdown/network ambiguity leaves a header or post as `sending`, recovery marks the request `uncertain` and does not auto-resend. Inspect the destination channel and `/publication <id>` before a manual forced replacement. Transient failures defer retry; permanent/unknown-exhausted outcomes update state, and stale requests are failed by configured TTL logic.
 
-`PostRepository.getSelectionPosts()` applies the source filter and reaction scoring inside SQLite. It tries to publish around `posts.target`, expands up to `posts.max` for posts above `reactions.includeAbove`, and backfills to `posts.min` when too few posts pass `reactions.min`.
+## Delivery and media
 
-## Publication Requests
+`richPost.js` sends a selection header, then text or reloaded source media. `media.js` downloads transient files under `sync.mediaDir`; albums send first item with caption and remaining items separately. Cleanup runs after attempts. Bot API limiter/retry policy wrap sends, so delivery changes must retain lease checks and indeterminate-outcome handling.
 
-`SelectionPublisher` does not send immediately from scheduler callbacks. It first creates a durable publication request:
 
-1. Build one or more selection specs from requested keys.
-2. Skip disabled templates unless forced.
-3. Apply effective `firstSendAt`, using the later of global and template-level gates.
-4. Skip when an active/published publication with the same canonical key already exists.
-5. Snapshot selected posts into the publication row data.
-6. Wake or queue the publication worker.
-
-The canonical publication key includes source, template key, and a local timestamp bucket. Forced publishes use a random key prefix so they can intentionally duplicate an already published selection.
-
-Selection header templates can use `key`, `source`, `type`, `templateKey`, `period`, `count`, `limit`, `posts`, `reactions`, `windowHours`, `offsetHours`, `windowStart`, `windowEnd`, and `scheduledAt`. `windowStart` and `windowEnd` reflect the actual offset-adjusted selection window.
-
-## Sending Rich Posts
-
-`src/telegram/richPost.js` sends a selection header, then each selected post:
-
-- Text-only posts become bot messages.
-- Media posts reload source messages, download media into `sync.mediaDir`, and send the first media item with the caption.
-- Extra album media are sent individually.
-- Temporary media files are cleaned after send attempts.
-
-If a send fails after some posts were recorded, the next worker run resumes from the first unsent position rather than starting over.
+Test this domain through `db.test.js`, `selection.test.js`, `sourceExpression.test.js`, `scanner.test.js`, `publicationReliability.test.js`, `publisherLifecycle.test.js`, and media tests. See [configuration-and-operations.md](configuration-and-operations.md) for operator recovery.

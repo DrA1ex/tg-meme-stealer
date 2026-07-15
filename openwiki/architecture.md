@@ -1,58 +1,41 @@
 # Architecture
 
-## Runtime Modes
+`index.js` loads validated configuration, configures logging, and dispatches `session`, `setup`, or default `daemon` mode. Session mode creates the QR-authenticated mtcute user session. Setup mode creates the complete app and launches the admin bot without timers. Daemon mode launches that bot and starts the scheduler.
 
-`index.js` loads config, configures logging, then dispatches by command:
+## Runtime composition
 
-- `node index.js session`: starts QR login and writes the mtcute user session.
-- `node index.js setup`: creates the app, launches the admin bot, and registers setup mode commands without starting the scheduler.
-- `node index.js daemon`: creates the app, launches the admin bot, and starts the scheduler.
+`createApp()` in `src/runtime/app.js` constructs the dependency graph in this order:
 
-`npm start`, `npm run session`, and `npm run setup` are thin wrappers around those modes.
+1. `PostRepository` initializes SQLite and migrations.
+2. `startUserClient()` creates the MTProto reader for the source chat.
+3. Optional Redis rate-limit store plus MTProto and Bot API limiters are created.
+4. `TelegramScanner`, a shared `JobGate`, `SyncWorker`, `RetentionWorker`, and `MediaDownloader` are wired.
+5. `SetupAssistant` and `SelectionPublisher` share the bot-facing configuration and limits.
+6. Sync notifications route through the publisher to the private admin.
 
-## App Composition
+App construction cleans up already-created resources if a later dependency fails to initialize.
 
-`src/runtime/app.js` is the dependency graph. `createApp(config)` initializes:
+## Scheduling and local concurrency
 
-- `PostRepository` for SQLite tables and queries.
-- mtcute user client from `src/telegram/userClient.js`.
-- `TelegramScanner` for source history scanning and backfill.
-- One shared `JobGate` for sync, backfill, retention, and publication worker coordination.
-- `SyncWorker` and `RetentionWorker`.
-- `MediaDownloader` for reloading source messages and downloading media before publishing.
-- `SetupAssistant` for admin setup sessions and diagnostics.
-- `SelectionPublisher` for Telegraf commands and publication processing.
+`Scheduler` (`src/runtime/scheduler.js`) has independent schedules for periodic sync, retention, the publication worker, and each enabled daily/weekly/monthly template. It uses `schedule.timezone`, passes the *intended scheduled time* to publication planning, and chunks long delays to avoid Node timer limits. On startup it performs configured startup sync, then plans missed slots within request TTL and wakes the worker.
 
-Shutdown stops bot polling, stops scheduler timers in daemon mode, destroys the user client, and closes SQLite.
+`JobGate` serializes local work: `run()` queues different keys and skips duplicate keys; `runIfIdle()` rejects admin sync/backfill while any work exists; `queueIfRunning()` permits one follow-up worker pass. Nested same-key work executes inline; nested different-key work throws `NESTED_DEADLOCK`. It prevents overlap only inside one process. Publication uniqueness and leases in SQLite provide cross-process coordination for shared databases.
 
-## Scheduler
+## Bot lifecycle and shutdown
 
-`src/runtime/scheduler.js` schedules four recurring concerns in daemon mode:
+Before polling, `BotLifecycle` calls `getMe()` and acquires `data/bot-polling.lock`. A live lock owner produces `BOT_POLLING_LOCKED`; stale locks are removed. This is a filesystem/PID lock, not a distributed lock. If polling ends unexpectedly, `index.js` begins shutdown.
 
-- Sync runs every `sync.intervalHours`.
-- Retention runs after `sync.retentionInitialDelayMinutes` and then every `sync.retentionIntervalHours`.
-- Publication timers are created from enabled entries in `publish.template`.
-- The publication worker wakes every `publish.workerIntervalMinutes`.
+`app.shutdown()` aborts new work, closes the gate and rate limiters, stops bot polling, waits for gate drain until a deadline, and then closes the user client, Redis store, and database. The deadline is `shutdown.timeoutMs`; resource closure may cut off a remaining Telegram operation after it expires. Preserve abort-signal propagation in long-running code.
 
-On startup, `Scheduler.start()` schedules timers immediately. If `sync.runOnStart` is enabled, it runs startup sync, then plans missed publications, then wakes the publication worker. If startup sync is disabled, it still plans missed publications and wakes the worker.
 
-The scheduler uses local schedule calculations from the configured `schedule.timezone`. It supports daily, weekly, and monthly publication schedules. Very long timeouts are chunked because Node timers have a maximum delay.
+## Reliability boundaries
 
-## Job Serialization
+- Sync failure after retries pauses publication *in memory* until the next successful sync; restart clears that pause.
+- Worker side effects are protected by SQLite leases, but selection/sync/retention still rely on local `JobGate`.
+- An indeterminate Telegram send becomes `uncertain`, deliberately favoring duplicate avoidance over automatic completion.
+- Rate-limit coordination via Redis is optional; unavailable Redis uses conservative local fallback.
 
-`src/runtime/jobGate.js` is an in-memory queue and duplicate guard:
+Explaining recent history: `5ba007f` introduced bounded graceful shutdown, `89a92b6` expanded recovery/polling/lease safety, and `7b66dfe` replaced the vulnerable SQLite dependency chain with the current `better-sqlite3` adapter.
 
-- `run(key, fn)` queues different keys if another job is running.
-- Duplicate running or queued keys are skipped with `reason: duplicate_job`.
-- `runIfIdle(key, fn)` skips when any job is running or queued.
-- `queueIfRunning` allows exactly one follow-up for a running duplicate key, used by the publication worker.
-- Nested same-key calls run inline; nested different-key calls throw a deadlock error.
 
-This means scheduled jobs can queue behind each other, while admin sync/backfill requests are more conservative and report busy instead of silently waiting.
-
-## Admin Bot Boundary
-
-`SelectionPublisher` configures the Telegraf bot in `src/telegram/publisher.js`. It rejects commands unless they come from `telegram.adminId` in a private chat. The core admin commands are `/stats`, `/jobs`, `/publications`, `/publication`, `/sync`, `/backfill`, `/publish`, and `/setup`.
-
-The setup assistant is registered onto the same bot, so setup mode and daemon mode share the command surface but differ in whether scheduler jobs are running.
-
+See [data-and-publishing.md](data-and-publishing.md) for the durable state model and [testing.md](testing.md) for change checks.

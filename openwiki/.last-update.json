@@ -1,6 +1,6 @@
 {
-  "updatedAt": "2026-07-05T13:52:20.087801Z",
+  "updatedAt": "2026-07-15T13:18:09.823Z",
   "command": "init",
-  "gitHead": "148e7eb4705d7b96c43be06fd6aad7317fdb0ed1",
-  "model": "agent-native"
+  "gitHead": "7b66dfe21456a23cfa9abd60c676d055e1fb5140",
+  "model": "gpt-5.6-terra"
 }
