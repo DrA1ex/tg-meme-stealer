@@ -264,3 +264,155 @@ test('TelegramScanner stops when Telegram repeats a pagination cursor', async ()
   );
   assert.equal(calls, 2);
 });
+
+test('TelegramScanner blocks reconciliation when more than 30 percent of expected recent posts are missing', async () => {
+  const deleted = [];
+  const scanner = reconciliationScanner({
+    ids: Array.from({ length: 10 }, (_, index) => ({ messageId: index + 1 })),
+    deleted
+  });
+
+  const result = await scanner.reconcileDeletedRecentPosts({
+    sinceDate: new Date('2026-07-01T00:00:00.000Z'),
+    seenIds: new Set([1, 2, 3, 4, 5, 6]),
+    authoritativeComplete: true
+  });
+
+  assert.equal(result.blocked, true);
+  assert.equal(result.reason, 'missing_ratio_exceeded');
+  assert.equal(result.missingRatio, 0.4);
+  assert.deepEqual(deleted, []);
+});
+
+test('TelegramScanner force reconciliation accepts a known large difference', async () => {
+  const deleted = [];
+  const scanner = reconciliationScanner({
+    ids: Array.from({ length: 10 }, (_, index) => ({ messageId: index + 1 })),
+    deleted
+  });
+
+  const result = await scanner.reconcileDeletedRecentPosts({
+    sinceDate: new Date('2026-07-01T00:00:00.000Z'),
+    seenIds: new Set([1, 2, 3, 4, 5, 6]),
+    authoritativeComplete: true,
+    force: true
+  });
+
+  assert.equal(result.blocked, false);
+  assert.equal(result.forced, true);
+  assert.equal(result.deleted, 4);
+  assert.deepEqual(deleted, [7, 8, 9, 10]);
+});
+
+test('TelegramScanner never reconciles deletions from an incomplete history scan', async () => {
+  const deleted = [];
+  const scanner = reconciliationScanner({ ids: [{ messageId: 1 }, { messageId: 2 }], deleted });
+
+  const result = await scanner.reconcileDeletedRecentPosts({
+    sinceDate: new Date('2026-07-01T00:00:00.000Z'),
+    seenIds: new Set(),
+    authoritativeComplete: false,
+    force: true
+  });
+
+  assert.equal(result.blocked, true);
+  assert.equal(result.reason, 'incomplete_scan');
+  assert.deepEqual(deleted, []);
+});
+
+test('TelegramScanner distinguishes expected history exhaustion from an unexpected empty page', async () => {
+  const expected = new TelegramScanner({
+    client: {},
+    repository: { upsertPost: async () => {} },
+    config: scanConfig()
+  });
+  const expectedPage = [];
+  expectedPage.next = null;
+  expected.getHistory = async () => expectedPage;
+
+  const expectedResult = await expected.scanSince(new Date('2026-07-01T00:00:00.000Z'));
+  assert.equal(expectedResult.authoritativeComplete, true);
+  assert.equal(expectedResult.stopReason, 'history-exhausted-empty');
+
+  const unexpected = new TelegramScanner({
+    client: {},
+    repository: { upsertPost: async () => {} },
+    config: scanConfig()
+  });
+  const unexpectedPage = [];
+  unexpectedPage.next = 'older';
+  unexpected.getHistory = async () => unexpectedPage;
+
+  const unexpectedResult = await unexpected.scanSince(new Date('2026-07-01T00:00:00.000Z'));
+  assert.equal(unexpectedResult.authoritativeComplete, false);
+  assert.equal(unexpectedResult.stopReason, 'unexpected-empty-page');
+});
+
+test('TelegramScanner assembles an album split across history pages before parsing it', async () => {
+  const saved = [];
+  const scanner = new TelegramScanner({
+    client: {},
+    repository: { upsertPost: async (post) => saved.push(post) },
+    config: scanConfig()
+  });
+  const pages = [
+    historyPage([
+      albumMessage(5, '2026-07-10T12:00:00.000Z', null, 'By Solo\nSolo'),
+      albumMessage(4, '2026-07-10T11:00:00.000Z', 'album-1', 'By Album\nCaption')
+    ], 'page-2'),
+    historyPage([
+      albumMessage(3, '2026-07-10T10:59:00.000Z', 'album-1', ''),
+      albumMessage(2, '2026-07-10T10:00:00.000Z', null, 'By Older\nOlder')
+    ], null)
+  ];
+  scanner.getHistory = async () => pages.shift();
+
+  const result = await scanner.scanSince(new Date('2026-07-01T00:00:00.000Z'));
+
+  assert.equal(result.authoritativeComplete, true);
+  assert.equal(result.pages, 2);
+  assert.equal(saved.length, 3);
+  const album = saved.find((post) => post.author === 'Album');
+  assert.ok(album);
+  assert.equal(album.data.media.length, 2);
+  assert.deepEqual(album.data.media.map((item) => item.messageId), [3, 4]);
+});
+
+function reconciliationScanner({ ids, deleted }) {
+  return new TelegramScanner({
+    client: {},
+    repository: {
+      listPostIdsSince: async () => ids,
+      deletePost: async (_chatId, messageId) => { deleted.push(messageId); }
+    },
+    config: scanConfig()
+  });
+}
+
+function scanConfig() {
+  return {
+    telegram: { sourceChatId: -1001 },
+    parsing: {},
+    sync: {
+      pageSize: 2,
+      maxPagesPerRun: 20,
+      maxMissingRatio: 0.3,
+      throttle: { enabled: false }
+    }
+  };
+}
+
+function historyPage(messages, next) {
+  messages.next = next;
+  return messages;
+}
+
+function albumMessage(id, isoDate, groupedId, text) {
+  return {
+    id,
+    date: new Date(isoDate),
+    groupedId,
+    text,
+    media: { type: 'photo', fileSize: 10 }
+  };
+}

@@ -39,13 +39,23 @@ if (command === 'session') {
   };
   process.on('SIGINT', () => shutdown('SIGINT'));
   process.on('SIGTERM', () => shutdown('SIGTERM'));
+  app.publisher.setFatalBotErrorHandler((error) => {
+    logger.error('Bot polling stopped unexpectedly; shutting down', { error: error?.message || String(error) });
+    void shutdown('BOT_POLLING_FAILED');
+  });
   try {
-    app.publisher.launchBot();
+    await app.publisher.launchBot();
     if (!shuttingDown) {
       logger.info('Setup bot is running', { adminId: config.telegram.adminId });
     }
   } catch (error) {
-    if (!shuttingDown || !isInterruptedLaunchError(error)) throw error;
+    if (!(shuttingDown && isInterruptedLaunchError(error))) {
+      logger.error('Setup bot launch failed', { error: error?.message || String(error) });
+      await app.shutdown('BOT_LAUNCH_FAILED').catch((shutdownError) => {
+        logger.error('Cleanup after setup bot launch failure failed', { error: shutdownError?.message || String(shutdownError) });
+      });
+      throw error;
+    }
   }
 } else if (command === 'daemon') {
   const app = await createApp(config);
@@ -101,14 +111,25 @@ if (command === 'session') {
   };
   process.on('SIGINT', () => shutdown('SIGINT'));
   process.on('SIGTERM', () => shutdown('SIGTERM'));
+  app.publisher.setFatalBotErrorHandler((error) => {
+    logger.error('Bot polling stopped unexpectedly; shutting down', { error: error?.message || String(error) });
+    void shutdown('BOT_POLLING_FAILED');
+  });
   try {
-    app.publisher.launchBot();
+    await app.publisher.launchBot();
     if (!shuttingDown) {
       logger.info('Daemon bot launched, starting scheduler');
       await scheduler.start();
     }
   } catch (error) {
-    if (!shuttingDown || !isInterruptedLaunchError(error)) throw error;
+    if (!(shuttingDown && isInterruptedLaunchError(error))) {
+      logger.error('Daemon bot launch failed', { error: error?.message || String(error) });
+      scheduler.stop();
+      await app.shutdown('BOT_LAUNCH_FAILED').catch((shutdownError) => {
+        logger.error('Cleanup after daemon bot launch failure failed', { error: shutdownError?.message || String(shutdownError) });
+      });
+      throw error;
+    }
   }
 } else {
   throw new Error(`Unknown command: ${command}`);

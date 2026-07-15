@@ -265,8 +265,13 @@ function getRetentionDelayMs(config, initial) {
 
 async function runHandler(handler) {
   const job = await handler();
-  if (job?.promise) await job.promise;
-  return job;
+  const result = job?.promise ? await job.promise : job;
+  if (result?.failed) {
+    const error = new Error(result.error || 'Scheduled job failed');
+    error.result = result;
+    throw error;
+  }
+  return result;
 }
 
 async function resolveHandlerResult(result) {
@@ -337,15 +342,9 @@ export function getNextLocalTimeAsDate({ now = new Date(), time, timezone }) {
   const [hour, minute] = parseTime(time);
   const local = getLocalParts(now, timezone);
   let daysToAdd = 0;
-  if (local.hour > hour || local.hour === hour && local.minute >= minute) {
-    daysToAdd = 1;
-  }
-
-  const localMiddayUtc = Date.UTC(local.year, local.month - 1, local.day + daysToAdd, 12, 0, 0);
-  const targetParts = getLocalParts(new Date(localMiddayUtc), timezone);
-  const utcGuess = Date.UTC(targetParts.year, targetParts.month - 1, targetParts.day, hour, minute, 0);
-  const offsetMs = getTimezoneOffsetMs(new Date(utcGuess), timezone);
-  return new Date(utcGuess - offsetMs);
+  if (local.hour > hour || local.hour === hour && local.minute >= minute) daysToAdd = 1;
+  const target = normalizeCivilDate({ ...local, day: local.day + daysToAdd, hour, minute });
+  return resolveZonedDateTime(target, timezone, 'compatible');
 }
 
 export function getPreviousLocalTimeAsDate({ now = new Date(), time, timezone }) {
@@ -397,7 +396,7 @@ function getLocalParts(date, timezone) {
 function getTimezoneOffsetMs(date, timezone) {
   const local = getLocalParts(date, timezone);
   const asUtc = Date.UTC(local.year, local.month - 1, local.day, local.hour, local.minute, 0);
-  return asUtc - date.getTime();
+  return asUtc - truncateToMinute(date).getTime();
 }
 
 function getNextWeeklyRunAsDate({ now, schedule, timezone }) {
@@ -494,11 +493,72 @@ function getPreviousMonthlyRunAsDate({ now, schedule, timezone }) {
 
 function getLocalDateTimeAsDate({ year, month, day, time, timezone }) {
   const [hour, minute] = parseTime(time);
-  const localMiddayUtc = Date.UTC(year, month - 1, day, 12, 0, 0);
-  const targetParts = getLocalParts(new Date(localMiddayUtc), timezone);
-  const utcGuess = Date.UTC(targetParts.year, targetParts.month - 1, targetParts.day, hour, minute, 0);
-  const offsetMs = getTimezoneOffsetMs(new Date(utcGuess), timezone);
-  return new Date(utcGuess - offsetMs);
+  return resolveZonedDateTime(normalizeCivilDate({ year, month, day, hour, minute }), timezone, 'compatible');
+}
+
+function resolveZonedDateTime(target, timezone, disambiguation = 'compatible') {
+  const naiveUtc = Date.UTC(target.year, target.month - 1, target.day, target.hour, target.minute, 0);
+  const offsets = new Set();
+  for (let hours = -48; hours <= 48; hours += 6) {
+    offsets.add(getTimezoneOffsetMs(new Date(naiveUtc + hours * 60 * 60 * 1000), timezone));
+  }
+
+  const matches = [...offsets]
+    .map((offsetMs) => new Date(naiveUtc - offsetMs))
+    .filter((candidate) => civilPartsEqual(getLocalParts(candidate, timezone), target))
+    .sort((a, b) => a - b);
+  if (matches.length > 0) return disambiguation === 'later' ? matches.at(-1) : matches[0];
+
+  // The local clock skipped over this time (spring DST transition). Match Temporal's
+  // compatible behavior by selecting the first real instant after the gap.
+  const searchStart = naiveUtc - 18 * 60 * 60 * 1000;
+  const searchEnd = naiveUtc + 18 * 60 * 60 * 1000;
+  let best = null;
+  for (let instant = searchStart; instant <= searchEnd; instant += 60_000) {
+    const candidate = new Date(instant);
+    const local = getLocalParts(candidate, timezone);
+    if (compareCivilParts(local, target) >= 0 && sameCivilDate(local, target)) {
+      best = candidate;
+      break;
+    }
+  }
+  if (best) return best;
+  throw new Error(`Unable to resolve local time ${formatCivil(target)} in ${timezone}`);
+}
+
+function normalizeCivilDate({ year, month, day, hour = 0, minute = 0 }) {
+  const normalized = new Date(Date.UTC(year, month - 1, day, hour, minute, 0));
+  return {
+    year: normalized.getUTCFullYear(),
+    month: normalized.getUTCMonth() + 1,
+    day: normalized.getUTCDate(),
+    hour: normalized.getUTCHours(),
+    minute: normalized.getUTCMinutes()
+  };
+}
+
+function truncateToMinute(date) {
+  return new Date(Math.floor(date.getTime() / 60_000) * 60_000);
+}
+
+function civilPartsEqual(left, right) {
+  return compareCivilParts(left, right) === 0;
+}
+
+function compareCivilParts(left, right) {
+  return civilScalar(left) - civilScalar(right);
+}
+
+function civilScalar(parts) {
+  return Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute, 0);
+}
+
+function sameCivilDate(left, right) {
+  return left.year === right.year && left.month === right.month && left.day === right.day;
+}
+
+function formatCivil(parts) {
+  return `${parts.year}-${pad2(parts.month)}-${pad2(parts.day)} ${pad2(parts.hour)}:${pad2(parts.minute)}`;
 }
 
 function getCalendarWeekday(local) {

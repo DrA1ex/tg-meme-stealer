@@ -53,7 +53,7 @@ test('SetupAssistant.start opens button-driven setup screen and stores keyboard 
   assert.deepEqual(assistant.setupMessages.get(1), { chatId: 200, messageId: 100 });
 });
 
-test('SetupAssistant.start reloads config before creating a new draft', async () => {
+test('SetupAssistant.start reloads setup config without mutating the running runtime config', async () => {
   const replies = [];
   const config = {
     parsing: { filters: [{ transform: 'old' }] },
@@ -76,8 +76,9 @@ test('SetupAssistant.start reloads config before creating a new draft', async ()
     reply: async (...args) => replies.push(args)
   });
 
-  assert.deepEqual(config.parsing, { filters: [{ transform: 'hasContent' }] });
-  assert.equal(config.publish.dryRun, true);
+  assert.deepEqual(config.parsing, { filters: [{ transform: 'old' }] });
+  assert.equal(config.publish.dryRun, false);
+  assert.deepEqual(assistant.config.parsing, { filters: [{ transform: 'hasContent' }] });
   assert.deepEqual(assistant.sessions.get(1).parsing, { filters: [{ transform: 'hasContent' }] });
   assert.match(replies[0][0], /Content: 1 filter\(s\)/);
   assert.doesNotMatch(replies[0][0], /old/);
@@ -662,4 +663,29 @@ test('message browser id lookup reports Telegram misses and lookup failures expl
 
   assert.match(failReplies.at(-1)[0], /Telegram source chat: lookup failed/);
   assert.match(failReplies.at(-1)[0], /CHAT_ID_INVALID/);
+});
+
+test('SetupAssistant reports setup save or handler failures to the admin session', async () => {
+  const replies = [];
+  const assistant = new SetupAssistant({
+    scanner: {},
+    mediaDownloader: {},
+    config: { parsing: {}, publish: {}, templates: {} },
+    configLoader: () => ({ parsing: {}, publish: {}, templates: {} })
+  });
+  assistant.sessions.set(1, { parsing: {}, publish: {}, templates: {} });
+
+  await assistant.withSession({
+    from: { id: 1 },
+    reply: async (...args) => {
+      replies.push(args);
+      return { message_id: 10, chat: { id: 1 } };
+    },
+    telegram: { editMessageReplyMarkup: async () => {} }
+  }, async () => {
+    throw new Error('atomic config write failed');
+  });
+
+  assert.equal(replies.length, 1);
+  assert.match(replies[0][0], /Setup error: atomic config write failed/);
 });

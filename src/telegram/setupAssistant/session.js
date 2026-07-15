@@ -54,7 +54,10 @@ export async function done(ctx) {
   await this.clearLastSetupKeyboard(ctx);
   await ctx.reply([
     `Config saved: ${result.configPath}`,
-    `Backup: ${result.backupPath}`,
+    result.backupPath ? `Backup: ${result.backupPath}` : 'Backup: not needed (new config file)',
+    '',
+    'The running process still uses the previous configuration.',
+    'Run /restart to apply the saved changes safely.',
     '',
     'Final config snippet:'
   ].join('\n'));

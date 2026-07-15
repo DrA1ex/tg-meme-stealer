@@ -363,3 +363,59 @@ function message({ id, userId = 123, groupedId = null, text = '', buttons = [], 
       : undefined
   };
 }
+
+test('parseCount follows the configured locale for grouped and decimal counters', () => {
+  assert.equal(parseCount('1,234', 'en-US'), 1234);
+  assert.equal(parseCount('1.234', 'de-DE'), 1234);
+  assert.equal(parseCount('1,5k', 'de-DE'), 1500);
+  assert.equal(parseCount('1.5k', 'en-US'), 1500);
+});
+
+test('parseReactions uses only explicitly configured fallback markers', () => {
+  const markup = {
+    rows: [{ buttons: [{ text: '+ 12' }, { text: '- 3' }, { text: 'rating 99' }] }]
+  };
+  assert.deepEqual(parseReactions(markup, {
+    countLocale: 'en-US',
+    fallbackReactions: { likeMarkers: ['+'], dislikeMarkers: ['-'] }
+  }), { likes: 12, dislikes: 3 });
+  assert.deepEqual(parseReactions(markup, {
+    countLocale: 'en-US',
+    fallbackReactions: { likeMarkers: ['👍'], dislikeMarkers: ['👎'] }
+  }), { likes: 0, dislikes: 0 });
+});
+
+test('grouped post parsing takes caption, markup, and sender from their respective album messages', () => {
+  const messages = [
+    {
+      id: 10,
+      groupedId: 'album',
+      date: 1717200010,
+      sender: { firstName: 'Caption Author' },
+      message: 'By Caption Author\nAlbum caption',
+      photo: { id: 100 }
+    },
+    {
+      id: 11,
+      groupedId: 'album',
+      date: 1717200011,
+      replyMarkup: { rows: [{ buttons: [{ text: '+ 25' }, { text: '- 4' }] }] },
+      photo: { id: 101 }
+    }
+  ];
+
+  const posts = parseMessagesToPosts(messages, {
+    chatId: -1001,
+    parsing: {
+      countLocale: 'en-US',
+      fallbackReactions: { likeMarkers: ['+'], dislikeMarkers: ['-'] }
+    }
+  });
+
+  assert.equal(posts.length, 1);
+  assert.equal(posts[0].author, 'Caption Author');
+  assert.equal(posts[0].text, 'By Caption Author\nAlbum caption');
+  assert.equal(posts[0].likes, 25);
+  assert.equal(posts[0].dislikes, 4);
+  assert.equal(posts[0].data.media.length, 2);
+});

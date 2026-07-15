@@ -3,7 +3,10 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import sqlite3 from 'sqlite3';
+import { open } from 'sqlite';
 import { PostRepository } from '../src/database/postRepository.js';
+import { getMigrations } from '../src/database/migrations.js';
 import { compileReactionScore, compileSourceWhere } from '../src/core/sourceExpression.js';
 
 test('PostRepository upserts and orders top posts', async () => {
@@ -440,6 +443,143 @@ test('PostRepository applies custom source expressions and reaction selection in
 
   await repository.close();
   await fs.rm(dbPath, { force: true });
+});
+
+
+test('PostRepository applies numbered migrations and exposes the reliability schema', async () => {
+  const dbPath = path.join(os.tmpdir(), `tg-memes-${process.pid}-${Date.now()}-migrations.sqlite`);
+  await fs.rm(dbPath, { force: true });
+  const repository = new PostRepository(dbPath);
+  await repository.init();
+  try {
+    const version = await repository.all('PRAGMA user_version');
+    const publicationColumns = await repository.all('PRAGMA table_info(publications)');
+    const postColumns = await repository.all('PRAGMA table_info(publication_posts)');
+
+    assert.deepEqual(getMigrations(), [
+      { version: 1, name: '0000_initial' },
+      { version: 2, name: '0001_publication_reliability' }
+    ]);
+    assert.equal(version[0].user_version, 2);
+    assert.ok(publicationColumns.some((column) => column.name === 'last_progress_at'));
+    assert.ok(publicationColumns.some((column) => column.name === 'next_attempt_at'));
+    assert.ok(postColumns.some((column) => column.name === 'last_error_code'));
+  } finally {
+    await repository.close();
+    await fs.rm(dbPath, { force: true });
+  }
+});
+
+test('PostRepository upgrades a 0000_initial database without losing rows', async () => {
+  const dbPath = path.join(os.tmpdir(), `tg-memes-${process.pid}-${Date.now()}-migration-upgrade.sqlite`);
+  await fs.rm(dbPath, { force: true });
+  const legacy = await open({ filename: dbPath, driver: sqlite3.Database });
+  await legacy.exec(`
+    CREATE TABLE posts (
+      chat_id TEXT NOT NULL, message_id INTEGER NOT NULL, author TEXT, text TEXT,
+      likes INTEGER NOT NULL DEFAULT 0, dislikes INTEGER NOT NULL DEFAULT 0,
+      data TEXT NOT NULL DEFAULT '{}', message_date TEXT NOT NULL,
+      collected_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+      PRIMARY KEY (chat_id, message_id)
+    );
+    CREATE TABLE publications (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, key TEXT, selection_key TEXT NOT NULL,
+      title TEXT NOT NULL, period_start TEXT NOT NULL, period_end TEXT NOT NULL,
+      status TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+      finished_at TEXT, last_error TEXT, lease_owner TEXT, lease_until TEXT,
+      data TEXT NOT NULL DEFAULT '{}'
+    );
+    CREATE TABLE publication_posts (
+      publication_id INTEGER NOT NULL, chat_id TEXT NOT NULL, message_id INTEGER NOT NULL,
+      position INTEGER NOT NULL, likes INTEGER NOT NULL, dislikes INTEGER NOT NULL,
+      bot_message_id INTEGER, sent_at TEXT, send_state TEXT NOT NULL DEFAULT 'sent',
+      PRIMARY KEY (publication_id, chat_id, message_id)
+    );
+    INSERT INTO publications (
+      key, selection_key, title, period_start, period_end, status, created_at, updated_at, data
+    ) VALUES (
+      'legacy-key', 'best.day', 'Legacy', '2026-07-01T00:00:00.000Z',
+      '2026-07-02T00:00:00.000Z', 'created', '2026-07-02T00:00:00.000Z',
+      '2026-07-02T00:00:00.000Z', '{"count":1}'
+    );
+    PRAGMA user_version = 1;
+  `);
+  await legacy.close();
+
+  const repository = new PostRepository(dbPath);
+  await repository.init();
+  try {
+    const row = await repository.getPublicationByKey('legacy-key');
+    const columns = await repository.all('PRAGMA table_info(publication_posts)');
+    const version = await repository.all('PRAGMA user_version');
+    assert.equal(row.title, 'Legacy');
+    assert.equal(version[0].user_version, 2);
+    assert.ok(columns.some((column) => column.name === 'attempt_count'));
+    assert.ok(columns.some((column) => column.name === 'last_error_code'));
+  } finally {
+    await repository.close();
+    await fs.rm(dbPath, { force: true });
+  }
+});
+
+test('PostRepository expiration uses last progress for running publications', async () => {
+  const dbPath = path.join(os.tmpdir(), `tg-memes-${process.pid}-${Date.now()}-progress-ttl.sqlite`);
+  await fs.rm(dbPath, { force: true });
+  const repository = new PostRepository(dbPath);
+  await repository.init();
+  try {
+    const id = await repository.tryCreatePublicationRequest(publicationClaim());
+    await repository.getNextPublicationRequest({ ownerId: 'worker', leaseMs: 60_000 });
+    await repository.markPublicationRunning(id, 'worker');
+    await repository.run(
+      'UPDATE publications SET created_at = ?, updated_at = ?, last_progress_at = ?, lease_owner = NULL, lease_until = NULL WHERE id = ?',
+      ['2000-01-01T00:00:00.000Z', new Date().toISOString(), new Date().toISOString(), id]
+    );
+
+    await repository.failExpiredPublicationRequests({ requestTtlHours: 1 });
+    assert.equal((await repository.getPublicationById(id)).status, 'running');
+
+    await repository.run(
+      'UPDATE publications SET updated_at = ?, last_progress_at = ? WHERE id = ?',
+      ['2000-01-01T00:00:00.000Z', '2000-01-01T00:00:00.000Z', id]
+    );
+    await repository.failExpiredPublicationRequests({ requestTtlHours: 1 });
+    assert.equal((await repository.getPublicationById(id)).status, 'failed');
+  } finally {
+    await repository.close();
+    await fs.rm(dbPath, { force: true });
+  }
+});
+
+test('PostRepository logs and skips rows with corrupted JSON payloads', async () => {
+  const dbPath = path.join(os.tmpdir(), `tg-memes-${process.pid}-${Date.now()}-corrupt-json.sqlite`);
+  await fs.rm(dbPath, { force: true });
+  const repository = new PostRepository(dbPath);
+  await repository.init();
+  const errors = [];
+  repository.logger = { error: (message, fields) => errors.push({ message, fields }) };
+  try {
+    await repository.run(`
+      INSERT INTO posts (
+        chat_id, message_id, author, text, likes, dislikes, data, message_date, collected_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `, ['-1001', 1, 'Alice', 'Broken', 1, 0, '{broken', '2026-06-15T00:00:00.000Z', '2026-06-15T00:00:00.000Z', '2026-06-15T00:00:00.000Z']);
+
+    const rows = await repository.getTopPosts({
+      chatId: -1001,
+      sinceIso: '2026-06-01T00:00:00.000Z',
+      untilIso: '2026-07-01T00:00:00.000Z',
+      limit: 10
+    });
+
+    assert.deepEqual(rows, []);
+    assert.equal(errors.length, 1);
+    assert.equal(errors[0].message, 'Corrupted JSON row skipped');
+    assert.equal(errors[0].fields.id, '-1001:1');
+  } finally {
+    await repository.close();
+    await fs.rm(dbPath, { force: true });
+  }
 });
 
 function publicationClaim() {

@@ -54,7 +54,7 @@ test('SelectionPublisher.waitForIdle times out', async () => {
   assert.equal(publisher.idleResolvers.length, 0);
 });
 
-test('SelectionPublisher.launchBot does not wait for polling promise', () => {
+test('SelectionPublisher.launchBot performs preflight without waiting for polling to finish', async () => {
   const publisher = new SelectionPublisher({
     repository: {},
     mediaDownloader: {
@@ -66,14 +66,16 @@ test('SelectionPublisher.launchBot does not wait for polling promise', () => {
   });
   let launched = false;
   publisher.bot = {
+    telegram: { getMe: async () => ({ id: 1 }) },
     launch: () => {
       launched = true;
       return new Promise(() => {});
     }
   };
 
-  publisher.launchBot();
+  const result = await publisher.launchBot();
 
+  assert.deepEqual(result, { started: true });
   assert.equal(launched, true);
 });
 
@@ -488,30 +490,40 @@ test('SelectionPublisher scheduled enqueue skips same canonical key but queues d
   ]);
 });
 
-test('SelectionPublisher keeps request resumable when Telegram send fails', async () => {
-  let errorId = null;
+test('SelectionPublisher keeps retrying network failures until Telegram recovers', async () => {
+  const rows = [request({ id: 42, status: 'created' })];
+  let sends = 0;
+  let finished = null;
   const publisher = new SelectionPublisher({
     repository: {
-      getNextPublicationRequest: async () => request({ id: 42, status: 'created' }),
+      getNextPublicationRequest: async () => rows.shift() || null,
+      markPublicationHeaderSending: async () => {},
+      resetPublicationHeaderForRetry: async () => {},
       markPublicationRunning: async () => {},
-      updatePublicationError: async (publicationId) => {
-        errorId = publicationId;
-      },
-      listPublicationPosts: async () => []
+      markPublicationPostSending: async () => {},
+      markPublicationPostPending: async () => {},
+      recordPublicationPost: async () => {},
+      listPublicationPosts: async () => [],
+      finishPublication: async (id, payload) => { finished = { id, payload }; }
     },
-    mediaDownloader: {},
+    mediaDownloader: { downloadPostMedia: async () => [], cleanupFiles: async () => {} },
     setupAssistant: null,
-    config: { ...config(), publish: { dryRun: false } }
+    config: { ...config(), publish: { dryRun: false, retryBaseMs: 1, retryMaxMs: 1 } }
   });
   publisher.bot.telegram = {
     sendMessage: async () => {
-      throw new Error('network failed');
+      sends += 1;
+      if (sends <= 4) throw Object.assign(new Error('network failed'), { code: 'ENETUNREACH' });
+      return { message_id: sends };
     }
   };
 
-  await assert.rejects(() => publisher.processPublicationQueue(), /network failed/);
+  const result = await publisher.processPublicationQueue();
 
-  assert.equal(errorId, 42);
+  assert.equal(result.processed, 1);
+  assert.equal(sends, 7); // four header attempts, then header success and two posts
+  assert.equal(finished.id, 42);
+  assert.equal(finished.payload.status, 'published');
 });
 
 test('SelectionPublisher stops automatic retries when a started delivery has an uncertain outcome', async () => {
@@ -532,9 +544,8 @@ test('SelectionPublisher stops automatic retries when a started delivery has an 
   });
   publisher.bot.telegram = { sendMessage: async () => new Promise(() => {}) };
 
-  await assert.rejects(() => publisher.processPublicationRequest(request({ id: 43, status: 'created' })), {
-    code: 'TELEGRAM_OPERATION_TIMEOUT'
-  });
+  const result = await publisher.processPublicationRequest(request({ id: 43, status: 'created' }));
+  assert.deepEqual(result, { stopped: true, uncertain: true });
   assert.equal(uncertain.publicationId, 43);
   assert.equal(uncertain.error.indeterminate, true);
   assert.equal(updated, false);
@@ -572,22 +583,24 @@ test('SelectionPublisher records an in-flight delivery as uncertain during shutd
   await started;
   controller.abort(new Error('shutdown'));
 
-  await assert.rejects(delivery, { code: 'TELEGRAM_OPERATION_CANCELLED', indeterminate: true });
+  const result = await delivery;
+  assert.deepEqual(result, { stopped: true, uncertain: true });
   assert.equal(uncertain.publicationId, 44);
   assert.equal(uncertain.error.code, 'TELEGRAM_OPERATION_CANCELLED');
+  assert.equal(uncertain.error.indeterminate, true);
 });
 
 test('SelectionPublisher keeps a delivery retryable when shutdown happens before sending', async () => {
   const controller = new AbortController();
   let markedSending = false;
   let uncertain = false;
-  let retryableError = null;
+  let released = null;
   let telegramCalled = false;
   const publisher = new SelectionPublisher({
     repository: {
       markPublicationHeaderSending: async () => { markedSending = true; },
       markPublicationUncertain: async () => { uncertain = true; },
-      updatePublicationError: async (_publicationId, error) => { retryableError = error; },
+      releasePublicationLease: async (publicationId, _ownerId, error) => { released = { publicationId, error }; },
       listPublicationPosts: async () => []
     },
     mediaDownloader: {},
@@ -604,14 +617,14 @@ test('SelectionPublisher keeps a delivery retryable when shutdown happens before
     }
   };
 
-  await assert.rejects(
-    publisher.processPublicationRequest(request({ id: 45, status: 'created' })),
-    { code: 'TELEGRAM_OPERATION_CANCELLED', indeterminate: false }
-  );
+  const result = await publisher.processPublicationRequest(request({ id: 45, status: 'created' }));
+  assert.deepEqual(result, { stopped: true, cancelled: true });
   assert.equal(markedSending, false);
   assert.equal(telegramCalled, false);
   assert.equal(uncertain, false);
-  assert.equal(retryableError.code, 'TELEGRAM_OPERATION_CANCELLED');
+  assert.equal(released.publicationId, 45);
+  assert.equal(released.error.code, 'TELEGRAM_OPERATION_CANCELLED');
+  assert.equal(released.error.indeterminate, false);
 });
 
 test('SelectionPublisher.runManualSync runs sync worker and replies with final stats', async () => {
@@ -1565,8 +1578,12 @@ test('SelectionPublisher.processPublicationQueue marks successful request as pub
   const publisher = new SelectionPublisher({
     repository: {
       getNextPublicationRequest: async () => rows.shift() || null,
+      markPublicationHeaderSending: async () => {},
+      resetPublicationHeaderForRetry: async () => {},
       markPublicationRunning: async () => {},
       listPublicationPosts: async () => [],
+      markPublicationPostSending: async () => {},
+      markPublicationPostPending: async () => {},
       recordPublicationPost: async () => {},
       finishPublication: async (publicationId, payload) => {
         finished = { publicationId, payload };
@@ -1595,10 +1612,13 @@ test('SelectionPublisher.processPublicationQueue marks successful request as pub
 test('SelectionPublisher resumes running request from first unsent position', async () => {
   const sent = [];
   const recorded = [];
+  const requests = [request({ id: 9, status: 'running' })];
   const publisher = new SelectionPublisher({
     repository: {
-      getNextPublicationRequest: async () => sent.length === 0 ? request({ id: 9, status: 'running' }) : null,
-      listPublicationPosts: async () => [{ position: 1 }],
+      getNextPublicationRequest: async () => requests.shift() || null,
+      listPublicationPosts: async () => [{ position: 1, sendState: 'sent' }],
+      markPublicationPostSending: async () => {},
+      markPublicationPostPending: async () => {},
       recordPublicationPost: async (payload) => recorded.push(payload),
       finishPublication: async () => {}
     },

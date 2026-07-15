@@ -18,7 +18,7 @@ It supports text posts, photos, videos, albums, configurable parsing rules, QR l
 - Publishes configurable controversial selections from rolling time windows.
 - Supports configurable publication sources, rolling windows, thresholds, and schedules.
 - Keeps a publication log in SQLite and resumes interrupted publication jobs.
-- Provides admin-only bot commands for stats, sync, backfill, publishing, and setup.
+- Provides admin-only bot commands for stats, sync, backfill, publishing, setup, and graceful restart.
 - Includes a button-driven setup assistant for content rules, publishing schedules, diagnostics, and safe draft saving.
 - Uses templates for published captions and admin stats.
 
@@ -116,7 +116,7 @@ Diagnostics are available from the setup home screen. Use `Diagnostics → Messa
 
 The old text commands such as `/setfilter`, `/raw`, `/debug`, `/preview`, and `/done` still work in setup mode, but they are now best treated as advanced/manual tools.
 
-After saving, stop setup mode with `Ctrl+C` or keep it running and open another terminal for the next commands.
+After saving, the running process intentionally keeps its original runtime config. Use `/restart` when the app is managed by PM2 or another service manager, or stop the setup process and start the daemon manually. A polling lock prevents two processes from consuming updates with the same bot token at the same time.
 
 6. Start the scheduled app:
 
@@ -161,7 +161,7 @@ If the same period was already scheduled or published, `/publish` reports that e
 /publish weekly_best -force
 ```
 
-For later maintenance, usually run only `npm start`. Use admin `/sync` for one refresh pass, `/backfill 90` to fill a larger historical window, `/publish weekly_best` to manually publish one selection, and `npm run setup` when parser, publishing, source, or template rules need to be changed.
+For later maintenance, usually run only `npm start`. Use admin `/sync` for one refresh pass, `/sync --force` only to override the deletion safety threshold after inspection, `/backfill 90` to fill a larger historical window, `/publish weekly_best` to manually publish one selection, `/setup` to edit supported config sections, and `/restart` after saving runtime config changes.
 
 ## Configuration
 
@@ -208,6 +208,12 @@ Common options:
     "pageSize": 100,
     "intervalHours": 24,
     "runOnStart": true,
+    "maxRetries": 3,
+    "retryBaseMs": 2000,
+    "retryMaxMs": 60000,
+    "maxMissingRatio": 0.3,
+    "mediaMaxBytes": 536870912,
+    "mediaMaxAgeHours": 24,
     "retentionDays": 60,
     "retentionInitialDelayMinutes": 15,
     "retentionIntervalHours": 24,
@@ -235,6 +241,11 @@ Common options:
     "requestTtlHours": 12,
     "workerLeaseMs": 900000,
     "workerIntervalMinutes": 10,
+    "postMaxRetries": 3,
+    "maxConsecutivePostFailures": 3,
+    "requestMaxRetries": 3,
+    "retryBaseMs": 1000,
+    "retryMaxMs": 60000,
     "firstSendAt": "2026-07-01T00:00:00+03:00",
     "sources": [
       {
@@ -328,6 +339,8 @@ Common options:
 
 `logging.logLevel` can be `DEBUG`, `INFO`, `WARN`, `ERROR`, or `SILENT` and is case-insensitive. `logging.color` can be `auto`, `always`, or `never`; `auto` uses colors only for interactive terminals. Log levels are colored, scopes are highlighted, and high-signal fields such as `status`, `key`, `publicationId`, `messageId`, `reason`, and `error` get distinct colors. Sync logs include the scan window, each Telegram history request, fetched message counts, matched post counts, saved rows, skipped old posts, and deleted-post cleanup. `sync.runOnStart` controls whether the daemon runs one sync immediately after startup. `sync.intervalHours` controls the recurring sync interval. `sync.retentionDays` controls how long source post rows stay in `posts`; the default is 60 days. Retention starts after `sync.retentionInitialDelayMinutes` and then repeats every `sync.retentionIntervalHours`; it uses the same in-memory job gate as sync and publishing. Set `sync.runOnStart` to `false` to disable the initial startup sync.
 
+`parsing.countLocale` controls grouped and decimal reaction counters. Fallback reaction parsing uses only the explicit `parsing.fallbackReactions.likeMarkers` and `dislikeMarkers` arrays; include `+` or `-` there when those symbols should count as reactions.
+
 Publication schedules use `schedule.timezone`. Each item under `publish.template` has a globally unique `key`, `source`, explicit `schedule`, `windowHours`, optional `offsetHours`, `posts`, `reactions`, and header `template`. `source` names an entry from `publish.sources`; `best` and `controversial` are the defaults, and you can add your own. Schedules can be daily (`{"type":"daily","time":"10:00"}`), weekly (`{"type":"weekly","weekday":1,"time":"10:00"}` with Monday as `1`), or monthly (`{"type":"monthly","dayOfMonth":15,"time":"10:00"}`; use days `1..28`). Selections normally use the rolling window `[scheduledAt - windowHours, scheduledAt)`.
 
 Set `offsetHours` to move only the selection window back from the scheduled run time. For example, `windowHours: 24` and `offsetHours: 168` on a run at `2026-07-08T10:00:00Z` selects posts from `[2026-06-30T10:00:00Z, 2026-07-01T10:00:00Z)`, while the publish key, first-send gate, and send time remain tied to `2026-07-08T10:00:00Z`.
@@ -378,7 +391,7 @@ Open a private chat with the bot as `TELEGRAM_ADMIN_ID` and run:
 /setup
 ```
 
-`/setup` creates a draft from the currently loaded config and opens `Setup home`. Changes are pending until you press `Save` or run `/done`. `Cancel` or `/cancel` drops the draft. When saving, the current `config.json` is backed up to `config.json.old` first.
+`/setup` creates a draft from the currently loaded config and opens `Setup home`. Changes are pending until you press `Save` or run `/done`. `Cancel` or `/cancel` drops the draft. Saving is atomic: the next config is fsynced to a temporary file and renamed over `config.json`. The previous file is preserved both as `config.json.old` and as a timestamped `.bak` file. Save failures are reported to the admin and the temporary file is removed. The live daemon is not hot-reconfigured; use `/restart` after a successful save.
 
 ### Setup Home
 
@@ -845,11 +858,19 @@ Inside the admin private chat, `/setup` opens the button-driven setup home. Usef
 
 Use the buttons for normal setup. Use the JSON commands documented in `Setup Mode → Text Commands in Setup Mode` only when you need exact manual edits.
 
-Run one recent refresh pass from the admin bot. This updates posts inside `sync.refreshRecentDays` and removes recently deleted source posts from the local database:
+Run one recent refresh pass from the admin bot. This updates posts inside `sync.refreshRecentDays` and reconciles recently deleted source posts only after a complete scan:
 
 ```text
 /sync
 ```
+
+If more than `sync.maxMissingRatio` of the expected recent rows are absent, reconciliation is blocked and the admin receives a warning. After verifying that the source really changed, the admin can explicitly override only that ratio guard:
+
+```text
+/sync --force
+```
+
+`--force` does not make an incomplete or failed history scan authoritative.
 
 Backfill missing posts for `sync.initialScanDays` without rewriting older existing rows from the admin bot:
 
@@ -942,6 +963,8 @@ Restart after changing `.env` or `config.json`:
 pm2 restart tg-memes
 ```
 
+The admin can request the same graceful shutdown from Telegram with `/restart`. The external service manager must be configured to start the process again.
+
 Enable startup on server reboot:
 
 ```bash
@@ -979,7 +1002,7 @@ Commands work only in a private chat with `TELEGRAM_ADMIN_ID`.
 
 `/publications` shows the last 10 publication records with IDs, status, selection, progress, update time, and title. `/publication <id>` shows the posts for one publication as an aligned table with source message IDs, reactions, send status, bot message ID, and parsed author.
 
-`/sync` runs one recent refresh pass. `/backfill [days]` fills missing historical posts. Both commands use the in-memory sync worker, so overlapping sync/backfill requests are skipped. `/publish [key...]` creates publication request rows immediately. If at least one request was created, the publication worker is asked to process the queue; the worker still runs one job at a time.
+`/sync [--force]` runs one recent refresh pass. `/backfill [days]` fills missing historical posts. Both commands use the in-memory sync worker, so overlapping sync/backfill requests are skipped. Failed synchronization is retried with backoff; after retries are exhausted, publishing is paused and the admin receives recovery instructions. A later successful `/sync` clears the pause. `/publish [key...]` creates publication request rows immediately. If at least one request was created, the publication worker is asked to process the queue; the worker still runs one job at a time.
 
 Other users and non-private chats are ignored.
 
@@ -997,11 +1020,11 @@ Main tables:
 - `publications`
 - `publication_posts`
 
-Publication rows use a durable `key` per selection period. Scheduled publishing creates `created` requests; the worker sends the header, switches the request to `running`, records each sent post in `publication_posts`, and finally marks the request `published`. If the process restarts while a request is `running`, the worker resumes from the first post that was not recorded as sent. Expired requests are marked `failed`.
+Publication rows use a durable `key` per selection period. Scheduled publishing creates `created` requests; the worker sends the header, switches the request to `running`, records each sent post in `publication_posts`, and finally marks the request `published`. If the process restarts while a request is `running`, the worker resumes from the first post that was not recorded as sent. TTL is measured from the latest progress for active requests. SQLite schema upgrades are applied through ordered `PRAGMA user_version` migrations; the original schema is `0000_initial`.
 
 The daemon periodically deletes rows in `posts` older than `sync.retentionDays` so the database does not grow indefinitely. Retention waits 15 minutes after daemon startup by default, then runs every 24 hours, and it is serialized through the same job gate as sync and publishing. Publication history remains in `publications` and `publication_posts`; old publication post details may no longer have joined source text/author after the source post row is pruned.
 
-Media is not stored permanently. The database stores Telegram media references in `data.media`; media is downloaded to `sync.mediaDir` only for preview or publishing and deleted immediately after the rich post is sent or the send attempt fails.
+Media is not stored permanently. The database stores Telegram media references in `data.media`; media is streamed to a unique per-attempt directory under `sync.mediaDir`, bounded by `sync.mediaMaxBytes`, and deleted after success or failure. Stale attempt directories older than `sync.mediaMaxAgeHours` are removed during cleanup.
 
 Telegram can return `FLOOD_WAIT` for read-only API calls too, including history reads, reaction enrichment, and media downloads. All MTProto traffic shares one adaptive limiter: calls are paced per method, a server-requested wait pauses the whole client, and the affected method backs off before slowly returning to its configured rate. Tune `sync.throttle.historyMinMs` / `historyMaxMs`, `reactionsMinMs` / `reactionsMaxMs`, and `mediaMinMs` / `mediaMaxMs` as needed.
 
@@ -1028,7 +1051,7 @@ If Redis cannot be reached or an operation times out, the app logs an `ERROR`, o
 
 The Redis integration test is mandatory in GitHub Actions. Locally, set `TEST_REDIS_URL` to run the same real-server concurrency and cooldown tests.
 
-Every limiter wait has one cumulative `maxQueueDelayMs` budget, including Redis revalidation. Telegram operations have a `telegramOperationTimeoutMs` watchdog. Publication workers coordinate through SQLite leases (`publish.workerLeaseMs`), and interrupted sends are moved to `uncertain` instead of being retried automatically; inspect those jobs before deciding whether to resend. Sync pagination also stops on repeated cursors or after `sync.maxPagesPerRun` pages.
+Every limiter wait has one cumulative `maxQueueDelayMs` budget, including Redis revalidation. Telegram operations have a `telegramOperationTimeoutMs` watchdog. Publication workers coordinate through SQLite leases (`publish.workerLeaseMs`). A lost lease aborts the current side effect before another worker can continue. Only genuinely indeterminate deliveries are moved to `uncertain`; definitive Telegram errors are not. Unknown post errors are retried `publish.postMaxRetries` times and then that post is skipped. A successful post resets the streak, while more than `publish.maxConsecutivePostFailures` consecutive exhausted unknown post errors fail the publication. Network failures retry with backoff without consuming that budget. Unexpected request-level failures are deferred so one bad request cannot starve the queue. Sync pagination also stops on repeated cursors or after `sync.maxPagesPerRun` pages.
 
 Shutdown is bounded by `shutdown.timeoutMs`. On `SIGINT` or `SIGTERM`, the scheduler stops, queued jobs are cancelled, rate-limit and retry waits receive an abort signal, and no new jobs are accepted. A Bot API request cancelled after it started is recorded as `uncertain`; a request cancelled before it reached Telegram remains retryable. Most of the shutdown budget is used to drain running jobs and persist their state, while up to five seconds is reserved for closing MTProto, Redis, and SQLite. If either phase exceeds its deadline, the application logs `WARN`/`ERROR`, forces resource close, and exits instead of waiting indefinitely.
 

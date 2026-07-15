@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { sendRichPost } from '../src/telegram/richPost.js';
 
-test('sendRichPost sends first media with caption and does not use media groups', async () => {
+test('sendRichPost sends albums atomically with the caption on the first media item', async () => {
   const calls = [];
   const cleaned = [];
   const telegram = {
@@ -45,9 +45,12 @@ test('sendRichPost sends first media with caption and does not use media groups'
     }
   });
 
-  assert.deepEqual(calls.map((call) => call[0]), ['photo', 'video']);
-  assert.equal(calls[0][3].caption, 'Post 10 media=photo#10, video#11');
-  assert.equal(calls[1][3], undefined);
+  assert.deepEqual(calls.map((call) => call[0]), ['mediaGroup']);
+  assert.equal(calls[0][1], 42);
+  assert.deepEqual(calls[0][2], [
+    { type: 'photo', media: { source: '/tmp/1.jpg' }, caption: 'Post 10 media=photo#10, video#11' },
+    { type: 'video', media: { source: '/tmp/2.mp4' } }
+  ]);
   assert.deepEqual(cleaned, ['/tmp/1.jpg', '/tmp/2.mp4']);
 });
 

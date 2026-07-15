@@ -11,15 +11,27 @@ export async function sendRichPost({ telegram, chatId, mediaDownloader, post, in
       });
     }
 
-    const [firstFile, ...extraFiles] = files;
-    const firstResult = await sendSingleMedia({
-      telegram, chatId, file: firstFile, caption, rateLimiter, operationTimeoutMs, signal, onBeforeOperation: onBeforeSend
-    });
-
-    for (const file of extraFiles) {
-      await sendSingleMedia({ telegram, chatId, file, rateLimiter, operationTimeoutMs, signal });
+    if (files.length > 1) {
+      return withBotApiRetry(
+        () => telegram.sendMediaGroup(chatId, files.map((file, fileIndex) => ({
+          type: file.kind === 'video' ? 'video' : 'photo',
+          media: { source: file.path },
+          ...(fileIndex === 0 ? { caption } : {})
+        }))),
+        { label: 'sendMediaGroup', rateLimiter, chatId, operationTimeoutMs, signal, onBeforeOperation: onBeforeSend }
+      );
     }
-    return firstResult;
+
+    return sendSingleMedia({
+      telegram,
+      chatId,
+      file: files[0],
+      caption,
+      rateLimiter,
+      operationTimeoutMs,
+      signal,
+      onBeforeOperation: onBeforeSend
+    });
   } finally {
     await mediaDownloader.cleanupFiles?.(files);
   }
@@ -31,10 +43,9 @@ async function sendSingleMedia({ telegram, chatId, file, caption, rateLimiter, o
       () => telegram.sendVideo(chatId, { source: file.path }, caption ? { caption } : undefined),
       { label: 'sendVideo', rateLimiter, chatId, operationTimeoutMs, signal, onBeforeOperation }
     );
-  } else {
-    return withBotApiRetry(
-      () => telegram.sendPhoto(chatId, { source: file.path }, caption ? { caption } : undefined),
-      { label: 'sendPhoto', rateLimiter, chatId, operationTimeoutMs, signal, onBeforeOperation }
-    );
   }
+  return withBotApiRetry(
+    () => telegram.sendPhoto(chatId, { source: file.path }, caption ? { caption } : undefined),
+    { label: 'sendPhoto', rateLimiter, chatId, operationTimeoutMs, signal, onBeforeOperation }
+  );
 }

@@ -2,12 +2,15 @@ import fs from 'node:fs';
 import path from 'node:path';
 import sqlite3 from 'sqlite3';
 import { open } from 'sqlite';
+import { getLogger } from '../core/logger.js';
+import { runMigrations } from './migrations.js';
 
 export class PostRepository {
   constructor(dbPath) {
     this.dbPath = path.resolve(dbPath);
     fs.mkdirSync(path.dirname(this.dbPath), { recursive: true });
     this.db = null;
+    this.logger = getLogger('database');
   }
 
   async init() {
@@ -19,64 +22,7 @@ export class PostRepository {
     await withSqliteBusyRetry(() => this.db.run('PRAGMA busy_timeout = 5000'));
     await withSqliteBusyRetry(() => this.db.run('PRAGMA journal_mode = WAL'));
     await withSqliteBusyRetry(() => this.db.run('PRAGMA foreign_keys = ON'));
-    await withSqliteBusyRetry(() => this.db.exec(`
-      CREATE TABLE IF NOT EXISTS posts (
-        chat_id TEXT NOT NULL,
-        message_id INTEGER NOT NULL,
-        author TEXT,
-        text TEXT,
-        likes INTEGER NOT NULL DEFAULT 0,
-        dislikes INTEGER NOT NULL DEFAULT 0,
-        data TEXT NOT NULL DEFAULT '{}',
-        message_date TEXT NOT NULL,
-        collected_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL,
-        PRIMARY KEY (chat_id, message_id)
-      )
-    `));
-    await withSqliteBusyRetry(() => this.db.exec('CREATE INDEX IF NOT EXISTS idx_posts_date ON posts(message_date)'));
-    await withSqliteBusyRetry(() => this.db.exec('CREATE INDEX IF NOT EXISTS idx_posts_score ON posts(likes, dislikes)'));
-    await withSqliteBusyRetry(() => this.db.exec(`
-      CREATE TABLE IF NOT EXISTS publications (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        key TEXT,
-        selection_key TEXT NOT NULL,
-        title TEXT NOT NULL,
-        period_start TEXT NOT NULL,
-        period_end TEXT NOT NULL,
-        status TEXT NOT NULL,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL,
-        finished_at TEXT,
-        last_error TEXT,
-        lease_owner TEXT,
-        lease_until TEXT,
-        data TEXT NOT NULL DEFAULT '{}'
-      )
-    `));
-    await ensureColumn(this.db, 'publications', 'lease_owner', 'TEXT');
-    await ensureColumn(this.db, 'publications', 'lease_until', 'TEXT');
-    await withSqliteBusyRetry(() => this.db.exec(`
-      CREATE UNIQUE INDEX IF NOT EXISTS idx_publications_key_active_v2
-      ON publications(key)
-      WHERE key IS NOT NULL AND status IN ('created', 'header_sending', 'running', 'uncertain', 'published')
-    `));
-    await withSqliteBusyRetry(() => this.db.exec(`
-      CREATE TABLE IF NOT EXISTS publication_posts (
-        publication_id INTEGER NOT NULL,
-        chat_id TEXT NOT NULL,
-        message_id INTEGER NOT NULL,
-        position INTEGER NOT NULL,
-        likes INTEGER NOT NULL,
-        dislikes INTEGER NOT NULL,
-        bot_message_id INTEGER,
-        sent_at TEXT,
-        send_state TEXT NOT NULL DEFAULT 'sent',
-        PRIMARY KEY (publication_id, chat_id, message_id),
-        FOREIGN KEY (publication_id) REFERENCES publications(id) ON DELETE CASCADE
-      )
-    `));
-    await ensureColumn(this.db, 'publication_posts', 'send_state', "TEXT NOT NULL DEFAULT 'sent'");
+    await withSqliteBusyRetry(() => runMigrations(this.db, this.logger));
   }
 
   async upsertPost(post) {
@@ -150,10 +96,7 @@ export class PostRepository {
       params
     );
 
-    return rows.map((row) => ({
-      ...row,
-      data: JSON.parse(row.data || '{}')
-    }));
+    return rows.map((row) => deserializePost(row, this.logger)).filter(Boolean);
   }
 
   async getControversialPosts({ chatId, sinceIso, untilIso, limit }) {
@@ -179,10 +122,7 @@ export class PostRepository {
       params
     );
 
-    return rows.map((row) => ({
-      ...row,
-      data: JSON.parse(row.data || '{}')
-    }));
+    return rows.map((row) => deserializePost(row, this.logger)).filter(Boolean);
   }
 
   async getSelectionPosts({
@@ -274,10 +214,7 @@ export class PostRepository {
       params
     );
 
-    return rows.map((row) => ({
-      ...row,
-      data: JSON.parse(row.data || '{}')
-    }));
+    return rows.map((row) => deserializePost(row, this.logger)).filter(Boolean);
   }
 
   async createPublication({ selectionKey, title, periodStart, periodEnd, status, posts, data = {} }) {
@@ -337,7 +274,8 @@ export class PostRepository {
       `
         SELECT id, key, selection_key AS selectionKey, title, period_start AS periodStart, period_end AS periodEnd,
                status, created_at AS createdAt, updated_at AS updatedAt,
-               finished_at AS finishedAt, last_error AS lastError, data
+               finished_at AS finishedAt, last_error AS lastError, last_error_code AS lastErrorCode,
+               last_progress_at AS lastProgressAt, attempt_count AS attemptCount, next_attempt_at AS nextAttemptAt, data
         FROM publications
         WHERE key = ?
         ORDER BY id DESC
@@ -345,7 +283,7 @@ export class PostRepository {
       `,
       [key]
     );
-    return rows[0] ? deserializePublication(rows[0]) : null;
+    return rows[0] ? deserializePublication(rows[0], this.logger) : null;
   }
 
   async getBlockingPublicationByKey(key) {
@@ -353,7 +291,8 @@ export class PostRepository {
       `
         SELECT id, key, selection_key AS selectionKey, title, period_start AS periodStart, period_end AS periodEnd,
                status, created_at AS createdAt, updated_at AS updatedAt,
-               finished_at AS finishedAt, last_error AS lastError, data
+               finished_at AS finishedAt, last_error AS lastError, last_error_code AS lastErrorCode,
+               last_progress_at AS lastProgressAt, attempt_count AS attemptCount, next_attempt_at AS nextAttemptAt, data
         FROM publications
         WHERE key = ?
           AND status IN ('created', 'header_sending', 'running', 'uncertain', 'published')
@@ -362,7 +301,7 @@ export class PostRepository {
       `,
       [key]
     );
-    return rows[0] ? deserializePublication(rows[0]) : null;
+    return rows[0] ? deserializePublication(rows[0], this.logger) : null;
   }
 
   async getPublicationById(publicationId) {
@@ -370,14 +309,15 @@ export class PostRepository {
       `
         SELECT id, key, selection_key AS selectionKey, title, period_start AS periodStart, period_end AS periodEnd,
                status, created_at AS createdAt, updated_at AS updatedAt,
-               finished_at AS finishedAt, last_error AS lastError, data
+               finished_at AS finishedAt, last_error AS lastError, last_error_code AS lastErrorCode,
+               last_progress_at AS lastProgressAt, attempt_count AS attemptCount, next_attempt_at AS nextAttemptAt, data
         FROM publications
         WHERE id = ?
         LIMIT 1
       `,
       [publicationId]
     );
-    return rows[0] ? deserializePublication(rows[0]) : null;
+    return rows[0] ? deserializePublication(rows[0], this.logger) : null;
   }
 
   async getNextPublicationRequest({ requestTtlHours = 12, ownerId = `pid:${process.pid}`, leaseMs = 900_000 } = {}) {
@@ -391,15 +331,17 @@ export class PostRepository {
         `
           SELECT id, key, selection_key AS selectionKey, title, period_start AS periodStart, period_end AS periodEnd,
                  status, created_at AS createdAt, updated_at AS updatedAt,
-                 finished_at AS finishedAt, last_error AS lastError, data
+                 finished_at AS finishedAt, last_error AS lastError, last_error_code AS lastErrorCode,
+               last_progress_at AS lastProgressAt, attempt_count AS attemptCount, next_attempt_at AS nextAttemptAt, data
           FROM publications
           WHERE status IN ('running', 'header_sending', 'created')
+            AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
             AND (lease_until IS NULL OR lease_until <= ? OR lease_owner = ?)
           ORDER BY CASE status WHEN 'running' THEN 0 WHEN 'header_sending' THEN 1 ELSE 2 END,
                    created_at ASC, id ASC
           LIMIT 1
         `,
-        [nowIso, ownerId]
+        [nowIso, nowIso, ownerId]
       );
       const row = rows[0];
       if (!row) {
@@ -408,13 +350,13 @@ export class PostRepository {
       }
       const claimed = await this.run(
         `UPDATE publications
-         SET lease_owner = ?, lease_until = ?, updated_at = ?
+         SET lease_owner = ?, lease_until = ?, updated_at = ?, next_attempt_at = NULL
          WHERE id = ? AND (lease_until IS NULL OR lease_until <= ? OR lease_owner = ?)`,
         [ownerId, leaseUntil, nowIso, row.id, nowIso, ownerId]
       );
       await this.run('COMMIT');
       return claimed.changes === 1
-        ? deserializePublication({ ...row, leaseOwner: ownerId, leaseUntil })
+        ? deserializePublication({ ...row, leaseOwner: ownerId, leaseUntil }, this.logger)
         : null;
     } catch (error) {
       await this.run('ROLLBACK');
@@ -428,7 +370,7 @@ export class PostRepository {
         SELECT p.id, p.key, p.selection_key AS selectionKey, p.title,
                p.status, p.created_at AS createdAt, p.updated_at AS updatedAt,
                p.finished_at AS finishedAt, p.last_error AS lastError, p.data,
-               COUNT(pp.message_id) AS sentCount
+               SUM(CASE WHEN pp.send_state = 'sent' THEN 1 ELSE 0 END) AS sentCount
         FROM publications p
         LEFT JOIN publication_posts pp ON pp.publication_id = p.id
         WHERE p.status NOT IN ('published', 'dry_run', 'failed', 'cancelled')
@@ -441,7 +383,7 @@ export class PostRepository {
         SELECT p.id, p.key, p.selection_key AS selectionKey, p.title,
                p.status, p.created_at AS createdAt, p.updated_at AS updatedAt,
                p.finished_at AS finishedAt, p.last_error AS lastError, p.data,
-               COUNT(pp.message_id) AS sentCount
+               SUM(CASE WHEN pp.send_state = 'sent' THEN 1 ELSE 0 END) AS sentCount
         FROM publications p
         LEFT JOIN publication_posts pp ON pp.publication_id = p.id
         WHERE p.status IN ('published', 'dry_run', 'failed', 'cancelled')
@@ -453,8 +395,8 @@ export class PostRepository {
     );
 
     return {
-      active: activeRows.map(deserializePublicationJob),
-      finished: finishedRows.map(deserializePublicationJob)
+      active: activeRows.map((row) => deserializePublicationJob(row, this.logger)).filter(Boolean),
+      finished: finishedRows.map((row) => deserializePublicationJob(row, this.logger)).filter(Boolean)
     };
   }
 
@@ -464,7 +406,7 @@ export class PostRepository {
         SELECT p.id, p.key, p.selection_key AS selectionKey, p.title,
                p.status, p.created_at AS createdAt, p.updated_at AS updatedAt,
                p.finished_at AS finishedAt, p.last_error AS lastError, p.data,
-               COUNT(pp.message_id) AS sentCount
+               SUM(CASE WHEN pp.send_state = 'sent' THEN 1 ELSE 0 END) AS sentCount
         FROM publications p
         LEFT JOIN publication_posts pp ON pp.publication_id = p.id
         GROUP BY p.id
@@ -473,7 +415,7 @@ export class PostRepository {
       `,
       [limit]
     );
-    return rows.map(deserializePublicationJob);
+    return rows.map((row) => deserializePublicationJob(row, this.logger)).filter(Boolean);
   }
 
   async failExpiredPublicationRequests({ requestTtlHours = 12 } = {}) {
@@ -488,11 +430,13 @@ export class PostRepository {
             last_error = ?,
             lease_owner = NULL,
             lease_until = NULL
-        WHERE status IN ('created', 'header_sending', 'running')
-          AND created_at < ?
+        WHERE (
+            status = 'created' AND created_at < ?
+          OR status IN ('header_sending', 'running') AND COALESCE(last_progress_at, updated_at, created_at) < ?
+        )
           AND (lease_until IS NULL OR lease_until <= ?)
       `,
-      [now, now, 'Publication request expired before processing', expiredBefore, now]
+      [now, now, 'Publication request expired before processing', expiredBefore, expiredBefore, now]
     );
   }
 
@@ -500,15 +444,15 @@ export class PostRepository {
     return this.updateClaimedPublication(
       publicationId,
       ownerId,
-      "status = 'header_sending', last_error = NULL"
+      "status = 'header_sending', last_error = NULL, last_error_code = NULL, last_progress_at = datetime('now')"
     );
   }
 
   async markPublicationRunning(publicationId, ownerId) {
     const now = new Date().toISOString();
     const result = await this.run(
-      'UPDATE publications SET status = ?, updated_at = ?, last_error = NULL WHERE id = ? AND lease_owner = ?',
-      ['running', now, publicationId, ownerId]
+      'UPDATE publications SET status = ?, updated_at = ?, last_progress_at = ?, last_error = NULL, last_error_code = NULL WHERE id = ? AND lease_owner = ?',
+      ['running', now, now, publicationId, ownerId]
     );
     assertClaimUpdated(result, publicationId, ownerId);
   }
@@ -516,8 +460,8 @@ export class PostRepository {
   async renewPublicationLease(publicationId, ownerId, leaseMs = 900_000) {
     const now = new Date();
     const result = await this.run(
-      'UPDATE publications SET lease_until = ?, updated_at = ? WHERE id = ? AND lease_owner = ?',
-      [new Date(now.getTime() + Math.max(1, Number(leaseMs) || 900_000)).toISOString(), now.toISOString(), publicationId, ownerId]
+      'UPDATE publications SET lease_until = ? WHERE id = ? AND lease_owner = ?',
+      [new Date(now.getTime() + Math.max(1, Number(leaseMs) || 900_000)).toISOString(), publicationId, ownerId]
     );
     assertClaimUpdated(result, publicationId, ownerId);
   }
@@ -526,22 +470,27 @@ export class PostRepository {
     const now = new Date().toISOString();
     const result = await this.run(
       `UPDATE publications
-       SET status = 'uncertain', updated_at = ?, last_error = ?, lease_owner = NULL, lease_until = NULL
+       SET status = 'uncertain', updated_at = ?, last_progress_at = ?, last_error = ?, last_error_code = ?, lease_owner = NULL, lease_until = NULL
        WHERE id = ? AND lease_owner = ?`,
-      [now, error?.message || String(error), publicationId, ownerId]
+      [now, now, error?.message || String(error), getErrorCode(error), publicationId, ownerId]
     );
     assertClaimUpdated(result, publicationId, ownerId);
   }
 
-  async finishPublication(publicationId, { status, posts, data = {} }) {
+  async finishPublication(publicationId, { status, posts, data = {}, ownerId = null }) {
     const now = new Date().toISOString();
 
     await this.run('BEGIN');
     try {
-      await this.run(
-        'UPDATE publications SET status = ?, updated_at = ?, finished_at = ?, last_error = NULL, lease_owner = NULL, lease_until = NULL, data = ? WHERE id = ?',
-        [status, now, status === 'published' || status === 'dry_run' || status === 'failed' ? now : null, JSON.stringify(data), publicationId]
+      const result = await this.run(
+        `UPDATE publications SET status = ?, updated_at = ?, last_progress_at = ?, finished_at = ?,
+                last_error = NULL, last_error_code = NULL, lease_owner = NULL, lease_until = NULL,
+                next_attempt_at = NULL, data = ?
+         WHERE id = ? AND (? IS NULL OR lease_owner = ?)`,
+        [status, now, now, status === 'published' || status === 'dry_run' || status === 'failed' ? now : null,
+          JSON.stringify(data), publicationId, ownerId, ownerId]
       );
+      if (ownerId) assertClaimUpdated(result, publicationId, ownerId);
 
       for (let index = 0; index < posts.length; index += 1) {
         const post = posts[index];
@@ -563,18 +512,22 @@ export class PostRepository {
     }
   }
 
-  async failPublication(publicationId, error) {
-    await this.run(
-      'UPDATE publications SET status = ?, updated_at = ?, finished_at = ?, last_error = ?, lease_owner = NULL, lease_until = NULL WHERE id = ?',
-      ['failed', new Date().toISOString(), new Date().toISOString(), error?.message || String(error), publicationId]
+  async failPublication(publicationId, error, ownerId = null) {
+    const result = await this.run(
+      `UPDATE publications SET status = ?, updated_at = ?, last_progress_at = ?, finished_at = ?,
+              last_error = ?, last_error_code = ?, lease_owner = NULL, lease_until = NULL, next_attempt_at = NULL
+       WHERE id = ? AND (? IS NULL OR lease_owner = ?)`,
+      ['failed', new Date().toISOString(), new Date().toISOString(), new Date().toISOString(),
+        error?.message || String(error), getErrorCode(error), publicationId, ownerId, ownerId]
     );
+    if (ownerId) assertClaimUpdated(result, publicationId, ownerId);
   }
 
   async updatePublicationError(publicationId, error, ownerId = null) {
     await this.run(
-      `UPDATE publications SET updated_at = ?, last_error = ?, lease_owner = NULL, lease_until = NULL
+      `UPDATE publications SET updated_at = ?, last_error = ?, last_error_code = ?, lease_owner = NULL, lease_until = NULL
        WHERE id = ? AND (? IS NULL OR lease_owner = ?)`,
-      [new Date().toISOString(), error?.message || String(error), publicationId, ownerId, ownerId]
+      [new Date().toISOString(), error?.message || String(error), getErrorCode(error), publicationId, ownerId, ownerId]
     );
   }
 
@@ -582,7 +535,8 @@ export class PostRepository {
     return this.all(
       `
         SELECT publication_id AS publicationId, chat_id AS chatId, message_id AS messageId, position,
-               likes, dislikes, bot_message_id AS botMessageId, sent_at AS sentAt, send_state AS sendState
+               likes, dislikes, bot_message_id AS botMessageId, sent_at AS sentAt, send_state AS sendState,
+               attempt_count AS attemptCount, last_error AS lastError, last_error_code AS lastErrorCode
         FROM publication_posts
         WHERE publication_id = ?
         ORDER BY position ASC
@@ -603,6 +557,9 @@ export class PostRepository {
                pp.bot_message_id AS botMessageId,
                pp.sent_at AS sentAt,
                pp.send_state AS sendState,
+               pp.attempt_count AS attemptCount,
+               pp.last_error AS lastError,
+               pp.last_error_code AS lastErrorCode,
                posts.author,
                posts.text,
                posts.message_date AS messageDate
@@ -617,14 +574,21 @@ export class PostRepository {
     );
   }
 
-  async recordPublicationPost({ publicationId, post, position, botMessageId = null }) {
+  async recordPublicationPost({ publicationId, post, position, botMessageId = null, ownerId = null }) {
+    if (ownerId) await this.assertPublicationLease(publicationId, ownerId);
     await this.run(
-      `
-        INSERT OR REPLACE INTO publication_posts (
-          publication_id, chat_id, message_id, position, likes, dislikes, bot_message_id, sent_at, send_state
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'sent')
-      `,
+      `INSERT INTO publication_posts (
+         publication_id, chat_id, message_id, position, likes, dislikes, bot_message_id, sent_at, send_state, attempt_count, last_error
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'sent', 0, NULL)
+       ON CONFLICT(publication_id, chat_id, message_id) DO UPDATE SET
+         position = excluded.position,
+         likes = excluded.likes,
+         dislikes = excluded.dislikes,
+         bot_message_id = excluded.bot_message_id,
+         sent_at = excluded.sent_at,
+         send_state = 'sent',
+         last_error = NULL,
+         last_error_code = NULL`,
       [
         publicationId,
         String(post.chatId),
@@ -636,22 +600,133 @@ export class PostRepository {
         new Date().toISOString()
       ]
     );
+    await this.touchPublicationProgress(publicationId);
   }
 
-  async markPublicationPostSending({ publicationId, post, position }) {
+  async markPublicationPostSending({ publicationId, post, position, ownerId = null }) {
+    if (ownerId) await this.assertPublicationLease(publicationId, ownerId);
     await this.run(
       `INSERT INTO publication_posts (
-         publication_id, chat_id, message_id, position, likes, dislikes, bot_message_id, sent_at, send_state
-       ) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, 'sending')
+         publication_id, chat_id, message_id, position, likes, dislikes, bot_message_id, sent_at, send_state, attempt_count, last_error, last_error_code
+       ) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, 'sending', 1, NULL, NULL)
        ON CONFLICT(publication_id, chat_id, message_id) DO UPDATE SET
          position = excluded.position,
          likes = excluded.likes,
          dislikes = excluded.dislikes,
          bot_message_id = NULL,
          sent_at = NULL,
-         send_state = 'sending'`,
+         send_state = 'sending',
+         attempt_count = publication_posts.attempt_count + 1,
+         last_error = NULL,
+         last_error_code = NULL`,
       [publicationId, String(post.chatId), post.messageId, position, post.likes || 0, post.dislikes || 0]
     );
+  }
+
+  async markPublicationPostFailed({ publicationId, post, position, error, ownerId = null }) {
+    if (ownerId) await this.assertPublicationLease(publicationId, ownerId);
+    await this.run(
+      `INSERT INTO publication_posts (
+         publication_id, chat_id, message_id, position, likes, dislikes, bot_message_id, sent_at, send_state, attempt_count, last_error, last_error_code
+       ) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, 'failed', 1, ?, ?)
+       ON CONFLICT(publication_id, chat_id, message_id) DO UPDATE SET
+         position = excluded.position,
+         likes = excluded.likes,
+         dislikes = excluded.dislikes,
+         bot_message_id = NULL,
+         sent_at = NULL,
+         send_state = 'failed',
+         last_error = excluded.last_error,
+         last_error_code = excluded.last_error_code`,
+      [publicationId, String(post.chatId), post.messageId, position, post.likes || 0, post.dislikes || 0, error?.message || String(error), getErrorCode(error)]
+    );
+    await this.touchPublicationProgress(publicationId);
+  }
+
+
+  async resetPublicationHeaderForRetry(publicationId, ownerId, error = null) {
+    const now = new Date().toISOString();
+    const result = await this.run(
+      `UPDATE publications SET status = 'created', updated_at = ?, last_progress_at = ?, last_error = ?, last_error_code = ?
+       WHERE id = ? AND lease_owner = ?`,
+      [now, now, error ? error?.message || String(error) : null, error ? getErrorCode(error) : null, publicationId, ownerId]
+    );
+    assertClaimUpdated(result, publicationId, ownerId);
+  }
+
+  async markPublicationPostPending({ publicationId, post, position, error, ownerId = null }) {
+    if (ownerId) await this.assertPublicationLease(publicationId, ownerId);
+    await this.run(
+      `INSERT INTO publication_posts (
+         publication_id, chat_id, message_id, position, likes, dislikes, bot_message_id, sent_at, send_state, attempt_count, last_error, last_error_code
+       ) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, 'pending', 0, ?, ?)
+       ON CONFLICT(publication_id, chat_id, message_id) DO UPDATE SET
+         position = excluded.position,
+         likes = excluded.likes,
+         dislikes = excluded.dislikes,
+         bot_message_id = NULL,
+         sent_at = NULL,
+         send_state = 'pending',
+         last_error = excluded.last_error,
+         last_error_code = excluded.last_error_code`,
+      [publicationId, String(post.chatId), post.messageId, position, post.likes || 0, post.dislikes || 0, error?.message || String(error), getErrorCode(error)]
+    );
+  }
+
+  async releasePublicationLease(publicationId, ownerId, error = null) {
+    const result = await this.run(
+      `UPDATE publications SET updated_at = ?, last_error = ?, last_error_code = ?, lease_owner = NULL, lease_until = NULL
+       WHERE id = ? AND lease_owner = ?`,
+      [new Date().toISOString(), error ? error?.message || String(error) : null, error ? getErrorCode(error) : null, publicationId, ownerId]
+    );
+    assertClaimUpdated(result, publicationId, ownerId);
+  }
+
+  async assertPublicationLease(publicationId, ownerId, now = new Date()) {
+    const rows = await this.all(
+      'SELECT lease_owner AS leaseOwner, lease_until AS leaseUntil FROM publications WHERE id = ? LIMIT 1',
+      [publicationId]
+    );
+    const row = rows[0];
+    if (!row || row.leaseOwner !== ownerId || !row.leaseUntil || new Date(row.leaseUntil) <= now) {
+      const error = new Error(`Publication lease lost for publication ${publicationId}`);
+      error.code = 'PUBLICATION_LEASE_LOST';
+      error.publicationId = publicationId;
+      error.ownerId = ownerId;
+      throw error;
+    }
+    return true;
+  }
+
+  async deferPublicationRetry(publicationId, ownerId, error, {
+    delayMs = 1000,
+    maxAttempts = 3,
+    countAttempt = true
+  } = {}) {
+    const now = new Date();
+    const nextAttemptAt = new Date(now.getTime() + Math.max(1, Number(delayMs) || 1000)).toISOString();
+    const attemptIncrement = countAttempt ? 1 : 0;
+    const result = await this.run(
+      `UPDATE publications
+       SET status = 'created', updated_at = ?, last_error = ?, last_error_code = ?, attempt_count = attempt_count + ?,
+           next_attempt_at = ?, lease_owner = NULL, lease_until = NULL
+       WHERE id = ? AND lease_owner = ?`,
+      [now.toISOString(), error?.message || String(error), getErrorCode(error), attemptIncrement, nextAttemptAt, publicationId, ownerId]
+    );
+    assertClaimUpdated(result, publicationId, ownerId);
+    const rows = await this.all('SELECT attempt_count AS attemptCount FROM publications WHERE id = ?', [publicationId]);
+    const attemptCount = Number(rows[0]?.attemptCount || 0);
+    const boundedAttempts = Number.isFinite(Number(maxAttempts)) ? Math.max(0, Number(maxAttempts)) : null;
+    if (countAttempt && boundedAttempts !== null && attemptCount > boundedAttempts) {
+      await this.failPublication(publicationId, error);
+      return { failed: true, attemptCount };
+    }
+    return { failed: false, attemptCount, nextAttemptAt };
+  }
+
+  async touchPublicationProgress(publicationId) {
+    const now = new Date().toISOString();
+    await this.run('UPDATE publications SET updated_at = ?, last_progress_at = ? WHERE id = ?', [now, now, publicationId]);
   }
 
   async updateClaimedPublication(publicationId, ownerId, assignments) {
@@ -679,17 +754,6 @@ function isUniqueConstraintError(error) {
   return error?.code === 'SQLITE_CONSTRAINT' || /SQLITE_CONSTRAINT|UNIQUE constraint/i.test(String(error?.message || error));
 }
 
-async function ensureColumn(db, table, column, definition) {
-  const columns = await withSqliteBusyRetry(() => db.all(`PRAGMA table_info(${table})`));
-  if (columns.some((item) => item.name === column)) return;
-  try {
-    await withSqliteBusyRetry(() => db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`));
-  } catch (error) {
-    if (/duplicate column name/i.test(String(error?.message || error))) return;
-    throw error;
-  }
-}
-
 async function withSqliteBusyRetry(operation, maxAttempts = 10) {
   let lastError;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
@@ -711,19 +775,40 @@ function assertClaimUpdated(result, publicationId, ownerId) {
   throw error;
 }
 
-function deserializePublication(row) {
-  return {
-    ...row,
-    data: JSON.parse(row.data || '{}')
-  };
+function deserializePost(row, logger) {
+  const data = safeParseJson(row.data, { logger, entity: 'post', id: `${row.chatId}:${row.messageId}` });
+  return data === null ? null : { ...row, data };
 }
 
-function deserializePublicationJob(row) {
-  const data = JSON.parse(row.data || '{}');
+function deserializePublication(row, logger = null) {
+  const data = safeParseJson(row.data, { logger, entity: 'publication', id: row.id });
+  return data === null ? null : { ...row, data };
+}
+
+function deserializePublicationJob(row, logger = null) {
+  const data = safeParseJson(row.data, { logger, entity: 'publication', id: row.id });
+  if (data === null) return null;
   return {
     ...row,
     sentCount: Number(row.sentCount || 0),
     expectedCount: Number(data.count || data.selection?.posts?.length || 0),
     data
   };
+}
+
+function safeParseJson(value, { logger, entity, id }) {
+  try {
+    return JSON.parse(value || '{}');
+  } catch (error) {
+    logger?.error?.('Corrupted JSON row skipped', {
+      entity,
+      id,
+      error: error?.message || String(error)
+    });
+    return null;
+  }
+}
+
+function getErrorCode(error) {
+  return String(error?.telegramFailureClass || error?.code || error?.name || 'ERROR');
 }

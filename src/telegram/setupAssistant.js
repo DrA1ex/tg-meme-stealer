@@ -11,7 +11,8 @@ export class SetupAssistant {
   constructor({ scanner, mediaDownloader, config, configLoader = loadConfig, botRateLimiter = null }) {
     this.scanner = scanner;
     this.mediaDownloader = mediaDownloader;
-    this.config = config;
+    this.runtimeConfig = config;
+    this.config = structuredClone(config);
     this.configLoader = configLoader;
     this.botRateLimiter = botRateLimiter;
     this.sessions = new Map();

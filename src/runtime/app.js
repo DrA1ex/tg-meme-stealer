@@ -25,45 +25,75 @@ export async function createApp(config) {
     timezone: config.schedule?.timezone
   });
 
-  const repository = new PostRepository(config.database.path);
-  await repository.init();
-  logger.info('Database initialized', { path: config.database.path });
+  let repository;
+  let userClient;
+  let sharedRateLimitStore;
+  let telegramThrottle;
+  let botRateLimiter;
+  let scanner;
+  let jobGate;
+  let syncWorker;
+  let retentionWorker;
+  let mediaDownloader;
+  let setupAssistant;
+  let publisher;
 
-  const userClient = await startUserClient(config);
-  logger.info('Telegram user client started', {
-    sourceChatId: config.telegram.sourceChatId,
-    sessionFile: config.telegram.sessionFile
-  });
-  const sharedRateLimitStore = await createRedisRateLimitStore(config);
-  const telegramThrottle = new TelegramThrottle(config, undefined, undefined, sharedRateLimitStore);
-  const botRateLimiter = new BotApiRateLimiter(config, undefined, undefined, sharedRateLimitStore);
-  const scanner = new TelegramScanner({
-    client: userClient,
-    repository,
-    config,
-    throttle: telegramThrottle,
-    signal: shutdownController.signal
-  });
-  const jobGate = new JobGate();
-  const syncWorker = new SyncWorker({ scanner, jobGate, config });
-  const retentionWorker = new RetentionWorker({ scanner, jobGate });
-  const mediaDownloader = new MediaDownloader({
-    client: userClient,
-    config,
-    throttle: telegramThrottle,
-    signal: shutdownController.signal
-  });
-  const setupAssistant = new SetupAssistant({ scanner, mediaDownloader, config, botRateLimiter });
-  const publisher = new SelectionPublisher({
-    repository,
-    mediaDownloader,
-    setupAssistant,
-    syncWorker,
-    jobGate,
-    config,
-    botRateLimiter,
-    signal: shutdownController.signal
-  });
+  try {
+    repository = new PostRepository(config.database.path);
+    await repository.init();
+    logger.info('Database initialized', { path: config.database.path });
+
+    userClient = await startUserClient(config);
+    logger.info('Telegram user client started', {
+      sourceChatId: config.telegram.sourceChatId,
+      sessionFile: config.telegram.sessionFile
+    });
+    sharedRateLimitStore = await createRedisRateLimitStore(config);
+    telegramThrottle = new TelegramThrottle(config, undefined, undefined, sharedRateLimitStore);
+    botRateLimiter = new BotApiRateLimiter(config, undefined, undefined, sharedRateLimitStore);
+    scanner = new TelegramScanner({
+      client: userClient,
+      repository,
+      config,
+      throttle: telegramThrottle,
+      signal: shutdownController.signal
+    });
+    jobGate = new JobGate();
+    syncWorker = new SyncWorker({ scanner, jobGate, config, signal: shutdownController.signal });
+    retentionWorker = new RetentionWorker({ scanner, jobGate });
+    mediaDownloader = new MediaDownloader({
+      client: userClient,
+      config,
+      throttle: telegramThrottle,
+      signal: shutdownController.signal
+    });
+    setupAssistant = new SetupAssistant({ scanner, mediaDownloader, config, botRateLimiter });
+    publisher = new SelectionPublisher({
+      repository,
+      mediaDownloader,
+      setupAssistant,
+      syncWorker,
+      jobGate,
+      config,
+      botRateLimiter,
+      signal: shutdownController.signal
+    });
+    syncWorker.setAdminNotifier((message) => publisher.notifyAdmin(message));
+  } catch (error) {
+    const cleanupErrors = await cleanupInitializedResources({
+      botRateLimiter,
+      telegramThrottle,
+      sharedRateLimitStore,
+      userClient,
+      repository
+    });
+    if (cleanupErrors.length) {
+      logger.error('App initialization cleanup failed', {
+        errors: cleanupErrors.map((item) => item?.message || String(item))
+      });
+    }
+    throw error;
+  }
   let resourceClosePromise = null;
   let shutdownPromise = null;
 
@@ -178,6 +208,32 @@ export async function createApp(config) {
   };
 }
 
+
+export async function cleanupInitializedResources({
+  botRateLimiter,
+  telegramThrottle,
+  sharedRateLimitStore,
+  userClient,
+  repository
+} = {}) {
+  const cleanupSteps = [
+    () => safeClose(botRateLimiter),
+    () => safeClose(telegramThrottle),
+    () => safeClose(sharedRateLimitStore),
+    () => userClient ? safeDestroyUserClient(userClient) : undefined,
+    () => safeClose(repository)
+  ];
+  const errors = [];
+  for (const cleanup of cleanupSteps) {
+    try {
+      await cleanup();
+    } catch (error) {
+      errors.push(error);
+    }
+  }
+  return errors;
+}
+
 export async function settleBeforeDeadline(promise, deadlineAt) {
   const remainingMs = Math.max(0, deadlineAt - Date.now());
   if (remainingMs === 0) {
@@ -193,6 +249,11 @@ export async function settleBeforeDeadline(promise, deadlineAt) {
   ]);
   clearTimeout(timeout);
   return result;
+}
+
+async function safeClose(resource) {
+  if (!resource || typeof resource.close !== 'function') return;
+  await resource.close();
 }
 
 async function safeDestroyUserClient(userClient) {

@@ -543,3 +543,49 @@ function template(key, source, schedule, windowHours, header, enabled = true, st
     template: header
   };
 }
+
+test('validateConfig rejects invalid semantic ranges, timezone, and parser locale', () => {
+  const config = validConfig();
+  config.sync.intervalHours = 0;
+  config.sync.pageSize = 0;
+  config.sync.maxMissingRatio = 1.2;
+  config.schedule.timezone = 'Not/A_Timezone';
+  config.parsing.countLocale = 'invalid_locale_@@';
+  config.publish.postMaxRetries = -1;
+  config.publish.maxConsecutivePostFailures = 1.5;
+  config.templates.publish.maxTextLength = 5000;
+
+  assert.throws(() => validateConfig(config), (error) => {
+    assert.match(error.message, /sync\.intervalHours/);
+    assert.match(error.message, /sync\.pageSize/);
+    assert.match(error.message, /sync\.maxMissingRatio/);
+    assert.match(error.message, /schedule\.timezone/);
+    assert.match(error.message, /parsing\.countLocale/);
+    assert.match(error.message, /publish\.postMaxRetries/);
+    assert.match(error.message, /publish\.maxConsecutivePostFailures/);
+    assert.match(error.message, /templates\.publish\.maxTextLength/);
+    return true;
+  });
+});
+
+test('validateConfig accepts explicit fallback markers and a supported number locale', () => {
+  const config = validConfig();
+  config.parsing.countLocale = 'de-DE';
+  config.parsing.fallbackReactions = {
+    likeMarkers: ['+', '👍'],
+    dislikeMarkers: ['-', '👎']
+  };
+  config.sync.maxMissingRatio = 0.3;
+  config.sync.maxRetries = 3;
+  config.sync.retryBaseMs = 100;
+  config.sync.retryMaxMs = 1000;
+  config.sync.mediaMaxBytes = 1024;
+  config.sync.mediaMaxAgeHours = 1;
+  config.publish.postMaxRetries = 3;
+  config.publish.maxConsecutivePostFailures = 3;
+  config.publish.requestMaxRetries = 3;
+  config.publish.retryBaseMs = 100;
+  config.publish.retryMaxMs = 1000;
+
+  assert.doesNotThrow(() => validateConfig(config));
+});

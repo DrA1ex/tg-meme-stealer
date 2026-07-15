@@ -45,18 +45,45 @@ export function formatDraftConfig(draft) {
 
 export async function saveDraftConfig(draft, configPath = 'config.json') {
   const resolvedPath = path.resolve(configPath);
-  const backupPath = `${resolvedPath}.old`;
+  const directory = path.dirname(resolvedPath);
+  const latestBackupPath = `${resolvedPath}.old`;
+  const timestampBackupPath = `${resolvedPath}.${backupTimestamp()}.bak`;
+  const temporaryPath = path.join(directory, `.${path.basename(resolvedPath)}.${process.pid}.${randomCode()}.tmp`);
   const existingConfig = await readJsonIfExists(resolvedPath);
   const nextConfig = deepMerge(existingConfig, buildDraftConfig(draft));
+  const serialized = `${JSON.stringify(nextConfig, null, 2)}\n`;
+  JSON.parse(serialized);
+  await fs.mkdir(directory, { recursive: true });
 
+  let handle;
+  let hadExistingConfig = false;
   try {
-    await fs.copyFile(resolvedPath, backupPath);
+    try {
+      await fs.copyFile(resolvedPath, timestampBackupPath, fs.constants.COPYFILE_EXCL);
+      await fs.copyFile(resolvedPath, latestBackupPath);
+      hadExistingConfig = true;
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+    }
+
+    handle = await fs.open(temporaryPath, 'wx', 0o600);
+    await handle.writeFile(serialized, 'utf8');
+    await handle.sync();
+    await handle.close();
+    handle = null;
+    await fs.rename(temporaryPath, resolvedPath);
+    await syncDirectory(directory);
   } catch (error) {
-    if (error.code !== 'ENOENT') throw error;
+    await handle?.close().catch(() => {});
+    await fs.rm(temporaryPath, { force: true }).catch(() => {});
+    throw error;
   }
 
-  await fs.writeFile(resolvedPath, `${JSON.stringify(nextConfig, null, 2)}\n`);
-  return { configPath: resolvedPath, backupPath };
+  return {
+    configPath: resolvedPath,
+    backupPath: hadExistingConfig ? timestampBackupPath : null,
+    latestBackupPath: hadExistingConfig ? latestBackupPath : null
+  };
 }
 
 export function validateSetupDraft(draft, baseConfig) {
@@ -253,6 +280,27 @@ function formatPreviewMediaSummary(post) {
 
   const ids = media.map((item) => `${item.mediaKind || 'media'}#${item.messageId || 'unknown'}`).join(', ');
   return `Media: ${media.length} item(s): ${ids}`;
+}
+
+function backupTimestamp(now = new Date()) {
+  return now.toISOString().replace(/[:.]/g, '-');
+}
+
+function randomCode() {
+  return Math.random().toString(36).slice(2, 10);
+}
+
+async function syncDirectory(directory) {
+  let handle;
+  try {
+    handle = await fs.open(directory, 'r');
+    await handle.sync();
+  } catch (error) {
+    // Directory fsync is not supported on every platform. The file rename is still atomic.
+    if (!['EINVAL', 'ENOTSUP', 'EISDIR', 'EPERM'].includes(error?.code)) throw error;
+  } finally {
+    await handle?.close().catch(() => {});
+  }
 }
 
 async function readJsonIfExists(filePath) {

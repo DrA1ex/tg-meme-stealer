@@ -1,6 +1,7 @@
 {
   "telegram": {
-    "sessionFile": "sessions/mtcute-user.session"
+    "sessionFile": "sessions/mtcute-user.session",
+    "pollingLockFile": "data/bot-polling.lock"
   },
   "database": {
     "path": "data/posts.sqlite"
@@ -53,7 +54,13 @@
       "reactionsMinMs": 3000,
       "reactionsMaxMs": 4000,
       "retryBufferMs": 1000
-    }
+    },
+    "maxRetries": 3,
+    "retryBaseMs": 2000,
+    "retryMaxMs": 60000,
+    "maxMissingRatio": 0.3,
+    "mediaMaxBytes": 536870912,
+    "mediaMaxAgeHours": 24
   },
   "parsing": {
     "filters": [
@@ -102,7 +109,21 @@
         "transform": "count",
         "aggregate": "sum"
       }
-    ]
+    ],
+    "countLocale": "en-US",
+    "fallbackReactions": {
+      "likeMarkers": [
+        "👍",
+        "❤",
+        "❤️",
+        "🔥",
+        "+"
+      ],
+      "dislikeMarkers": [
+        "👎",
+        "-"
+      ]
+    }
   },
   "publish": {
     "dryRun": false,
@@ -258,7 +279,12 @@
         },
         "template": "Most controversial fresh posts for the last {{windowHours}}h ({{count}})"
       }
-    ]
+    ],
+    "postMaxRetries": 3,
+    "maxConsecutivePostFailures": 3,
+    "retryBaseMs": 1000,
+    "retryMaxMs": 60000,
+    "requestMaxRetries": 3
   },
   "templates": {
     "publish": {

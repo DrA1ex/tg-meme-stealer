@@ -191,13 +191,30 @@ test('saveDraftConfig backs up and deep-merges existing config', async () => {
   await fs.writeFile(configPath, JSON.stringify({ publish: { dryRun: true }, sync: { pageSize: 50 } }, null, 2));
   const draft = createSetupDraft({ parsing: { filters: [] }, templates: {} });
 
-  await saveDraftConfig(draft, configPath);
+  const result = await saveDraftConfig(draft, configPath);
   const saved = JSON.parse(await fs.readFile(configPath, 'utf8'));
   const backup = JSON.parse(await fs.readFile(`${configPath}.old`, 'utf8'));
+  const timestampBackup = JSON.parse(await fs.readFile(result.backupPath, 'utf8'));
+  const files = await fs.readdir(dir);
 
   assert.equal(saved.publish.dryRun, true);
   assert.equal(saved.sync.pageSize, 50);
   assert.deepEqual(backup, { publish: { dryRun: true }, sync: { pageSize: 50 } });
+  assert.deepEqual(timestampBackup, backup);
+  assert.equal(files.some((name) => name.endsWith('.tmp')), false);
+});
+
+test('saveDraftConfig removes its temporary file when the atomic rename fails', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'tg-memes-config-error-'));
+  const configPath = path.join(dir, 'config.json');
+  await fs.mkdir(configPath);
+  const draft = createSetupDraft({ parsing: { filters: [] }, templates: {} });
+
+  await assert.rejects(() => saveDraftConfig(draft, configPath));
+  const files = await fs.readdir(dir);
+
+  assert.equal(files.some((name) => name.endsWith('.tmp')), false);
+  assert.equal((await fs.stat(configPath)).isDirectory(), true);
 });
 
 function post({ messageId, likes, dislikes, daysAgo }) {

@@ -1,13 +1,14 @@
 import { Telegraf } from 'telegraf';
 import { formatSelectionHeader } from '../core/format.js';
-import { formatJobs } from '../core/jobs.js';
-import { formatPublicationPosts, formatPublications } from '../core/publications.js';
 import { getLogger } from '../core/logger.js';
 import { buildSelectionSpecs, loadSelection } from '../core/selection.js';
-import { buildStats, formatStats } from '../core/stats.js';
 import { JobGate } from '../runtime/jobGate.js';
 import { getLocalTimestampBucket } from '../runtime/scheduler.js';
 import { withBotApiRetry } from './retry.js';
+import { classifyTelegramError, runWithTelegramFailurePolicy } from './errorPolicy.js';
+import { PublicationLeaseGuard } from './publicationLease.js';
+import { AdminCommandController } from './adminCommands.js';
+import { BotLifecycle } from './botLifecycle.js';
 import { sendRichPost } from './richPost.js';
 
 export class SelectionPublisher {
@@ -19,7 +20,9 @@ export class SelectionPublisher {
     jobGate = new JobGate(),
     config,
     botRateLimiter = null,
-    signal = null
+    signal = null,
+    restartHandler = null,
+    fatalBotErrorHandler = null
   }) {
     this.repository = repository;
     this.mediaDownloader = mediaDownloader;
@@ -29,6 +32,7 @@ export class SelectionPublisher {
     this.config = config;
     this.botRateLimiter = botRateLimiter;
     this.signal = signal;
+    this.restartHandler = restartHandler || defaultRestartHandler;
     this.bot = new Telegraf(config.telegram.botToken);
     this.logger = getLogger('publisher');
     this.activeHandlers = 0;
@@ -37,78 +41,46 @@ export class SelectionPublisher {
     this.processingPublications = false;
     this.workerId = getPublisherWorkerId();
     this.workerLeaseMs = Math.max(1, Number(config.publish?.workerLeaseMs) || 900_000);
+    this.botLifecycle = new BotLifecycle({
+      getBot: () => this.bot,
+      pollingLockFile: config.telegram.pollingLockFile,
+      logger: this.logger,
+      waitForIdle: (timeoutMs) => this.waitForIdle(timeoutMs),
+      fatalErrorHandler: fatalBotErrorHandler
+    });
     this.configureCommands();
   }
 
   configureCommands() {
-    this.bot.catch((error, ctx) => this.handleBotError(error, ctx));
-
-    this.bot.use(async (ctx, next) => {
-      this.activeHandlers += 1;
-      try {
-        await next();
-      } finally {
+    this.adminCommands = new AdminCommandController({
+      repository: this.repository,
+      syncWorker: this.syncWorker,
+      config: this.config,
+      logger: this.logger,
+      backgroundTasks: this.backgroundTasks,
+      resolveIdle: () => this.resolveIdle(),
+      publishAll: (...args) => this.publishAll(...args),
+      runPublicationWorker: (...args) => this.runPublicationWorker(...args),
+      restartHandler: this.restartHandler
+    });
+    this.adminCommands.register(this.bot, {
+      setupAssistant: this.setupAssistant,
+      onHandlerStart: () => { this.activeHandlers += 1; },
+      onHandlerEnd: () => {
         this.activeHandlers -= 1;
         this.resolveIdle();
       }
     });
+  }
 
-    this.bot.use(async (ctx, next) => {
-      const command = getCommandName(ctx);
-      if (ctx.from?.id !== Number(this.config.telegram.adminId) || ctx.chat?.type !== 'private') {
-        if (command) {
-          this.logger.warn('Bot command ignored', {
-            command,
-            fromId: ctx.from?.id,
-            chatId: ctx.chat?.id,
-            chatType: ctx.chat?.type
-          });
-        }
-        return;
-      }
-      if (command) {
-        this.logger.debug('Bot command received', {
-          command,
-          fromId: ctx.from?.id,
-          chatId: ctx.chat?.id
-        });
-      }
-      await next();
-    });
-
-    this.bot.start((ctx) => ctx.reply('Available commands: /stats, /jobs, /publications, /publication, /sync, /backfill, /publish, /setup'));
-    this.bot.command('stats', async (ctx) => {
-      const stats = await buildStats(this.repository, this.config);
-      await ctx.reply(formatStats(stats, this.config.templates));
-    });
-    this.bot.command('jobs', async (ctx) => this.replyJobs(ctx));
-    this.bot.command('publications', async (ctx) => this.replyPublications(ctx));
-    this.bot.command('publication', async (ctx) => this.replyPublication(ctx));
-    this.bot.command('sync', async (ctx) => this.runManualSync(ctx));
-    this.bot.command('backfill', async (ctx) => this.runManualBackfill(ctx));
-    this.bot.command('publish', async (ctx) => this.runManualPublish(ctx));
-    this.setupAssistant?.register(this.bot);
+  getAdminCommands() {
+    this.adminCommands.logger = this.logger;
+    this.adminCommands.syncWorker = this.syncWorker;
+    return this.adminCommands;
   }
 
   async handleBotError(error, ctx) {
-    const command = getCommandName(ctx);
-    this.logger.error('Bot command failed', {
-      command: command || '',
-      fromId: ctx?.from?.id,
-      chatId: ctx?.chat?.id,
-      error: error?.message || String(error)
-    });
-
-    if (ctx?.from?.id !== Number(this.config.telegram.adminId) || ctx?.chat?.type !== 'private') return;
-
-    try {
-      await ctx.reply(formatBotError(error));
-    } catch (replyError) {
-      this.logger.error('Failed to send bot command error reply', {
-        command: command || '',
-        error: replyError?.message || String(replyError)
-      });
-    }
+    return this.getAdminCommands().handleBotError(error, ctx);
   }
 
   async publishAll(now = new Date(), keys = null, options = {}) {
@@ -157,6 +129,11 @@ export class SelectionPublisher {
   }
 
   async planPublicationRequests(now = new Date(), keys = null, options = {}) {
+    if (this.syncWorker && !this.syncWorker.canPublish()) {
+      const reason = this.syncWorker.getPublicationPauseReason?.() || 'Synchronization has not completed successfully';
+      this.logger.warn('Publication planning blocked', { reason });
+      return { failed: true, paused: true, reason, selections: [] };
+    }
     const specs = buildSelectionSpecs(this.config, now, keys, {
       includeDisabled: Boolean(options.force && keys),
       ignoreFirstSendAt: Boolean(options.force)
@@ -267,27 +244,93 @@ export class SelectionPublisher {
   async processPublicationQueue() {
     if (this.processingPublications) {
       this.logger.debug('Publication worker skipped: already running');
-      return;
+      return { skipped: true, reason: 'already_running' };
     }
+    if (this.syncWorker && !this.syncWorker.canPublish()) {
+      const reason = this.syncWorker.getPublicationPauseReason?.() || 'Synchronization is paused';
+      this.logger.warn('Publication worker paused', { reason });
+      return { paused: true, reason };
+    }
+
     this.processingPublications = true;
+    let processed = 0;
     try {
       while (true) {
+        if (this.syncWorker && !this.syncWorker.canPublish()) break;
         const request = await this.repository.getNextPublicationRequest({
           requestTtlHours: getPublicationRequestTtlHours(this.config),
           ownerId: this.workerId,
           leaseMs: this.workerLeaseMs
         });
         if (!request) break;
-        const stopLeaseHeartbeat = this.startLeaseHeartbeat(request.id);
+
+        const lease = new PublicationLeaseGuard({
+          repository: this.repository,
+          publicationId: request.id,
+          ownerId: this.workerId,
+          leaseMs: this.workerLeaseMs,
+          signal: this.signal,
+          logger: this.logger
+        }).start();
         try {
-          await this.processPublicationRequest(request);
+          await this.processPublicationRequest(request, lease);
+          processed += 1;
+        } catch (error) {
+          const classification = classifyTelegramError(error);
+          if (classification === 'lease_lost') {
+            this.logger.warn('Publication request stopped after lease loss', {
+              publicationId: request.id,
+              key: request.key
+            });
+            continue;
+          }
+          this.logger.error('Unexpected publication request failure', {
+            publicationId: request.id,
+            key: request.key,
+            classification,
+            error: error?.message || String(error)
+          });
+          try {
+            await this.handleUnexpectedPublicationFailure(request, error, classification);
+          } catch (updateError) {
+            if (classifyTelegramError(updateError) !== 'lease_lost') throw updateError;
+          }
         } finally {
-          stopLeaseHeartbeat();
+          await lease.stop();
         }
       }
+      return { processed };
     } finally {
       this.processingPublications = false;
     }
+  }
+
+  async handleUnexpectedPublicationFailure(request, error, classification = classifyTelegramError(error)) {
+    if (classification === 'indeterminate') {
+      await this.repository.markPublicationUncertain?.(request.id, this.workerId, error);
+      await this.safeNotifyAdmin(`Publication ${request.id} (${request.key}) requires manual review because an unexpected delivery outcome is unknown.`);
+      return { uncertain: true };
+    }
+    if (classification === 'cancelled') {
+      await this.repository.releasePublicationLease?.(request.id, this.workerId, error);
+      return { cancelled: true };
+    }
+    if (classification === 'permanent') {
+      await this.repository.failPublication(request.id, error, this.workerId);
+      await this.safeNotifyAdmin(`Publication ${request.id} (${request.key}) failed with a definitive error: ${error?.message || String(error)}`);
+      return { failed: true };
+    }
+
+    const network = classification === 'network';
+    const retry = await this.repository.deferPublicationRetry(request.id, this.workerId, error, {
+      delayMs: getRequestRetryDelay(this.config, Number(request.attemptCount || 0) + 1),
+      maxAttempts: network ? Number.POSITIVE_INFINITY : getRequestMaxRetries(this.config),
+      countAttempt: !network
+    });
+    if (retry.failed) {
+      await this.safeNotifyAdmin(`Publication ${request.id} (${request.key}) failed after repeated unexpected errors: ${error?.message || String(error)}`);
+    }
+    return { deferred: !retry.failed, failed: retry.failed, network };
   }
 
   runPublicationWorker(source = 'manual') {
@@ -313,11 +356,11 @@ export class SelectionPublisher {
     }
   }
 
-  async processPublicationRequest(request) {
+  async processPublicationRequest(request, lease = createNoopLease(this.signal)) {
     const selection = request.data?.selection;
     if (!selection?.posts?.length) {
-      await this.repository.failPublication(request.id, new Error('Publication request has no selection snapshot'));
-      return;
+      await this.repository.failPublication(request.id, new Error('Publication request has no selection snapshot'), this.workerId);
+      return { failed: true, reason: 'missing_snapshot' };
     }
 
     if (this.config.publish.dryRun) {
@@ -327,123 +370,248 @@ export class SelectionPublisher {
         posts: selection.posts.length,
         targetChatId: this.config.telegram.publishChannelId
       });
-      await this.recordPublication(request.id, selection, 'dry_run', { key: request.key });
-      return;
+      await this.recordPublication(request.id, selection, 'dry_run', { key: request.key }, this.workerId);
+      return { dryRun: true };
     }
 
-    let deliveryStarted = false;
-    try {
-      if (request.status === 'header_sending') {
-        const error = new Error('Recovered publication with an indeterminate selection-header delivery');
-        await this.repository.markPublicationUncertain?.(request.id, this.workerId, error);
-        this.logger.warn('Publication requires manual review after interrupted header send', {
-          publicationId: request.id,
-          key: request.key
-        });
-        return;
+    if (request.status === 'header_sending') {
+      return this.markRecoveredDeliveryUncertain(
+        request,
+        new Error('Recovered publication with an indeterminate selection-header delivery')
+      );
+    }
+
+    if (request.status === 'created') {
+      const headerResult = await this.sendPublicationHeader(request, selection, lease);
+      if (headerResult?.stopped) return headerResult;
+    }
+
+    const rows = await this.repository.listPublicationPosts(request.id);
+    const interrupted = rows.find((row) => row.sendState === 'sending');
+    if (interrupted) {
+      return this.markRecoveredDeliveryUncertain(
+        request,
+        new Error(`Recovered publication with an indeterminate post delivery at position ${interrupted.position}`),
+        { position: interrupted.position }
+      );
+    }
+
+    const rowByPosition = new Map(rows.map((row) => [row.position, row]));
+    let consecutiveFailures = 0;
+    let skippedPosts = rows.filter((row) => row.sendState === 'failed').length;
+
+    for (let index = 0; index < selection.posts.length; index += 1) {
+      const position = index + 1;
+      const existing = rowByPosition.get(position);
+      if (existing?.sendState === 'sent') {
+        consecutiveFailures = 0;
+        continue;
       }
-      if (request.status === 'created') {
-        this.logger.info('Publishing selection header', {
+      if (existing?.sendState === 'failed') {
+        if (existing.lastErrorCode === 'unknown_exhausted') {
+          consecutiveFailures += 1;
+          if (consecutiveFailures > getMaxConsecutivePostFailures(this.config)) {
+            return this.failPublicationForPostStreak(request, consecutiveFailures, position, existing.lastError);
+          }
+        } else {
+          consecutiveFailures = 0;
+        }
+        continue;
+      }
+
+      lease.assertActive();
+      try {
+        const post = selection.posts[index];
+        const result = await runWithTelegramFailurePolicy(
+          () => this.publishPost(post, index, async () => {
+            lease.assertActive();
+            await this.repository.markPublicationPostSending?.({
+              publicationId: request.id,
+              post,
+              position,
+              ownerId: this.workerId
+            });
+          }, lease.signal),
+          {
+            label: `publish post ${position}`,
+            maxUnknownRetries: getPostMaxRetries(this.config),
+            baseDelayMs: this.config.publish?.retryBaseMs,
+            maxDelayMs: this.config.publish?.retryMaxMs,
+            signal: lease.signal,
+            onError: async ({ error, classification }) => {
+              if (!['indeterminate', 'lease_lost'].includes(classification)) {
+                await this.repository.markPublicationPostPending?.({
+                  publicationId: request.id,
+                  post,
+                  position,
+                  error,
+                  ownerId: this.workerId
+                });
+              }
+            },
+            onRetry: ({ classification, retry, delayMs, error }) => this.logger.warn('Publication post retry scheduled', {
+              publicationId: request.id,
+              position,
+              classification,
+              retry,
+              delayMs,
+              error: error?.message || String(error)
+            })
+          }
+        );
+        lease.assertActive();
+        await this.repository.recordPublicationPost({
           publicationId: request.id,
-          selection: selection.key,
-          title: selection.title,
-          posts: selection.posts.length,
-          targetChatId: this.config.telegram.publishChannelId,
-          key: request.key
+          post,
+          position,
+          botMessageId: getBotMessageId(result),
+          ownerId: this.workerId
         });
-        await withBotApiRetry(
+        consecutiveFailures = 0;
+      } catch (error) {
+        const classification = classifyTelegramError(error);
+        if (classification === 'lease_lost') throw error;
+        if (classification === 'indeterminate') {
+          await this.repository.markPublicationUncertain(request.id, this.workerId, error);
+          await this.safeNotifyAdmin(`Publication ${request.id} (${request.key}) requires manual review because delivery of post ${position} may have completed before an interruption. Automatic retries were stopped.`);
+          return { stopped: true, uncertain: true, position };
+        }
+        if (classification === 'cancelled') {
+          await this.repository.releasePublicationLease?.(request.id, this.workerId, error);
+          return { stopped: true, cancelled: true };
+        }
+
+        await this.repository.markPublicationPostFailed({
+          publicationId: request.id,
+          post: selection.posts[index],
+          position,
+          error,
+          ownerId: this.workerId
+        });
+        skippedPosts += 1;
+        const countsTowardsFailureStreak = classification === 'unknown_exhausted';
+        consecutiveFailures = countsTowardsFailureStreak ? consecutiveFailures + 1 : 0;
+        this.logger.error('Publication post skipped after definitive or exhausted error', {
+          publicationId: request.id,
+          position,
+          classification,
+          countsTowardsFailureStreak,
+          consecutiveFailures,
+          error: error?.message || String(error)
+        });
+        if (countsTowardsFailureStreak && consecutiveFailures > getMaxConsecutivePostFailures(this.config)) {
+          return this.failPublicationForPostStreak(request, consecutiveFailures, position, error);
+        }
+      }
+    }
+
+    await this.recordPublication(request.id, selection, 'published', {
+      key: request.key,
+      skippedPosts
+    }, this.workerId);
+    if (skippedPosts > 0) {
+      await this.safeNotifyAdmin(`Publication ${request.id} (${request.key}) completed with ${skippedPosts} skipped post(s). Use /publication ${request.id} for details.`);
+    }
+    return { published: true, skippedPosts };
+  }
+
+  async sendPublicationHeader(request, selection, lease) {
+    this.logger.info('Publishing selection header', {
+      publicationId: request.id,
+      selection: selection.key,
+      title: selection.title,
+      posts: selection.posts.length,
+      targetChatId: this.config.telegram.publishChannelId,
+      key: request.key
+    });
+
+    try {
+      await runWithTelegramFailurePolicy(
+        () => withBotApiRetry(
           () => this.bot.telegram.sendMessage(this.config.telegram.publishChannelId, formatSelectionHeader(selection.title)),
           {
             label: 'sendSelectionHeader',
             rateLimiter: this.botRateLimiter,
             chatId: this.config.telegram.publishChannelId,
             operationTimeoutMs: this.config.rateLimit?.telegramOperationTimeoutMs,
-            signal: this.signal,
+            signal: lease.signal,
             onBeforeOperation: async () => {
-              await this.repository.markPublicationHeaderSending?.(request.id, this.workerId);
-              deliveryStarted = true;
+              lease.assertActive();
+              await this.repository.markPublicationHeaderSending(request.id, this.workerId);
             }
           }
-        );
-        await this.repository.markPublicationRunning(request.id, this.workerId);
-        deliveryStarted = false;
-      }
-
-      const sentRows = await this.repository.listPublicationPosts(request.id);
-      const interrupted = sentRows.find((row) => row.sendState === 'sending');
-      if (interrupted) {
-        const error = new Error(`Recovered publication with an indeterminate post delivery at position ${interrupted.position}`);
-        await this.repository.markPublicationUncertain?.(request.id, this.workerId, error);
-        this.logger.warn('Publication requires manual review after interrupted post send', {
-          publicationId: request.id,
-          key: request.key,
-          position: interrupted.position
-        });
-        return;
-      }
-      const sentPositions = new Set(sentRows
-        .filter((row) => row.sendState !== 'sending')
-        .map((row) => row.position));
-
-      for (let index = 0; index < selection.posts.length; index += 1) {
-        const position = index + 1;
-        if (sentPositions.has(position)) {
-          this.logger.debug('Publication post skipped: already sent', {
-            publicationId: request.id,
-            selection: selection.key,
-            position
-          });
-          continue;
+        ),
+        {
+          label: 'publish selection header',
+          maxUnknownRetries: getRequestMaxRetries(this.config),
+          baseDelayMs: this.config.publish?.retryBaseMs,
+          maxDelayMs: this.config.publish?.retryMaxMs,
+          signal: lease.signal,
+          onError: async ({ error, classification }) => {
+            if (!['indeterminate', 'lease_lost'].includes(classification)) {
+              await this.repository.resetPublicationHeaderForRetry?.(request.id, this.workerId, error);
+            }
+          }
         }
-        await this.repository.renewPublicationLease?.(request.id, this.workerId, this.workerLeaseMs);
-        const result = await this.publishPost(selection.posts[index], index, async () => {
-          await this.repository.markPublicationPostSending?.({
-            publicationId: request.id,
-            post: selection.posts[index],
-            position
-          });
-          deliveryStarted = true;
-        });
-        await this.repository.recordPublicationPost({
-          publicationId: request.id,
-          post: selection.posts[index],
-          position,
-          botMessageId: getBotMessageId(result)
-        });
-        deliveryStarted = false;
-      }
-      await this.recordPublication(request.id, selection, 'published', { key: request.key });
+      );
+      lease.assertActive();
+      await this.repository.markPublicationRunning(request.id, this.workerId);
+      return { sent: true };
     } catch (error) {
-      if (deliveryStarted && this.repository.markPublicationUncertain) {
+      const classification = classifyTelegramError(error);
+      if (classification === 'lease_lost') throw error;
+      if (classification === 'indeterminate') {
         await this.repository.markPublicationUncertain(request.id, this.workerId, error);
-        this.logger.warn('Publication delivery outcome is uncertain; automatic retries stopped', {
-          publicationId: request.id,
-          key: request.key,
-          error: error?.message || String(error)
-        });
-      } else {
-        await this.repository.updatePublicationError(request.id, error, this.workerId);
+        await this.safeNotifyAdmin(`Publication ${request.id} (${request.key}) requires manual review because the header delivery outcome is unknown.`);
+        return { stopped: true, uncertain: true };
       }
-      throw error;
+      if (classification === 'cancelled') {
+        await this.repository.releasePublicationLease?.(request.id, this.workerId, error);
+        return { stopped: true, cancelled: true };
+      }
+      if (classification === 'permanent') {
+        await this.repository.failPublication(request.id, error, this.workerId);
+        await this.safeNotifyAdmin(`Publication ${request.id} (${request.key}) failed while sending its header: ${error?.message || String(error)}`);
+        return { stopped: true, failed: true };
+      }
+
+      const retry = await this.repository.deferPublicationRetry(request.id, this.workerId, error, {
+        delayMs: getRequestRetryDelay(this.config, Number(request.attemptCount || 0) + 1),
+        maxAttempts: getRequestMaxRetries(this.config)
+      });
+      if (retry.failed) {
+        await this.safeNotifyAdmin(`Publication ${request.id} (${request.key}) failed after repeated header errors: ${error?.message || String(error)}`);
+      }
+      return { stopped: true, deferred: !retry.failed, failed: retry.failed };
     }
   }
 
-  startLeaseHeartbeat(publicationId) {
-    if (typeof this.repository.renewPublicationLease !== 'function') return () => {};
-    const intervalMs = Math.max(1000, Math.floor(this.workerLeaseMs / 3));
-    const timer = setInterval(() => {
-      void this.repository.renewPublicationLease(publicationId, this.workerId, this.workerLeaseMs)
-        .catch((error) => this.logger.error('Publication lease heartbeat failed', {
-          publicationId,
-          workerId: this.workerId,
-          error: error?.message || String(error)
-        }));
-    }, intervalMs);
-    timer.unref?.();
-    return () => clearInterval(timer);
+  async markRecoveredDeliveryUncertain(request, error, extra = {}) {
+    await this.repository.markPublicationUncertain?.(request.id, this.workerId, error);
+    this.logger.warn('Publication requires manual review after interrupted delivery', {
+      publicationId: request.id,
+      key: request.key,
+      ...extra
+    });
+    await this.safeNotifyAdmin(`Publication ${request.id} (${request.key}) was interrupted during delivery and requires manual review. Automatic retries were stopped.`);
+    return { stopped: true, uncertain: true };
   }
 
-  async publishPost(post, index, onBeforeSend) {
+  async failPublicationForPostStreak(request, consecutiveFailures, position, error) {
+    const failure = error instanceof Error
+      ? error
+      : new Error(`More than ${getMaxConsecutivePostFailures(this.config)} consecutive posts failed near position ${position}: ${error || 'unknown error'}`);
+    await this.repository.failPublication(request.id, failure, this.workerId);
+    await this.safeNotifyAdmin([
+      `Publication ${request.id} (${request.key}) failed.`,
+      `${consecutiveFailures} consecutive posts could not be sent; the configured maximum is ${getMaxConsecutivePostFailures(this.config)}.`,
+      `Last position: ${position}.`,
+      `Use /publication ${request.id} for details.`
+    ].join('\n'));
+    return { stopped: true, failed: true, consecutiveFailures };
+  }
+
+  async publishPost(post, index, onBeforeSend, signal = this.signal) {
     this.logger.info('Publishing post', {
       targetChatId: this.config.telegram.publishChannelId,
       sourceChatId: post.chatId,
@@ -459,122 +627,106 @@ export class SelectionPublisher {
       templates: this.config.templates,
       rateLimiter: this.botRateLimiter,
       operationTimeoutMs: this.config.rateLimit?.telegramOperationTimeoutMs,
-      signal: this.signal,
+      signal,
       onBeforeSend
     });
   }
 
-  async recordPublication(publicationId, selection, status, data = {}) {
+  async recordPublication(publicationId, selection, status, data = {}, ownerId = null) {
     await this.repository.finishPublication(publicationId, {
       status,
       posts: selection.posts,
-      data: { count: selection.posts.length, ...data }
+      data: { count: selection.posts.length, ...data },
+      ownerId
     });
   }
 
   async replyJobs(ctx) {
-    const jobs = await this.repository.listPublicationJobs({ finishedLimit: 5 });
-    await ctx.reply(formatJobs(jobs), { parse_mode: 'HTML' });
+    return this.getAdminCommands().replyJobs(ctx);
   }
 
   async replyPublications(ctx) {
-    const publications = await this.repository.listRecentPublications({ limit: 10 });
-    await ctx.reply(formatPublications(publications), { parse_mode: 'HTML' });
+    return this.getAdminCommands().replyPublications(ctx);
   }
 
   async replyPublication(ctx) {
-    const publicationId = parseRequiredPositiveInteger(getCommandArgument(ctx), 'publication id');
-    const publication = await this.repository.getPublicationById(publicationId);
-    if (!publication) {
-      await ctx.reply(`Publication not found: ${publicationId}`);
-      return;
-    }
-    const posts = await this.repository.listPublicationPostsDetailed(publicationId);
-    await ctx.reply(formatPublicationPosts(publication, posts), { parse_mode: 'HTML' });
+    return this.getAdminCommands().replyPublication(ctx);
   }
 
   async runManualSync(ctx) {
-    if (!this.syncWorker) {
-      await ctx.reply('Sync worker is not available.');
-      return;
-    }
-    const job = await this.syncWorker.sync('admin');
-    await ctx.reply(formatJobStatus('Sync', job));
-    this.scheduleManualJobResult(ctx, 'Sync', job);
+    return this.getAdminCommands().runManualSync(ctx);
   }
 
   async runManualBackfill(ctx) {
-    if (!this.syncWorker) {
-      await ctx.reply('Sync worker is not available.');
-      return;
-    }
-    const days = parseOptionalPositiveInteger(getCommandArgument(ctx));
-    const job = await this.syncWorker.backfill(days, 'admin');
-    await ctx.reply(formatJobStatus('Backfill', job));
-    this.scheduleManualJobResult(ctx, 'Backfill', job);
+    return this.getAdminCommands().runManualBackfill(ctx);
   }
 
   scheduleManualJobResult(ctx, label, job) {
-    if (!shouldWaitForManualJob(job)) return;
-    const task = this.replyManualJobResult(ctx, label, job)
-      .catch((error) => {
-        this.logger.error('Failed to send manual job result', {
-          operation: label.toLowerCase(),
-          jobKey: job.key || '',
-          error: error?.message || String(error)
-        });
-      })
-      .finally(() => {
-        this.backgroundTasks.delete(task);
-        this.resolveIdle();
-      });
-    this.backgroundTasks.add(task);
+    return this.getAdminCommands().scheduleManualJobResult(ctx, label, job);
   }
 
   async replyManualJobResult(ctx, label, job) {
-    if (!shouldWaitForManualJob(job)) return;
-    const result = await waitForManualJob(job);
-    await ctx.reply(formatManualJobResult(label, result));
+    return this.getAdminCommands().replyManualJobResult(ctx, label, job);
   }
 
   async runManualPublish(ctx) {
-    const args = getCommandArguments(ctx);
-    const force = args.some(isForceFlag);
-    const keys = args.filter((arg) => !isForceFlag(arg));
-    if (keys.length === 0) {
-      await ctx.reply(formatPublishHelp());
-      return;
-    }
-    const result = await this.publishAll(new Date(), keys, { force });
-    const job = result.selections.some((selection) => selection.requested)
-      ? this.runPublicationWorker('admin')
-      : null;
-    await ctx.reply(formatPublishResult(result, job));
+    return this.getAdminCommands().runManualPublish(ctx);
   }
 
-  launchBot() {
+  async safeNotifyAdmin(message) {
+    try {
+      await this.notifyAdmin(message);
+      return true;
+    } catch (error) {
+      this.logger.error('Failed to notify admin', { error: error?.message || String(error) });
+      return false;
+    }
+  }
+
+  async notifyAdmin(message) {
+    if (!message) return;
+    return withBotApiRetry(
+      () => this.bot.telegram.sendMessage(this.config.telegram.adminId, String(message)),
+      {
+        label: 'notifyAdmin',
+        rateLimiter: this.botRateLimiter,
+        chatId: this.config.telegram.adminId,
+        operationTimeoutMs: this.config.rateLimit?.telegramOperationTimeoutMs,
+        signal: this.signal,
+        maxRetries: 2
+      }
+    );
+  }
+
+  async runRestart(ctx) {
+    return this.getAdminCommands().runRestart(ctx);
+  }
+
+  setFatalBotErrorHandler(handler) {
+    this.botLifecycle.setFatalErrorHandler(handler);
+  }
+
+  get botLaunchPromise() {
+    return this.botLifecycle.launchPromise;
+  }
+
+  async launchBot() {
     this.logger.debug('Launching bot polling', {
       adminId: this.config.telegram.adminId,
       publishChannelId: this.config.telegram.publishChannelId
     });
-    void this.bot.launch()
-      .then(() => {
-        this.logger.debug('Bot polling finished');
-      })
-      .catch((error) => {
-        this.logger.error('Bot polling failed', { error: error?.message || String(error) });
-      });
-    this.logger.debug('Bot polling launch requested');
+    const result = await this.botLifecycle.launch();
+    this.logger.info('Bot preflight succeeded; polling launch requested');
+    return result;
+  }
+
+  reportFatalBotError(error) {
+    this.botLifecycle.reportFatalError(error);
   }
 
   async stopBot(signal = 'SIGTERM', timeoutMs = 30000) {
     this.logger.debug('Stopping bot polling', { signal });
-    try {
-      this.bot.stop(signal);
-    } catch (error) {
-      if (!isBotAlreadyStoppedError(error)) throw error;
-    }
-    await this.waitForIdle(timeoutMs);
+    await this.botLifecycle.stop(signal, timeoutMs);
     this.logger.debug('Bot polling stopped');
   }
 
@@ -610,19 +762,43 @@ export class SelectionPublisher {
   }
 }
 
-function getPublisherWorkerId() {
-  const instance = process.env.pm_id !== undefined ? `pm2:${process.env.pm_id}` : `pid:${process.pid}`;
-  return `${instance}:${Math.random().toString(36).slice(2, 10)}`;
+function getPostMaxRetries(config) {
+  return nonNegativeInteger(config.publish?.postMaxRetries, 3);
 }
 
-function isBotAlreadyStoppedError(error) {
-  return /not running|not started/i.test(String(error?.message || error));
+function getMaxConsecutivePostFailures(config) {
+  return nonNegativeInteger(config.publish?.maxConsecutivePostFailures, 3);
 }
 
-function getCommandName(ctx) {
-  const text = ctx.message?.text || ctx.update?.message?.text || '';
-  const match = text.match(/^\/([^\s@]+)(?:@\w+)?/);
-  return match?.[1] || '';
+function getRequestMaxRetries(config) {
+  return nonNegativeInteger(config.publish?.requestMaxRetries, 3);
+}
+
+function getRequestRetryDelay(config, attempt) {
+  const base = positiveNumber(config.publish?.retryBaseMs, 1_000);
+  const max = positiveNumber(config.publish?.retryMaxMs, 60_000);
+  return Math.min(max, base * (2 ** Math.min(10, Math.max(0, attempt - 1))));
+}
+
+function nonNegativeInteger(value, fallback) {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
+function positiveNumber(value, fallback) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+
+function createNoopLease(signal = null) {
+  return {
+    signal,
+    assertActive() {
+      if (signal?.aborted) throw signal.reason || new Error('Application shutting down');
+    },
+    async stop() {}
+  };
 }
 
 function getPublicationKey(selection, config) {
@@ -681,187 +857,11 @@ function getBotMessageId(result) {
   return result?.message_id || result?.messageId || null;
 }
 
-function getCommandArgument(ctx) {
-  const text = ctx.message?.text || ctx.update?.message?.text || '';
-  return text.trim().split(/\s+/)[1];
+function defaultRestartHandler() {
+  process.kill(process.pid, 'SIGTERM');
 }
 
-function getCommandArguments(ctx) {
-  const text = ctx.message?.text || ctx.update?.message?.text || '';
-  return text.trim().split(/\s+/).slice(1).filter(Boolean);
-}
-
-function isForceFlag(value) {
-  return value === '--force' || value === '-force';
-}
-
-function parseOptionalPositiveInteger(value) {
-  if (value === undefined || value === null || value === '') return undefined;
-  const number = Number(value);
-  if (!Number.isInteger(number) || number <= 0) {
-    throw new Error(`Expected a positive integer, got: ${value}`);
-  }
-  return number;
-}
-
-function parseRequiredPositiveInteger(value, label) {
-  const number = parseOptionalPositiveInteger(value);
-  if (number === undefined) throw new Error(`Usage: /publication <${label}>`);
-  return number;
-}
-
-function formatJobStatus(label, job) {
-  if (job.status === 'skipped' || job.status === 'busy') {
-    return `${label} job status: ${job.status} (${job.reason})`;
-  }
-  return `${label} job status: ${job.status}`;
-}
-
-function shouldWaitForManualJob(job) {
-  return Boolean(job?.promise) && (job.status === 'running' || job.status === 'scheduled');
-}
-
-async function waitForManualJob(job) {
-  try {
-    return await job.promise;
-  } catch (error) {
-    return {
-      failed: true,
-      error: error?.message || String(error)
-    };
-  }
-}
-
-function formatManualJobResult(label, result) {
-  if (result?.failed) return `${label} failed: ${result.error || 'unknown error'}`;
-  if (result?.skipped) return `${label} skipped: ${result.reason || 'skipped'}`;
-  if (label === 'Sync') return formatSyncResult(result || {});
-  if (label === 'Backfill') return formatBackfillResult(result || {});
-  return `${label} finished.`;
-}
-
-function formatSyncResult(result) {
-  return compactLines([
-    'Sync finished',
-    result.isInitial === true ? 'mode: initial' : result.isInitial === false ? 'mode: refresh' : null,
-    formatStatLine('since', result.since),
-    formatStatLine('pages', result.pages),
-    formatStatLine('fetched', result.fetched),
-    formatStatLine('matched', result.matched),
-    formatStatLine('saved', result.saved),
-    formatStatLine('skipped old', result.skippedOld),
-    formatStatLine('deleted', result.deleted),
-    formatStatLine('seen', result.seen),
-    formatStatLine('stop reason', result.stopReason)
-  ]);
-}
-
-function formatBackfillResult(result) {
-  const matchedButNotStored = sumNumbers(result.skippedOld, result.skippedExistingOld);
-  return compactLines([
-    'Backfill finished',
-    formatStatLine('days', result.days),
-    formatStatLine('since', result.since),
-    formatStatLine('update since', result.updateSince),
-    formatStatLine('pages', result.pages),
-    formatStatLine('fetched', result.fetched),
-    formatStatLine('matched', result.matched),
-    formatStatLine('added', result.added),
-    formatStatLine('updated', result.updated),
-    formatStatLine('skipped existing old', result.skippedExistingOld),
-    formatStatLine('skipped old', result.skippedOld),
-    Number.isFinite(matchedButNotStored) && matchedButNotStored > 0
-      ? formatStatLine('matched but not stored', matchedButNotStored)
-      : null,
-    formatStatLine('deleted', result.deleted),
-    formatStatLine('seen', result.seen),
-    formatStatLine('stop reason', result.stopReason)
-  ]);
-}
-
-function compactLines(lines) {
-  return lines.filter(Boolean).join('\n');
-}
-
-function formatStatLine(label, value) {
-  if (value === undefined || value === null || value === '') return null;
-  return `${label}: ${value}`;
-}
-
-function sumNumbers(...values) {
-  let sum = 0;
-  let hasNumber = false;
-  for (const value of values) {
-    if (!Number.isFinite(Number(value))) continue;
-    sum += Number(value);
-    hasNumber = true;
-  }
-  return hasNumber ? sum : Number.NaN;
-}
-
-function formatPublishResult(result, job = null) {
-  if (result.selections.length === 0) {
-    return 'No enabled selections matched. Use -force to publish an explicitly disabled selection.';
-  }
-  const requested = result.selections.some((selection) => selection.requested || selection.status === 'scheduled');
-  const lines = result.selections.map((selection) => {
-    if (selection.status === 'scheduled') {
-      return `${selection.key}: publication request created (${selection.count} posts)${selection.forced ? ' forced' : ''}`;
-    }
-    if (selection.status === 'exists') {
-      return `${selection.key}: already ${describePublicationStatus(selection.publicationStatus)}`;
-    }
-    if (selection.status === 'empty') {
-      return `${selection.key}: no matching posts, nothing was scheduled`;
-    }
-    if (selection.status === 'first_send_pending') {
-      return `${selection.key}: skipped until firstSendAt ${selection.firstSendAt}. Use -force to publish earlier.`;
-    }
-    return `${selection.key}: ${selection.status}`;
-  });
-  if (job) {
-    lines.push(formatPublishWorkerStatus(job, requested));
-  } else if (!requested) {
-    lines.push('No new publication request was created. Worker was not started.');
-  }
-  return lines.join('\n');
-}
-
-function formatPublishWorkerStatus(job, requestCreated) {
-  if (requestCreated && job.status === 'skipped' && job.reason === 'duplicate_job') {
-    return 'Worker is already running. The created publication request will be processed by the active worker.';
-  }
-  if (requestCreated && job.status === 'scheduled') {
-    return 'Worker is already running. A follow-up worker run was queued and will process the created publication request after the current operation.';
-  }
-  if (requestCreated && job.status === 'busy') {
-    return 'Worker is busy. The created publication request will be processed when the worker runs.';
-  }
-  return `Worker job status: ${job.status}${job.reason ? ` (${job.reason})` : ''}`;
-}
-
-function describePublicationStatus(status) {
-  if (status === 'published') return 'published. Nothing was scheduled.';
-  if (status === 'created') return 'scheduled and waiting for the worker.';
-  if (status === 'running') return 'being published now.';
-  return status || 'scheduled';
-}
-
-function formatPublishHelp() {
-  return [
-    'Usage: /publish <selection...> [--force]',
-    '',
-    'Examples:',
-    '/publish daily_best',
-    '/publish best.*',
-    '/publish controversial.*',
-    '/publish best.daily_best controversial.daily_controversial',
-    '/publish best.daily_best --force',
-    '',
-    'Selections: template key, source.key, best.*, or controversial.*.'
-  ].join('\n');
-}
-
-function formatBotError(error) {
-  return `Command failed: ${error?.message || String(error)}`;
+function getPublisherWorkerId() {
+  const instance = process.env.pm_id !== undefined ? `pm2:${process.env.pm_id}` : `pid:${process.pid}`;
+  return `${instance}:${Math.random().toString(36).slice(2, 10)}`;
 }

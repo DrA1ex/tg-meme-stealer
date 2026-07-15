@@ -72,7 +72,8 @@ const CONFIG_SCHEMA = {
     sourceChatId: STRING_OR_NUMBER,
     adminId: NUMBER,
     publishChannelId: STRING_OR_NUMBER,
-    botToken: STRING
+    botToken: STRING,
+    pollingLockFile: STRING
   },
   database: {
     path: STRING
@@ -116,6 +117,12 @@ const CONFIG_SCHEMA = {
     retentionDays: NUMBER,
     retentionInitialDelayMinutes: NUMBER,
     retentionIntervalHours: NUMBER,
+    maxRetries: NUMBER,
+    retryBaseMs: NUMBER,
+    retryMaxMs: NUMBER,
+    maxMissingRatio: NUMBER,
+    mediaMaxBytes: NUMBER,
+    mediaMaxAgeHours: NUMBER,
     throttle: {
       enabled: BOOLEAN,
       historyMinMs: NUMBER,
@@ -128,6 +135,11 @@ const CONFIG_SCHEMA = {
     }
   },
   parsing: {
+    countLocale: STRING,
+    fallbackReactions: {
+      likeMarkers: { type: 'array', items: STRING },
+      dislikeMarkers: { type: 'array', items: STRING }
+    },
     filters: { type: 'array', items: RULE_SCHEMA },
     author: { type: 'array', items: RULE_SCHEMA },
     likes: { type: 'array', items: RULE_SCHEMA },
@@ -146,6 +158,11 @@ const CONFIG_SCHEMA = {
     requestTtlHours: NUMBER,
     workerLeaseMs: NUMBER,
     workerIntervalMinutes: NUMBER,
+    postMaxRetries: NUMBER,
+    maxConsecutivePostFailures: NUMBER,
+    retryBaseMs: NUMBER,
+    retryMaxMs: NUMBER,
+    requestMaxRetries: NUMBER,
     firstSendAt: STRING,
     sources: { type: 'array', items: SOURCE_SCHEMA },
     template: { type: 'array', items: SELECTION_SCHEMA }
@@ -176,7 +193,7 @@ export function loadConfig() {
   const userConfigPath = path.resolve('config.json');
   const defaultConfig = JSON.parse(fs.readFileSync(defaultPath, 'utf8'));
   const userConfig = fs.existsSync(userConfigPath)
-    ? JSON.parse(fs.readFileSync(userConfigPath, 'utf8'))
+    ? migrateOldPublishSelections(JSON.parse(fs.readFileSync(userConfigPath, 'utf8')))
     : {};
   const config = applyEnv(deepMerge(defaultConfig, userConfig), process.env);
   validateConfig(config, { pauseOnDuplicatePublishTemplates: true });
@@ -333,6 +350,8 @@ export function validateConfig(config, options = {}) {
     throw new Error('shutdown.timeoutMs must be positive');
   }
 
+  validateRuntimeSemantics(config);
+
   validatePublishTemplateDuplicates(config, options);
   validatePublishSourceDefinitions(config);
   validatePublishTemplates(config);
@@ -388,7 +407,6 @@ function validatePublishTemplateDuplicates(config, options = {}) {
     .map(([key, count]) => `${key} (${count})`);
   if (duplicates.length === 0) return;
 
-  if (options.pauseOnDuplicatePublishTemplates) sleepSync(5000);
   throw new Error(`Duplicate publish templates:\n${duplicates.map((duplicate) => `- ${duplicate}`).join('\n')}`);
 }
 
@@ -448,14 +466,14 @@ function validatePublishTemplates(config) {
     }
 
     const posts = template.posts || {};
-    if (!isFiniteNumber(posts.min)) {
-      issues.push(`${pathPrefix}.posts.min: expected number`);
+    if (!isNonNegativeInteger(posts.min)) {
+      issues.push(`${pathPrefix}.posts.min: expected non-negative integer`);
     }
-    if (!isFiniteNumber(posts.target)) {
-      issues.push(`${pathPrefix}.posts.target: expected number`);
+    if (!isNonNegativeInteger(posts.target)) {
+      issues.push(`${pathPrefix}.posts.target: expected non-negative integer`);
     }
-    if (!isFiniteNumber(posts.max)) {
-      issues.push(`${pathPrefix}.posts.max: expected number`);
+    if (!isNonNegativeInteger(posts.max)) {
+      issues.push(`${pathPrefix}.posts.max: expected non-negative integer`);
     }
     if (isFiniteNumber(posts.min) && isFiniteNumber(posts.target) && isFiniteNumber(posts.max) && (posts.min > posts.target || posts.target > posts.max)) {
       issues.push(`${pathPrefix}.posts: expected min <= target <= max`);
@@ -525,10 +543,98 @@ function isNonNegativeNumber(value) {
   return isFiniteNumber(value) && value >= 0;
 }
 
-function sleepSync(ms) {
-  const buffer = new SharedArrayBuffer(4);
-  const view = new Int32Array(buffer);
-  Atomics.wait(view, 0, 0, ms);
+function validateRuntimeSemantics(config) {
+  const issues = [];
+  const positive = [
+    ['sync.initialScanDays', config.sync?.initialScanDays],
+    ['sync.refreshRecentDays', config.sync?.refreshRecentDays],
+    ['sync.pageSize', config.sync?.pageSize],
+    ['sync.maxPagesPerRun', config.sync?.maxPagesPerRun],
+    ['sync.intervalHours', config.sync?.intervalHours],
+    ['sync.retentionDays', config.sync?.retentionDays],
+    ['sync.retentionIntervalHours', config.sync?.retentionIntervalHours],
+    ['sync.retryBaseMs', config.sync?.retryBaseMs],
+    ['sync.retryMaxMs', config.sync?.retryMaxMs],
+    ['sync.mediaMaxBytes', config.sync?.mediaMaxBytes],
+    ['sync.mediaMaxAgeHours', config.sync?.mediaMaxAgeHours],
+    ['publish.requestTtlHours', config.publish?.requestTtlHours],
+    ['publish.workerLeaseMs', config.publish?.workerLeaseMs],
+    ['publish.workerIntervalMinutes', config.publish?.workerIntervalMinutes],
+    ['publish.retryBaseMs', config.publish?.retryBaseMs],
+    ['publish.retryMaxMs', config.publish?.retryMaxMs]
+  ];
+  for (const [name, value] of positive) {
+    if (value !== undefined && !isPositiveNumber(value)) issues.push(`${name}: expected number greater than 0`);
+  }
+
+  const nonNegativeIntegers = [
+    ['sync.maxRetries', config.sync?.maxRetries],
+    ['publish.postMaxRetries', config.publish?.postMaxRetries],
+    ['publish.maxConsecutivePostFailures', config.publish?.maxConsecutivePostFailures],
+    ['publish.requestMaxRetries', config.publish?.requestMaxRetries]
+  ];
+  for (const [name, value] of nonNegativeIntegers) {
+    if (value !== undefined && !isNonNegativeInteger(value)) issues.push(`${name}: expected non-negative integer`);
+  }
+
+  if (config.sync?.maxMissingRatio !== undefined && (!isFiniteNumber(config.sync.maxMissingRatio) || config.sync.maxMissingRatio < 0 || config.sync.maxMissingRatio > 1)) {
+    issues.push('sync.maxMissingRatio: expected number from 0 to 1');
+  }
+  if (config.sync?.retryMaxMs !== undefined && config.sync?.retryBaseMs !== undefined && config.sync.retryMaxMs < config.sync.retryBaseMs) issues.push('sync.retryMaxMs must be greater than or equal to sync.retryBaseMs');
+  if (config.publish?.retryMaxMs !== undefined && config.publish?.retryBaseMs !== undefined && config.publish.retryMaxMs < config.publish.retryBaseMs) issues.push('publish.retryMaxMs must be greater than or equal to publish.retryBaseMs');
+  if (config.sync?.retentionInitialDelayMinutes !== undefined && !isNonNegativeNumber(config.sync.retentionInitialDelayMinutes)) issues.push('sync.retentionInitialDelayMinutes: expected number greater than or equal to 0');
+
+  for (const [name, min, max] of [
+    ['sync.throttle.history', config.sync?.throttle?.historyMinMs, config.sync?.throttle?.historyMaxMs],
+    ['sync.throttle.media', config.sync?.throttle?.mediaMinMs, config.sync?.throttle?.mediaMaxMs],
+    ['sync.throttle.reactions', config.sync?.throttle?.reactionsMinMs, config.sync?.throttle?.reactionsMaxMs]
+  ]) {
+    if (min === undefined && max === undefined) continue;
+    if (!isNonNegativeNumber(min) || !isNonNegativeNumber(max) || min > max) issues.push(`${name}: expected non-negative min <= max`);
+  }
+
+  if (config.schedule?.timezone !== undefined && !isValidTimezone(config.schedule.timezone)) issues.push('schedule.timezone: expected valid IANA timezone');
+  if (config.parsing?.countLocale !== undefined && !isValidLocale(config.parsing.countLocale)) issues.push('parsing.countLocale: expected valid locale');
+  if (config.parsing?.fallbackReactions?.likeMarkers !== undefined && (!Array.isArray(config.parsing.fallbackReactions.likeMarkers) || config.parsing.fallbackReactions.likeMarkers.some((value) => !String(value)))) {
+    issues.push('parsing.fallbackReactions.likeMarkers: expected non-empty strings');
+  }
+  if (config.parsing?.fallbackReactions?.dislikeMarkers !== undefined && (!Array.isArray(config.parsing.fallbackReactions.dislikeMarkers) || config.parsing.fallbackReactions.dislikeMarkers.some((value) => !String(value)))) {
+    issues.push('parsing.fallbackReactions.dislikeMarkers: expected non-empty strings');
+  }
+  if (!isPositiveInteger(config.templates?.publish?.maxTextLength) || config.templates.publish.maxTextLength > 4096) {
+    issues.push('templates.publish.maxTextLength: expected integer from 1 to 4096');
+  }
+  if (String(config.templates?.publish?.postCaption || '').length > 4096) issues.push('templates.publish.postCaption: template must not exceed 4096 characters');
+  if (String(config.templates?.stats?.summary || '').length > 4096) issues.push('templates.stats.summary: template must not exceed 4096 characters');
+  if (String(config.templates?.stats?.topPost || '').length > 4096) issues.push('templates.stats.topPost: template must not exceed 4096 characters');
+
+  if (issues.length) throw new Error(`Invalid config:
+${issues.map((issue) => `- ${issue}`).join('\n')}`);
+}
+
+function isValidTimezone(timezone) {
+  try {
+    new Intl.DateTimeFormat('en', { timeZone: timezone }).format();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function isValidLocale(locale) {
+  try {
+    return Intl.NumberFormat.supportedLocalesOf([locale]).length === 1;
+  } catch {
+    return false;
+  }
+}
+
+function isNonNegativeInteger(value) {
+  return Number.isInteger(value) && value >= 0;
+}
+
+function isPositiveInteger(value) {
+  return Number.isInteger(value) && value > 0;
 }
 
 function collectConfigIssues(value, schema, pathParts = []) {

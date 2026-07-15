@@ -4,6 +4,7 @@ import { getLogger } from '../core/logger.js';
 import { normalizeTelegramPeerId } from './peer.js';
 import { withTelegramRetry } from './retry.js';
 import { TelegramThrottle } from './throttle.js';
+import { HistoryPageAssembler } from './historyAssembler.js';
 
 export class TelegramScanner {
   constructor({ client, repository, config, throttle = new TelegramThrottle(config), signal = null }) {
@@ -15,11 +16,11 @@ export class TelegramScanner {
     this.logger = getLogger('scanner');
   }
 
-  async sync() {
-    return this.runSync();
+  async sync(options = {}) {
+    return this.runSync(options);
   }
 
-  async runSync() {
+  async runSync(options = {}) {
     const now = new Date();
     const existingCount = await this.repository.all('SELECT COUNT(*) AS count FROM posts WHERE chat_id = ?', [
       String(this.config.telegram.sourceChatId)
@@ -40,7 +41,13 @@ export class TelegramScanner {
     });
 
     const scan = await this.scanSince(since);
-    const deleted = await this.removeDeletedRecentPosts(subtractDays(now, this.config.sync.refreshRecentDays), scan.seenIds);
+    const reconciliation = await this.reconcileDeletedRecentPosts({
+      sinceDate: subtractDays(now, this.config.sync.refreshRecentDays),
+      seenIds: scan.seenIds,
+      authoritativeComplete: scan.authoritativeComplete,
+      force: Boolean(options.force || options.forceReconcile)
+    });
+    const deleted = reconciliation.deleted;
 
     this.logger.info('Sync finished', {
       initial: isInitial,
@@ -50,7 +57,9 @@ export class TelegramScanner {
       saved: scan.saved,
       skippedOld: scan.skippedOld,
       deleted,
-      stopReason: scan.stopReason
+      stopReason: scan.stopReason,
+      reconciliationBlocked: reconciliation.blocked,
+      missingRatio: reconciliation.missingRatio
     });
 
     return {
@@ -63,15 +72,22 @@ export class TelegramScanner {
       saved: scan.saved,
       skippedOld: scan.skippedOld,
       deleted,
-      stopReason: scan.stopReason
+      stopReason: scan.stopReason,
+      authoritativeComplete: scan.authoritativeComplete,
+      reconciliationBlocked: reconciliation.blocked,
+      reconciliationReason: reconciliation.reason,
+      expectedRecent: reconciliation.checked,
+      missingRecent: reconciliation.missing,
+      missingRatio: reconciliation.missingRatio,
+      forcedReconciliation: reconciliation.forced
     };
   }
 
-  async backfill(days = getInitialScanDays(this.config)) {
-    return this.runBackfill(days);
+  async backfill(days = getInitialScanDays(this.config), options = {}) {
+    return this.runBackfill(days, options);
   }
 
-  async runBackfill(days = getInitialScanDays(this.config)) {
+  async runBackfill(days = getInitialScanDays(this.config), options = {}) {
     const now = new Date();
     const since = subtractDays(now, days);
     const updateSince = subtractDays(now, this.config.sync.refreshRecentDays);
@@ -88,7 +104,13 @@ export class TelegramScanner {
     });
 
     const scan = await this.scanBackfill({ sinceDate: since, updateSinceDate: updateSince, existingIds });
-    const deleted = await this.removeDeletedRecentPosts(updateSince, scan.seenIds);
+    const reconciliation = await this.reconcileDeletedRecentPosts({
+      sinceDate: updateSince,
+      seenIds: scan.seenIds,
+      authoritativeComplete: scan.authoritativeComplete,
+      force: Boolean(options.force || options.forceReconcile)
+    });
+    const deleted = reconciliation.deleted;
 
     this.logger.info('Backfill finished', {
       days,
@@ -100,7 +122,9 @@ export class TelegramScanner {
       skippedExistingOld: scan.skippedExistingOld,
       skippedOld: scan.skippedOld,
       deleted,
-      stopReason: scan.stopReason
+      stopReason: scan.stopReason,
+      reconciliationBlocked: reconciliation.blocked,
+      missingRatio: reconciliation.missingRatio
     });
 
     return {
@@ -116,178 +140,185 @@ export class TelegramScanner {
       skippedExistingOld: scan.skippedExistingOld,
       skippedOld: scan.skippedOld,
       deleted,
-      stopReason: scan.stopReason
+      stopReason: scan.stopReason,
+      authoritativeComplete: scan.authoritativeComplete,
+      reconciliationBlocked: reconciliation.blocked,
+      reconciliationReason: reconciliation.reason,
+      expectedRecent: reconciliation.checked,
+      missingRecent: reconciliation.missing,
+      missingRatio: reconciliation.missingRatio,
+      forcedReconciliation: reconciliation.forced
     };
   }
 
   async scanSince(sinceDate) {
-    const seenIds = new Set();
-    let offset = undefined;
-    let pages = 0;
-    let fetched = 0;
-    let matched = 0;
-    let saved = 0;
-    let skippedOld = 0;
-    let stopReason = 'unknown';
+    const state = createScanState();
+    const assembler = new HistoryPageAssembler();
+    let offset;
     const seenCursors = new Set();
     const maxPages = Math.max(1, Number(this.config.sync.maxPagesPerRun) || 10_000);
 
     while (true) {
-      pages += 1;
-      assertPaginationProgress({ pages, maxPages, offset, seenCursors, operation: 'sync' });
+      state.pages += 1;
+      assertPaginationProgress({ pages: state.pages, maxPages, offset, seenCursors, operation: 'sync' });
       const history = await this.getHistory({ limit: this.config.sync.pageSize, offset });
-
       const messages = [...history];
-      fetched += messages.length;
+      state.fetched += messages.length;
+
       if (messages.length === 0) {
-        stopReason = 'empty-page';
-        this.logger.debug('History page returned no messages', { page: pages });
+        state.stopReason = history.next ? 'unexpected-empty-page' : 'history-exhausted-empty';
+        state.authoritativeComplete = !history.next;
+        await this.processSyncMessages(assembler.flush(), sinceDate, state);
+        this.logger[history.next ? 'warn' : 'debug']('History page returned no messages', {
+          page: state.pages,
+          hasNext: Boolean(history.next),
+          stopReason: state.stopReason
+        });
         break;
       }
 
-      const posts = parseMessagesToPosts(messages, {
-        chatId: this.config.telegram.sourceChatId,
-        parsing: this.config.parsing
-      });
-      matched += posts.length;
-
-      let pageSaved = 0;
-      let pageSkippedOld = 0;
-      for (const post of posts) {
-        if (new Date(post.messageDate) >= sinceDate) {
-          await this.repository.upsertPost(post);
-          seenIds.add(post.messageId);
-          saved += 1;
-          pageSaved += 1;
-        } else {
-          skippedOld += 1;
-          pageSkippedOld += 1;
-        }
-      }
-
-      const oldest = messages[messages.length - 1];
-      const oldestDate = getMessageDate(oldest);
+      const oldestDate = getMessageDate(messages[messages.length - 1]);
+      const reachedSince = oldestDate < sinceDate;
+      const readyMessages = assembler.push(messages, { hasNext: Boolean(history.next) && !reachedSince });
+      const pageStats = await this.processSyncMessages(readyMessages, sinceDate, state);
       this.logger.info('History page parsed', {
-        page: pages,
+        page: state.pages,
         fetched: messages.length,
-        matched: posts.length,
-        saved: pageSaved,
-        skippedOld: pageSkippedOld,
+        matched: pageStats.matched,
+        saved: pageStats.saved,
+        skippedOld: pageStats.skippedOld,
         oldest: oldestDate.toISOString(),
         hasNext: Boolean(history.next)
       });
 
-      if (oldestDate < sinceDate) {
-        stopReason = 'reached-since-date';
+      if (reachedSince) {
+        state.stopReason = 'reached-since-date';
+        state.authoritativeComplete = true;
         break;
       }
       if (!history.next) {
-        stopReason = 'history-exhausted';
+        state.stopReason = 'history-exhausted';
+        state.authoritativeComplete = true;
         break;
       }
       offset = history.next;
     }
 
-    return { seenIds, pages, fetched, matched, saved, skippedOld, stopReason };
+    return state;
+  }
+
+  async processSyncMessages(messages, sinceDate, state) {
+    if (!messages.length) return { matched: 0, saved: 0, skippedOld: 0 };
+    const posts = parseMessagesToPosts(messages, {
+      chatId: this.config.telegram.sourceChatId,
+      parsing: this.config.parsing
+    });
+    state.matched += posts.length;
+    let saved = 0;
+    let skippedOld = 0;
+    for (const post of posts) {
+      if (new Date(post.messageDate) >= sinceDate) {
+        await this.repository.upsertPost(post);
+        state.seenIds.add(post.messageId);
+        state.saved += 1;
+        saved += 1;
+      } else {
+        state.skippedOld += 1;
+        skippedOld += 1;
+      }
+    }
+    return { matched: posts.length, saved, skippedOld };
   }
 
   async scanBackfill({ sinceDate, updateSinceDate, existingIds }) {
-    const seenIds = new Set();
-    let offset = undefined;
-    let pages = 0;
-    let fetched = 0;
-    let matched = 0;
-    let added = 0;
-    let updated = 0;
-    let skippedExistingOld = 0;
-    let skippedOld = 0;
-    let stopReason = 'unknown';
+    const state = createBackfillState();
+    const assembler = new HistoryPageAssembler();
+    let offset;
     const seenCursors = new Set();
     const maxPages = Math.max(1, Number(this.config.sync.maxPagesPerRun) || 10_000);
 
     while (true) {
-      pages += 1;
-      assertPaginationProgress({ pages, maxPages, offset, seenCursors, operation: 'backfill' });
+      state.pages += 1;
+      assertPaginationProgress({ pages: state.pages, maxPages, offset, seenCursors, operation: 'backfill' });
       const history = await this.getHistory({ limit: this.config.sync.pageSize, offset });
       const messages = [...history];
-      fetched += messages.length;
+      state.fetched += messages.length;
+
       if (messages.length === 0) {
-        stopReason = 'empty-page';
-        this.logger.debug('Backfill history page returned no messages', { page: pages });
+        state.stopReason = history.next ? 'unexpected-empty-page' : 'history-exhausted-empty';
+        state.authoritativeComplete = !history.next;
+        await this.processBackfillMessages(assembler.flush(), { sinceDate, updateSinceDate, existingIds, state });
+        this.logger[history.next ? 'warn' : 'debug']('Backfill history page returned no messages', {
+          page: state.pages,
+          hasNext: Boolean(history.next),
+          stopReason: state.stopReason
+        });
         break;
       }
 
-      const posts = parseMessagesToPosts(messages, {
-        chatId: this.config.telegram.sourceChatId,
-        parsing: this.config.parsing
-      });
-      matched += posts.length;
-
-      let pageAdded = 0;
-      let pageUpdated = 0;
-      let pageSkippedExistingOld = 0;
-      let pageSkippedOld = 0;
-
-      for (const post of posts) {
-        const action = getBackfillPostAction({
-          post,
-          sinceDate,
-          updateSinceDate,
-          existingIds
-        });
-
-        if (action === 'skip-old') {
-          skippedOld += 1;
-          pageSkippedOld += 1;
-          continue;
-        }
-
-        seenIds.add(post.messageId);
-
-        if (action === 'skip-existing-old') {
-          skippedExistingOld += 1;
-          pageSkippedExistingOld += 1;
-          continue;
-        }
-
-        await this.repository.upsertPost(post);
-        existingIds.add(post.messageId);
-
-        if (action === 'add') {
-          added += 1;
-          pageAdded += 1;
-        } else {
-          updated += 1;
-          pageUpdated += 1;
-        }
-      }
-
-      const oldest = messages[messages.length - 1];
-      const oldestDate = getMessageDate(oldest);
+      const oldestDate = getMessageDate(messages[messages.length - 1]);
+      const reachedSince = oldestDate < sinceDate;
+      const readyMessages = assembler.push(messages, { hasNext: Boolean(history.next) && !reachedSince });
+      const pageStats = await this.processBackfillMessages(readyMessages, { sinceDate, updateSinceDate, existingIds, state });
       this.logger.info('Backfill page parsed', {
-        page: pages,
+        page: state.pages,
         fetched: messages.length,
-        matched: posts.length,
-        added: pageAdded,
-        updated: pageUpdated,
-        skippedExistingOld: pageSkippedExistingOld,
-        skippedOld: pageSkippedOld,
+        matched: pageStats.matched,
+        added: pageStats.added,
+        updated: pageStats.updated,
+        skippedExistingOld: pageStats.skippedExistingOld,
+        skippedOld: pageStats.skippedOld,
         oldest: oldestDate.toISOString(),
         hasNext: Boolean(history.next)
       });
 
-      if (oldestDate < sinceDate) {
-        stopReason = 'reached-since-date';
+      if (reachedSince) {
+        state.stopReason = 'reached-since-date';
+        state.authoritativeComplete = true;
         break;
       }
       if (!history.next) {
-        stopReason = 'history-exhausted';
+        state.stopReason = 'history-exhausted';
+        state.authoritativeComplete = true;
         break;
       }
       offset = history.next;
     }
+    return state;
+  }
 
-    return { seenIds, pages, fetched, matched, added, updated, skippedExistingOld, skippedOld, stopReason };
+  async processBackfillMessages(messages, { sinceDate, updateSinceDate, existingIds, state }) {
+    if (!messages.length) return { matched: 0, added: 0, updated: 0, skippedExistingOld: 0, skippedOld: 0 };
+    const posts = parseMessagesToPosts(messages, {
+      chatId: this.config.telegram.sourceChatId,
+      parsing: this.config.parsing
+    });
+    state.matched += posts.length;
+    const page = { matched: posts.length, added: 0, updated: 0, skippedExistingOld: 0, skippedOld: 0 };
+    for (const post of posts) {
+      const action = getBackfillPostAction({ post, sinceDate, updateSinceDate, existingIds });
+      if (action === 'skip-old') {
+        state.skippedOld += 1;
+        page.skippedOld += 1;
+        continue;
+      }
+      state.seenIds.add(post.messageId);
+      if (action === 'skip-existing-old') {
+        state.skippedExistingOld += 1;
+        page.skippedExistingOld += 1;
+        continue;
+      }
+      await this.repository.upsertPost(post);
+      existingIds.add(post.messageId);
+      if (action === 'add') {
+        state.added += 1;
+        page.added += 1;
+      } else {
+        state.updated += 1;
+        page.updated += 1;
+      }
+    }
+    return page;
   }
 
   async previewRecent(limit = 30, draft = {}, options = {}) {
@@ -425,17 +456,56 @@ export class TelegramScanner {
     };
   }
 
-  async removeDeletedRecentPosts(sinceDate, seenIds) {
+  async reconcileDeletedRecentPosts({ sinceDate, seenIds, authoritativeComplete, force = false }) {
     const ids = await this.repository.listPostIdsSince(this.config.telegram.sourceChatId, sinceDate.toISOString());
-    let deleted = 0;
-    for (const row of ids) {
-      if (!seenIds.has(row.messageId)) {
-        await this.repository.deletePost(this.config.telegram.sourceChatId, row.messageId);
-        deleted += 1;
-      }
+    const missingRows = ids.filter((row) => !seenIds.has(row.messageId));
+    const missingRatio = ids.length > 0 ? missingRows.length / ids.length : 0;
+    const maxMissingRatio = Number(this.config.sync.maxMissingRatio ?? 0.3);
+
+    if (!authoritativeComplete) {
+      this.logger.warn('Deleted-post reconciliation skipped: history scan was incomplete', {
+        checked: ids.length,
+        missing: missingRows.length,
+        missingRatio,
+        since: sinceDate.toISOString()
+      });
+      return { deleted: 0, checked: ids.length, missing: missingRows.length, missingRatio, blocked: true, reason: 'incomplete_scan', forced: false };
     }
-    this.logger.info('Deleted-post check finished', { checked: ids.length, deleted, since: sinceDate.toISOString() });
-    return deleted;
+    if (!force && missingRatio > maxMissingRatio) {
+      this.logger.warn('Deleted-post reconciliation blocked by missing-post safety threshold', {
+        checked: ids.length,
+        missing: missingRows.length,
+        missingRatio,
+        maxMissingRatio,
+        since: sinceDate.toISOString()
+      });
+      return { deleted: 0, checked: ids.length, missing: missingRows.length, missingRatio, blocked: true, reason: 'missing_ratio_exceeded', forced: false };
+    }
+
+    let deleted = 0;
+    for (const row of missingRows) {
+      await this.repository.deletePost(this.config.telegram.sourceChatId, row.messageId);
+      deleted += 1;
+    }
+    this.logger.info('Deleted-post reconciliation finished', {
+      checked: ids.length,
+      missing: missingRows.length,
+      missingRatio,
+      deleted,
+      forced: force,
+      since: sinceDate.toISOString()
+    });
+    return { deleted, checked: ids.length, missing: missingRows.length, missingRatio, blocked: false, reason: '', forced: force };
+  }
+
+  async removeDeletedRecentPosts(sinceDate, seenIds, options = {}) {
+    const result = await this.reconcileDeletedRecentPosts({
+      sinceDate,
+      seenIds,
+      authoritativeComplete: options.authoritativeComplete ?? true,
+      force: Boolean(options.force)
+    });
+    return result.deleted;
   }
 
   async cleanupOldPosts(now = new Date()) {
@@ -508,6 +578,28 @@ export class TelegramScanner {
     this.logger.debug('History request completed', { hasNext: Boolean(history.next) });
     return history;
   }
+}
+
+function createScanState() {
+  return {
+    seenIds: new Set(),
+    pages: 0,
+    fetched: 0,
+    matched: 0,
+    saved: 0,
+    skippedOld: 0,
+    stopReason: 'unknown',
+    authoritativeComplete: false
+  };
+}
+
+function createBackfillState() {
+  return {
+    ...createScanState(),
+    added: 0,
+    updated: 0,
+    skippedExistingOld: 0
+  };
 }
 
 const NATIVE_REACTION_PATH_PREFIXES = [

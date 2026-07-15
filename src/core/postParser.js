@@ -1,22 +1,20 @@
 const DEFAULT_LIKE_MARKERS = ['👍', '❤', '❤️', '🔥', '+'];
 const DEFAULT_DISLIKE_MARKERS = ['👎', '-'];
 
-export function parseCount(value) {
-  return parseCountDetails(value).result;
+export function parseCount(value, locale = 'en-US') {
+  return parseCountDetails(value, locale).result;
 }
 
-export function parseCountDetails(value) {
-  if (!value) {
-    return { input: value, normalized: '', matched: false, result: 0 };
-  }
-  const normalized = String(value).replace(',', '.').replace(/\s+/g, '');
-  const match = normalized.match(/(\d+(?:\.\d+)?)([k\u043am\u043c])?/i);
-  if (!match) {
-    return { input: value, normalized, matched: false, result: 0 };
-  }
+export function parseCountDetails(value, locale = 'en-US') {
+  if (!value) return { input: value, normalized: '', matched: false, result: 0 };
+  const compact = String(value).trim();
+  const match = compact.match(/([0-9][0-9\s.,  ]*)([k\u043am\u043c])?/i);
+  if (!match) return { input: value, normalized: compact, matched: false, result: 0 };
 
-  const number = Number.parseFloat(match[1]);
   const suffix = match[2]?.toLowerCase();
+  const normalized = normalizeLocalizedNumber(match[1], locale, { compactSuffix: Boolean(suffix) });
+  const number = Number.parseFloat(normalized);
+  if (!Number.isFinite(number)) return { input: value, normalized, matched: false, result: 0 };
   const multiplier = suffix === 'k' || suffix === '\u043a'
     ? 1000
     : suffix === 'm' || suffix === '\u043c'
@@ -24,7 +22,7 @@ export function parseCountDetails(value) {
       : 1;
   return {
     input: value,
-    normalized,
+    normalized: `${normalized}${suffix || ''}`,
     matched: true,
     number,
     suffix: suffix || '',
@@ -33,22 +31,52 @@ export function parseCountDetails(value) {
   };
 }
 
-export function parseReactions(replyMarkup) {
+export function parseReactions(replyMarkup, options = {}) {
   const result = { likes: 0, dislikes: 0 };
   const rows = replyMarkup?.rows || replyMarkup?.buttons || [];
+  const likeMarkers = options.fallbackReactions?.likeMarkers || DEFAULT_LIKE_MARKERS;
+  const dislikeMarkers = options.fallbackReactions?.dislikeMarkers || DEFAULT_DISLIKE_MARKERS;
+  const locale = options.countLocale || 'en-US';
 
   for (const row of rows) {
     for (const button of row.buttons || row || []) {
-      const text = button.text || '';
-      if (DEFAULT_LIKE_MARKERS.some((marker) => text.includes(marker))) {
-        result.likes += parseCount(text);
-      } else if (DEFAULT_DISLIKE_MARKERS.some((marker) => text.includes(marker))) {
-        result.dislikes += parseCount(text);
+      const text = String(button.text || '');
+      if (likeMarkers.some((marker) => marker && text.includes(marker))) {
+        result.likes += parseCount(text, locale);
+      } else if (dislikeMarkers.some((marker) => marker && text.includes(marker))) {
+        result.dislikes += parseCount(text, locale);
       }
     }
   }
-
   return result;
+}
+
+function normalizeLocalizedNumber(value, locale, options = {}) {
+  const { group, decimal } = getNumberSeparators(locale);
+  let normalized = String(value).replace(/[\s\u00a0\u202f]/g, '');
+  if (options.compactSuffix && /^\d+[.,]\d{1,2}$/.test(normalized)) {
+    return normalized.replace(',', '.');
+  }
+  if (group) normalized = normalized.split(group).join('');
+
+  // Be strict about the configured locale. A separator that is not the locale decimal
+  // separator is treated as grouping and removed before the decimal is normalized.
+  const alternate = decimal === ',' ? '.' : ',';
+  if (alternate && alternate !== group) normalized = normalized.split(alternate).join('');
+  if (decimal && decimal !== '.') normalized = normalized.split(decimal).join('.');
+  return normalized;
+}
+
+function getNumberSeparators(locale) {
+  try {
+    const parts = new Intl.NumberFormat(locale).formatToParts(12345.6);
+    return {
+      group: parts.find((part) => part.type === 'group')?.value || '',
+      decimal: parts.find((part) => part.type === 'decimal')?.value || '.'
+    };
+  } catch {
+    return { group: ',', decimal: '.' };
+  }
 }
 
 
@@ -284,8 +312,8 @@ export function parsePostMessage(message, options) {
 
   const text = message.text || message.message || '';
   const fallbackReactions = parseReactions(message.markup || message.replyMarkup);
-  const likes = extractNumber(context, options.parsing?.likes, fallbackReactions.likes);
-  const dislikes = extractNumber(context, options.parsing?.dislikes, fallbackReactions.dislikes);
+  const likes = extractNumber(context, options.parsing?.likes, fallbackReactions.likes, options.parsing);
+  const dislikes = extractNumber(context, options.parsing?.dislikes, fallbackReactions.dislikes, options.parsing);
   const author = extractValue(context, options.parsing?.author) || extractAuthor(text) || formatSender(sender);
   const date = message.date instanceof Date ? message.date : new Date(Number(message.date) * 1000);
 
@@ -331,12 +359,12 @@ export function debugParseMessage(message, options) {
   const context = { message, sender };
   const senderUserId = getSenderUserId(message);
   const shouldRead = shouldReadMessage(message);
-  const fallbackReactions = parseReactions(message?.markup || message?.replyMarkup);
+  const fallbackReactions = parseReactions(message?.markup || message?.replyMarkup, options.parsing);
 
   const filters = traceFilters(context, options.parsing?.filters || []);
   const author = traceValueExtractors(context, options.parsing?.author || []);
-  const likes = traceNumberExtractors(context, options.parsing?.likes || [], fallbackReactions.likes);
-  const dislikes = traceNumberExtractors(context, options.parsing?.dislikes || [], fallbackReactions.dislikes);
+  const likes = traceNumberExtractors(context, options.parsing?.likes || [], fallbackReactions.likes, options.parsing);
+  const dislikes = traceNumberExtractors(context, options.parsing?.dislikes || [], fallbackReactions.dislikes, options.parsing);
   const post = parsePostMessage(message, options);
 
   return {
@@ -432,7 +460,12 @@ function traceValueExtractors(context, extractors = []) {
   return { selected, selectedRule, rules };
 }
 
-function traceNumberExtractors(context, extractors = [], fallback = 0) {
+function withParsingLocale(rule = {}, parsing = {}) {
+  if (rule.locale) return rule;
+  return { ...rule, locale: parsing.countLocale || 'en-US' };
+}
+
+function traceNumberExtractors(context, extractors = [], fallback = 0, parsing = {}) {
   if (!extractors?.length) {
     return {
       selected: fallback,
@@ -449,7 +482,7 @@ function traceNumberExtractors(context, extractors = [], fallback = 0) {
   let found = false;
   for (let index = 0; index < extractors.length; index += 1) {
     const extractor = extractors[index];
-    const trace = traceRule(context, extractor, extractor.transform || 'count');
+    const trace = traceRule(context, withParsingLocale(extractor, parsing), extractor.transform || 'count');
     const acceptedValues = trace.values
       .map((value, valueIndex) => ({
         valueIndex,
@@ -506,7 +539,7 @@ export function extractValue(context, extractors = []) {
   return '';
 }
 
-export function extractNumber(context, extractors = [], fallback = 0) {
+export function extractNumber(context, extractors = [], fallback = 0, parsing = {}) {
   if (!extractors?.length) return fallback;
 
   let total = 0;
@@ -516,7 +549,7 @@ export function extractNumber(context, extractors = [], fallback = 0) {
     for (const value of values) {
       const extracted = applyRegex(value, extractor);
       if (extracted === undefined || extracted === null || extracted === '') continue;
-      const transformed = Number(transformValue(extracted, extractor.transform || 'count', extractor));
+      const transformed = Number(transformValue(extracted, extractor.transform || 'count', withParsingLocale(extractor, parsing)));
       if (!Number.isNaN(transformed)) {
         found = true;
         total += transformed;
@@ -561,11 +594,23 @@ export function getPathTrace(root, path) {
 
 function parseGroupedPost(group, options) {
   const ordered = [...group].sort((a, b) => Number(a.id) - Number(b.id));
-  const representative = ordered.find((message) => message.replyMarkup) || ordered.find((message) => message.message) || ordered[0];
+  const captionMessage = ordered.find((message) => String(message.text || message.message || '').trim()) || ordered[0];
+  const markupMessage = ordered.find((message) => message.markup || message.replyMarkup) || captionMessage;
+  const senderMessage = ordered.find((message) => message.sender || getSenderUserId(message)) || captionMessage;
+  const representative = {
+    ...captionMessage,
+    sender: senderMessage.sender || captionMessage.sender,
+    senderId: senderMessage.senderId || captionMessage.senderId,
+    fromId: senderMessage.fromId || captionMessage.fromId,
+    markup: markupMessage.markup || captionMessage.markup,
+    replyMarkup: markupMessage.replyMarkup || captionMessage.replyMarkup
+  };
   const post = parsePostMessage(representative, options);
   if (!post) return null;
 
+  post.messageId = Number(ordered[0].id);
   post.data.media = buildMediaReferences(ordered);
+  post.data.groupedId = String(ordered[0].groupedId || '');
   return post;
 }
 
@@ -648,7 +693,7 @@ function applyRegex(value, extractor) {
 }
 
 function transformValue(value, transform, rule = {}) {
-  if (transform === 'count') return parseCount(value);
+  if (transform === 'count') return parseCount(value, rule.locale || 'en-US');
   if (transform === 'reactionCount') return parseReactionCount(value, rule);
   if (transform === 'mentionAuthor') return extractMentionAuthor(value, rule);
   if (transform === 'telegramUsername') return String(value).startsWith('@') ? String(value) : `@${value}`;
@@ -671,7 +716,7 @@ function transformValue(value, transform, rule = {}) {
 
 function getTransformDetails(value, transform, rule = {}) {
   if (value === undefined || value === null) return null;
-  if (transform === 'count') return parseCountDetails(value);
+  if (transform === 'count') return parseCountDetails(value, rule.locale || 'en-US');
   if (transform === 'reactionCount') return parseReactionCountDetails(value, rule);
   if (transform === 'mentionAuthor') return extractMentionAuthorDetails(value, rule);
   if (transform === 'telegramUsername') {

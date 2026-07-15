@@ -753,3 +753,61 @@ test('getPreviousScheduledRunAsDate returns last scheduled day, week and month',
     period: 'month'
   }).toISOString(), '2026-06-01T05:20:00.000Z');
 });
+
+test('getNextLocalTimeAsDate advances a nonexistent DST time to the first valid instant', () => {
+  assert.equal(
+    getNextLocalTimeAsDate({
+      now: new Date('2026-03-28T22:00:00.000Z'),
+      time: '03:30',
+      timezone: 'Europe/Tallinn'
+    }).toISOString(),
+    '2026-03-29T01:00:00.000Z'
+  );
+});
+
+test('getNextLocalTimeAsDate chooses the earlier occurrence of an ambiguous DST time', () => {
+  assert.equal(
+    getNextLocalTimeAsDate({
+      now: new Date('2026-10-24T22:00:00.000Z'),
+      time: '03:30',
+      timezone: 'Europe/Tallinn'
+    }).toISOString(),
+    '2026-10-25T00:30:00.000Z'
+  );
+});
+
+test('Scheduler does not plan or publish catch-up work after failed startup synchronization', async () => {
+  let planned = 0;
+  let workerRuns = 0;
+  const errors = [];
+  const scheduler = new Scheduler({
+    schedule: { enabled: true, timezone: 'UTC' },
+    sync: { runOnStart: true, intervalHours: 24 },
+    publish: { template: [] },
+    logging: { logLevel: 'silent' }
+  }, {
+    sync: async () => ({
+      status: 'running',
+      promise: Promise.resolve({ failed: true, error: 'sync exhausted' })
+    }),
+    publish: async () => {},
+    publishWorker: async () => { workerRuns += 1; }
+  }, {
+    debug() {}, info() {}, warn() {},
+    error(message, fields) { errors.push({ message, fields }); }
+  });
+  scheduler.scheduleSync = () => {};
+  scheduler.scheduleRetention = () => {};
+  scheduler.schedulePublicationWorker = () => {};
+  scheduler.schedulePublications = () => {};
+  scheduler.planMissedPublications = async () => { planned += 1; };
+
+  await scheduler.start();
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(planned, 0);
+  assert.equal(workerRuns, 0);
+  assert.equal(errors.length, 1);
+  assert.equal(errors[0].fields.timer, 'startup');
+  assert.match(errors[0].fields.error, /sync exhausted/);
+});
