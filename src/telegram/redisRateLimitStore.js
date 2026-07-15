@@ -133,7 +133,10 @@ export async function createRedisRateLimitStore(config = {}, options = {}) {
       url: redisConfig.url || 'redis://127.0.0.1:6379',
       socket: {
         connectTimeout: toPositiveInteger(redisConfig.connectTimeoutMs, 3000),
-        reconnectStrategy: (retries) => Math.min(250 * (retries + 1), 5000)
+        // Keep node-redis from owning an unbounded reconnect loop. The store
+        // performs controlled, unref'ed reconnect attempts instead so an
+        // unavailable optional Redis server cannot keep tests or CLI commands alive.
+        reconnectStrategy: false
       },
       disableOfflineQueue: true
     });
@@ -166,6 +169,7 @@ export class RedisRateLimitStore {
     this.operationTimeoutMs = toPositiveInteger(config.operationTimeoutMs, 1000);
     this.circuitBreakMs = toPositiveInteger(config.circuitBreakMs, 5000);
     this.connectTimeoutMs = toPositiveInteger(config.connectTimeoutMs, 3000);
+    this.reconnectIntervalMs = toPositiveInteger(config.reconnectIntervalMs, 5000);
     this.ttlMs = toPositiveInteger(config.keyTtlMs, 86_400_000);
     this.penaltyTtlMs = toPositiveInteger(config.penaltyTtlMs, 3_600_000);
     this.penaltyQuietPeriodMs = toPositiveInteger(config.penaltyQuietPeriodMs, 60_000);
@@ -180,28 +184,56 @@ export class RedisRateLimitStore {
     this.required = config.required === true;
     this.health = 'initializing';
     this.statusListeners = new Set();
+    this.reconnectTimer = null;
+    this.connectPromise = null;
     this.attachEvents();
   }
 
   async start() {
+    return this.ensureConnected();
+  }
+
+  async ensureConnected() {
+    if (this.closed) return false;
     if (this.client.isReady) {
+      this.clearReconnectTimer();
       this.logReady('Shared Redis rate limiter ready');
       return true;
     }
-    try {
-      const connected = await withTimeout(
-        Promise.resolve(this.client.connect()),
-        this.connectTimeoutMs,
-        'Redis connection timed out'
-      );
-      if (connected !== false && this.client.isReady) {
-        this.logReady('Shared Redis rate limiter ready');
-        return true;
+    if (this.connectPromise) return this.connectPromise;
+
+    this.connectPromise = (async () => {
+      let connectOperation;
+      try {
+        if (this.client.isOpen && !this.client.isReady) {
+          this.destroyUnreadyClient();
+        }
+        connectOperation = Promise.resolve(this.client.connect());
+        // A timeout wins the race before the underlying driver promise settles.
+        // Attach a handler immediately so a later rejection is never unhandled.
+        connectOperation.catch(() => {});
+        const connected = await withTimeout(
+          connectOperation,
+          this.connectTimeoutMs,
+          'Redis connection timed out'
+        );
+        if (connected !== false && this.client.isReady) {
+          this.clearReconnectTimer();
+          this.logReady('Shared Redis rate limiter ready');
+          return true;
+        }
+        throw new Error('Redis client did not become ready');
+      } catch (error) {
+        this.destroyUnreadyClient();
+        this.noteUnavailable('Shared Redis rate limiter unavailable; using local fallback', error);
+        this.scheduleReconnect();
+        return false;
       }
-    } catch (error) {
-      this.noteUnavailable('Shared Redis rate limiter unavailable; using local fallback', error);
-    }
-    return false;
+    })().finally(() => {
+      this.connectPromise = null;
+    });
+
+    return this.connectPromise;
   }
 
   get isReady() {
@@ -329,11 +361,12 @@ export class RedisRateLimitStore {
   async close() {
     if (this.closed) return;
     this.closed = true;
+    this.clearReconnectTimer();
     try {
-      if (this.client.isReady) {
+      if (this.client.isReady && typeof this.client.close === 'function') {
         await this.client.close();
-      } else if (this.client.isOpen) {
-        this.client.destroy();
+      } else {
+        this.destroyUnreadyClient();
       }
     } catch (error) {
       this.logger.debug('Redis rate-limit connection close failed', { error: sanitizeError(error) });
@@ -353,6 +386,7 @@ export class RedisRateLimitStore {
     }
     if (!this.client.isReady) {
       this.noteUnavailable('Shared Redis rate limiter is not ready; using local fallback');
+      this.scheduleReconnect();
       return { status: 'unavailable' };
     }
     const startedAt = Date.now();
@@ -403,6 +437,7 @@ export class RedisRateLimitStore {
   attachEvents() {
     if (typeof this.client.on !== 'function') return;
     this.client.on('ready', () => {
+      this.clearReconnectTimer();
       this.logReady('Shared Redis rate limiter connected');
     });
     this.client.on('reconnecting', () => {
@@ -410,7 +445,38 @@ export class RedisRateLimitStore {
     });
     this.client.on('error', (error) => {
       this.noteUnavailable('Shared Redis rate limiter connection error; using local fallback', error);
+      this.scheduleReconnect();
     });
+    this.client.on('end', () => {
+      if (this.closed) return;
+      this.noteUnavailable('Shared Redis rate limiter connection closed; using local fallback');
+      this.scheduleReconnect();
+    });
+  }
+
+  scheduleReconnect() {
+    if (this.closed || this.client.isReady || this.reconnectTimer) return;
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      void this.ensureConnected();
+    }, this.reconnectIntervalMs);
+    this.reconnectTimer.unref?.();
+  }
+
+  clearReconnectTimer() {
+    if (!this.reconnectTimer) return;
+    clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = null;
+  }
+
+  destroyUnreadyClient() {
+    if (this.client.isReady) return;
+    try {
+      if (typeof this.client.destroy === 'function') this.client.destroy();
+      else if (typeof this.client.disconnect === 'function') this.client.disconnect();
+    } catch (error) {
+      this.logger.debug('Redis unready connection cleanup failed', { error: sanitizeError(error) });
+    }
   }
 
   noteUnavailable(message, error, fields = {}) {

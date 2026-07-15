@@ -25,6 +25,7 @@
       "url": "redis://127.0.0.1:6379",
       "keyPrefix": "tg-memes:local",
       "connectTimeoutMs": 3000,
+      "reconnectIntervalMs": 5000,
       "operationTimeoutMs": 1000,
       "circuitBreakMs": 5000,
       "fallbackMultiplier": 3,

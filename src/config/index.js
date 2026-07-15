@@ -97,6 +97,7 @@ const CONFIG_SCHEMA = {
       url: STRING,
       keyPrefix: STRING,
       connectTimeoutMs: NUMBER,
+      reconnectIntervalMs: NUMBER,
       operationTimeoutMs: NUMBER,
       circuitBreakMs: NUMBER,
       fallbackMultiplier: NUMBER,
@@ -395,6 +396,12 @@ function validateSharedRateLimitConfig(config) {
   }
   if (!/^\d+:.+/.test(String(config.telegram.botToken))) {
     throw new Error('telegram.botToken must start with the numeric bot id when Redis rate limiting is enabled');
+  }
+  if (!(Number(redis.connectTimeoutMs ?? 3000) > 0)
+    || !(Number(redis.reconnectIntervalMs ?? 5000) > 0)
+    || !(Number(redis.operationTimeoutMs ?? 1000) > 0)
+    || !(Number(redis.circuitBreakMs ?? 5000) > 0)) {
+    throw new Error('rateLimit.redis timeout and reconnect settings must be positive');
   }
   if (!(Number(redis.fallbackMultiplier) >= 1)) {
     throw new Error('rateLimit.redis.fallbackMultiplier must be at least 1');

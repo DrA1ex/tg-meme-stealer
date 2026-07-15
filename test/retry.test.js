@@ -72,7 +72,7 @@ test('Telegram operation timeout keeps an isolated process alive until it settle
      } catch (error) {
        if (error.code !== 'TELEGRAM_OPERATION_TIMEOUT') throw error;
      }`
-  ], { cwd: process.cwd(), stdio: 'pipe' });
+  ], { cwd: process.cwd(), stdio: 'pipe', timeout: 2000 });
 });
 
 test('getFloodWaitSeconds reads mtcute RpcError seconds', () => {

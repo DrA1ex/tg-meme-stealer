@@ -138,7 +138,54 @@ test('Redis operation timeout keeps an isolated process alive until fallback is 
      const store = new RedisRateLimitStore({ client, config: { operationTimeoutMs: 5 }, logger });
      const result = await store.reserve({ slots: [{ key: 'x', intervalMs: 1 }] });
      if (result.status !== 'indeterminate') process.exitCode = 1;`
-  ], { cwd: process.cwd(), stdio: 'pipe' });
+  ], { cwd: process.cwd(), stdio: 'pipe', timeout: 2000 });
+});
+
+test('optional Redis fallback does not keep an isolated process alive when Redis is absent', () => {
+  execFileSync(process.execPath, [
+    '--input-type=module',
+    '--eval',
+    `import { createRedisRateLimitStore } from './src/telegram/redisRateLimitStore.js';
+     const logger = { debug() {}, info() {}, warn() {}, error() {} };
+     const store = await createRedisRateLimitStore({ rateLimit: { redis: {
+       enabled: true,
+       url: 'redis://127.0.0.1:1',
+       connectTimeoutMs: 20,
+       reconnectIntervalMs: 5000
+     } } }, { logger });
+     if (!store || store.isReady) process.exitCode = 1;`
+  ], { cwd: process.cwd(), stdio: 'pipe', timeout: 2000 });
+});
+
+test('RedisRateLimitStore reconnects through an unref timer after optional startup fallback', async () => {
+  let ready = false;
+  let attempts = 0;
+  const listeners = new Map();
+  const client = {
+    get isReady() { return ready; },
+    get isOpen() { return false; },
+    on(event, listener) { listeners.set(event, listener); },
+    async connect() {
+      attempts += 1;
+      if (attempts === 1) throw new Error('offline');
+      ready = true;
+      listeners.get('ready')?.();
+    },
+    destroy() {},
+    async close() { ready = false; }
+  };
+  const store = new RedisRateLimitStore({
+    client,
+    config: { connectTimeoutMs: 20, reconnectIntervalMs: 5 },
+    logger: createTestLogger()
+  });
+
+  assert.equal(await store.start(), false);
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal(attempts, 2);
+  assert.equal(store.isReady, true);
+  assert.equal(store.health, 'ready');
+  await store.close();
 });
 
 test('RedisRateLimitStore coordinates reservations across real clients', {

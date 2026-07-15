@@ -81,13 +81,15 @@ test('sendRichPost cleans media files when sending fails', async () => {
   assert.deepEqual(cleaned, ['/tmp/1.jpg']);
 });
 
-test('sendRichPost keeps a single media file until Telegraf has finished reading it', async () => {
+test('sendRichPost keeps a single media file until Telegraf has finished reading it', { timeout: 2_000 }, async (t) => {
   const fs = await import('node:fs/promises');
   const os = await import('node:os');
   const path = await import('node:path');
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'tg-memes-rich-post-single-'));
   const filePath = path.join(dir, 'media.jpg');
   await fs.writeFile(filePath, 'image');
+  const canonicalFilePath = await fs.realpath(filePath);
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
   let cleaned = false;
 
   const mediaDownloader = {
@@ -100,7 +102,7 @@ test('sendRichPost keeps a single media file until Telegraf has finished reading
   const telegram = {
     sendPhoto: async (_chatId, media) => {
       await delay(20);
-      assert.equal(await fs.realpath(media.source), filePath);
+      assert.equal(await fs.realpath(media.source), canonicalFilePath);
       assert.equal(await fs.readFile(media.source, 'utf8'), 'image');
       assert.equal(cleaned, false);
       return { message_id: 1 };
@@ -121,7 +123,7 @@ test('sendRichPost keeps a single media file until Telegraf has finished reading
   await assert.rejects(fs.access(filePath), { code: 'ENOENT' });
 });
 
-test('sendRichPost keeps album files until Telegraf has finished building the media group', async () => {
+test('sendRichPost keeps album files until Telegraf has finished building the media group', { timeout: 2_000 }, async (t) => {
   const fs = await import('node:fs/promises');
   const os = await import('node:os');
   const path = await import('node:path');
@@ -129,6 +131,7 @@ test('sendRichPost keeps album files until Telegraf has finished building the me
   const firstPath = path.join(dir, 'first.jpg');
   const secondPath = path.join(dir, 'second.jpg');
   await Promise.all([fs.writeFile(firstPath, 'first'), fs.writeFile(secondPath, 'second')]);
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
 
   const mediaDownloader = {
     downloadPostMedia: async () => [
@@ -163,13 +166,15 @@ test('sendRichPost keeps album files until Telegraf has finished building the me
   await assert.rejects(fs.access(secondPath), { code: 'ENOENT' });
 });
 
-test('sendRichPost defers cleanup when the watchdog times out before Telegraf settles', async () => {
+test('sendRichPost defers cleanup when the watchdog times out before Telegraf settles', { timeout: 2_000 }, async (t) => {
   const fs = await import('node:fs/promises');
   const os = await import('node:os');
   const path = await import('node:path');
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'tg-memes-rich-post-timeout-'));
   const filePath = path.join(dir, 'media.jpg');
   await fs.writeFile(filePath, 'image');
+  const canonicalFilePath = await fs.realpath(filePath);
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
   let finishOperation;
   const operationFinished = new Promise((resolve) => { finishOperation = resolve; });
   let finishCleanup;
@@ -184,10 +189,13 @@ test('sendRichPost defers cleanup when the watchdog times out before Telegraf se
   };
   const telegram = {
     sendPhoto: async (_chatId, media) => {
-      await delay(30);
-      assert.equal(await fs.realpath(media.source), filePath);
-      finishOperation();
-      return { message_id: 1 };
+      try {
+        await delay(30);
+        assert.equal(await fs.realpath(media.source), canonicalFilePath);
+        return { message_id: 1 };
+      } finally {
+        finishOperation();
+      }
     }
   };
 
