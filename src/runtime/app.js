@@ -37,6 +37,7 @@ export async function createApp(config) {
   let mediaDownloader;
   let setupAssistant;
   let publisher;
+  let redisStatusUnsubscribe = null;
 
   try {
     repository = new PostRepository(config.database.path);
@@ -79,6 +80,30 @@ export async function createApp(config) {
       signal: shutdownController.signal
     });
     syncWorker.setAdminNotifier((message) => publisher.notifyAdmin(message));
+    if (sharedRateLimitStore) {
+      let lastAdminStatus = null;
+      const reportRedisStatus = ({ status, previous = null } = {}) => {
+        if (!status || status === lastAdminStatus) return;
+        lastAdminStatus = status;
+        if (status === 'degraded') {
+          void publisher.safeNotifyAdmin([
+            'Shared Redis rate limiter is unavailable.',
+            config.rateLimit?.redis?.required === true
+              ? 'Redis is required, so Telegram operations are paused until it recovers.'
+              : 'The process is using a conservative local fallback. This is not safe as a shared limiter across multiple PM2 instances.',
+            'Check Redis connectivity and the rateLimit.redis settings.'
+          ].join('\n'), {
+            // Redis itself is the failed dependency. Send this one transition alert
+            // without the shared limiter so required mode can still reach the admin.
+            bypassRateLimiter: true
+          });
+        } else if (status === 'ready' && previous === 'degraded') {
+          void publisher.safeNotifyAdmin('Shared Redis rate limiter recovered; shared Telegram rate limiting is active again.');
+        }
+      };
+      redisStatusUnsubscribe = sharedRateLimitStore.setStatusListener(reportRedisStatus);
+      reportRedisStatus({ status: sharedRateLimitStore.health });
+    }
   } catch (error) {
     const cleanupErrors = await cleanupInitializedResources({
       botRateLimiter,
@@ -112,6 +137,8 @@ export async function createApp(config) {
     if (resourceClosePromise) return resourceClosePromise;
     resourceClosePromise = (async () => {
       logger.debug('Closing app resources');
+      redisStatusUnsubscribe?.();
+      redisStatusUnsubscribe = null;
       const results = await Promise.allSettled([
         safeDestroyUserClient(userClient),
         sharedRateLimitStore?.close(),

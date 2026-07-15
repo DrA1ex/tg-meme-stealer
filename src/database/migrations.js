@@ -75,6 +75,20 @@ const MIGRATIONS = [
         ON publications(status, next_attempt_at, lease_until, created_at)
       `);
     }
+  },
+  {
+    name: '0002_delivery_commit_state',
+    async up(db) {
+      await ensureColumn(db, 'publications', 'header_message_id', 'INTEGER');
+      await db.exec(`
+        DROP INDEX IF EXISTS idx_publications_key_active_v2;
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_publications_key_active_v3
+        ON publications(key)
+        WHERE key IS NOT NULL AND status IN (
+          'created', 'header_sending', 'header_delivered', 'running', 'uncertain', 'published'
+        );
+      `);
+    }
   }
 ];
 

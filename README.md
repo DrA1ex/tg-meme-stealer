@@ -51,6 +51,7 @@ TELEGRAM_BOT_TOKEN=123456:bot_token
 
 # Optional: coordinate rate limits between processes.
 # RATE_LIMIT_REDIS_ENABLED=true
+# RATE_LIMIT_REDIS_REQUIRED=true
 # RATE_LIMIT_REDIS_URL=redis://127.0.0.1:6379
 ```
 
@@ -191,11 +192,12 @@ Common options:
     "telegramOperationTimeoutMs": 60000,
     "redis": {
       "enabled": false,
+      "required": false,
       "mode": "standalone",
       "url": "redis://127.0.0.1:6379",
       "keyPrefix": "tg-memes:local",
-      "connectTimeoutMs": 500,
-      "operationTimeoutMs": 200,
+      "connectTimeoutMs": 3000,
+      "operationTimeoutMs": 1000,
       "circuitBreakMs": 5000,
       "fallbackMultiplier": 3,
       "penaltyQuietPeriodMs": 60000,
@@ -1024,7 +1026,7 @@ Publication rows use a durable `key` per selection period. Scheduled publishing 
 
 The daemon periodically deletes rows in `posts` older than `sync.retentionDays` so the database does not grow indefinitely. Retention waits 15 minutes after daemon startup by default, then runs every 24 hours, and it is serialized through the same job gate as sync and publishing. Publication history remains in `publications` and `publication_posts`; old publication post details may no longer have joined source text/author after the source post row is pruned.
 
-Media is not stored permanently. The database stores Telegram media references in `data.media`; media is streamed to a unique per-attempt directory under `sync.mediaDir`, bounded by `sync.mediaMaxBytes`, and deleted after success or failure. Stale attempt directories older than `sync.mediaMaxAgeHours` are removed during cleanup.
+Media is not stored permanently. During sync, the database stores portable mtcute file IDs in `data.media` when Telegram provides them. Publishing downloads those references directly and therefore does not normally need to reload every source message. Older rows without a file ID fall back to an exact history lookup, and expired file references are refreshed through source history. Media is streamed to a unique per-attempt directory under `sync.mediaDir`, bounded by `sync.mediaMaxBytes`, and deleted only after the underlying download and Bot API upload operations have settled. Stale attempt directories older than `sync.mediaMaxAgeHours` are removed during cleanup.
 
 Telegram can return `FLOOD_WAIT` for read-only API calls too, including history reads, reaction enrichment, and media downloads. All MTProto traffic shares one adaptive limiter: calls are paced per method, a server-requested wait pauses the whole client, and the affected method backs off before slowly returning to its configured rate. Tune `sync.throttle.historyMinMs` / `historyMaxMs`, `reactionsMinMs` / `reactionsMaxMs`, and `mediaMinMs` / `mediaMaxMs` as needed.
 
@@ -1038,20 +1040,23 @@ Multiple PM2 processes can coordinate their rate limits through Redis. Redis is 
 
 ```dotenv
 RATE_LIMIT_REDIS_ENABLED=true
+RATE_LIMIT_REDIS_REQUIRED=true
 RATE_LIMIT_REDIS_URL=redis://127.0.0.1:6379
 ```
 
 Set `rateLimit.redis.keyPrefix` and `rateLimit.mtprotoGroup` in `config.json`; they are intentionally not environment variables. Both must be explicit when Redis is enabled. Processes with the same MTProto group share reservations, adaptive penalties, and `FLOOD_WAIT` cooldowns. Use the same group only when the processes use the same Telegram user account. Only standalone Redis is supported; Redis Cluster is rejected by config validation.
 
+Set `rateLimit.redis.required` or `RATE_LIMIT_REDIS_REQUIRED=true` when more than one PM2 process can send through the same Telegram account or bot. Required mode fails startup when Redis is unavailable and pauses later Telegram operations instead of silently switching each process to an independent local limiter. Keep it `false` for a single-process installation where conservative local fallback is acceptable.
+
 Bot API global and per-chat quotas remain scoped to each bot token, while `publish.throttle.sharedDestinationMinMs` spaces sends from all bots targeting the same chat. A `retry_after` blocks only the bot token that received it by default; set `shareRetryAfterAcrossBots` only if Telegram has demonstrably applied a destination-wide restriction.
 
 Normal Redis operations and immediate slot acquisitions are logged at `DEBUG`, including operation latency, scopes, and the PM2/process id. Actual waits are logged at `INFO`, waits above `longWaitWarnMs` at `WARN`, and waits above `maxQueueDelayMs` are rejected. `FLOOD_WAIT` and Bot API `retry_after` are logged at `WARN`.
 
-If Redis cannot be reached or an operation times out, the app logs an `ERROR`, opens a short circuit breaker, and continues through a conservative local fallback. MTProto and Bot API token/chat intervals are multiplied by `fallbackMultiplier`; Bot API destination sends also receive a randomized fallback delay. A timed-out Redis operation is treated as indeterminate rather than as a confirmed failure. Before every Telegram request, a process validates that no newer shared cooldown invalidated its reservation. Repeated outage messages are reduced to `DEBUG` between periodic `ERROR` reminders; recovery is logged at `INFO`.
+If Redis cannot be reached or an operation times out, optional mode logs an `ERROR`, opens a short circuit breaker, and continues through a conservative local fallback. MTProto and Bot API token/chat intervals are multiplied by `fallbackMultiplier`; Bot API destination sends also receive a randomized fallback delay. Required mode does not use the local fallback: publication requests are durably deferred, and sync retries according to its normal failure policy until shared coordination recovers. The administrator receives one degraded-state notification and one recovery notification. Before every Telegram request, a process validates that no newer shared cooldown invalidated its reservation. Repeated outage messages are reduced to `DEBUG` between periodic `ERROR` reminders; recovery is logged at `INFO`.
 
 The Redis integration test is mandatory in GitHub Actions. Locally, set `TEST_REDIS_URL` to run the same real-server concurrency and cooldown tests.
 
-Every limiter wait has one cumulative `maxQueueDelayMs` budget, including Redis revalidation. Telegram operations have a `telegramOperationTimeoutMs` watchdog. Publication workers coordinate through SQLite leases (`publish.workerLeaseMs`). A lost lease aborts the current side effect before another worker can continue. Only genuinely indeterminate deliveries are moved to `uncertain`; definitive Telegram errors are not. Unknown post errors are retried `publish.postMaxRetries` times and then that post is skipped. A successful post resets the streak, while more than `publish.maxConsecutivePostFailures` consecutive exhausted unknown post errors fail the publication. Network failures retry with backoff without consuming that budget. Unexpected request-level failures are deferred so one bad request cannot starve the queue. Sync pagination also stops on repeated cursors or after `sync.maxPagesPerRun` pages.
+Every limiter wait has one cumulative `maxQueueDelayMs` budget, including Redis revalidation. Telegram operations have a `telegramOperationTimeoutMs` watchdog. Publication workers coordinate through SQLite leases (`publish.workerLeaseMs`). A lost lease aborts the current side effect before another worker can continue. Only genuinely indeterminate Bot API deliveries are moved to `uncertain`; read and media-download timeouts are retryable and never imply that a target message may have been sent. Definitive Telegram errors are not retried. Unknown post errors are retried `publish.postMaxRetries` times and then that post is skipped. A successful post resets the streak, while more than `publish.maxConsecutivePostFailures` consecutive exhausted unknown post errors fail the publication. Network failures retry with backoff without consuming that budget. Unexpected request-level failures are deferred so one bad request cannot starve the queue. Sync pagination also stops on repeated cursors or after `sync.maxPagesPerRun` pages.
 
 Shutdown is bounded by `shutdown.timeoutMs`. On `SIGINT` or `SIGTERM`, the scheduler stops, queued jobs are cancelled, rate-limit and retry waits receive an abort signal, and no new jobs are accepted. A Bot API request cancelled after it started is recorded as `uncertain`; a request cancelled before it reached Telegram remains retryable. Most of the shutdown budget is used to drain running jobs and persist their state, while up to five seconds is reserved for closing MTProto, Redis, and SQLite. If either phase exceeds its deadline, the application logs `WARN`/`ERROR`, forces resource close, and exits instead of waiting indefinitely.
 

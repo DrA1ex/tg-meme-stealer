@@ -213,3 +213,34 @@ function createTestLogger() {
   };
   return logger;
 }
+
+test('createRedisRateLimitStore fails startup when Redis is configured as required', async () => {
+  await assert.rejects(
+    createRedisRateLimitStore(
+      { rateLimit: { redis: { enabled: true, required: true } } },
+      { createClientFn: () => { throw new Error('invalid redis config'); }, logger: createTestLogger() }
+    ),
+    (error) => error.code === 'RATE_LIMIT_SHARED_UNAVAILABLE'
+  );
+});
+
+test('RedisRateLimitStore reports degraded and recovered health transitions once', async () => {
+  let ready = false;
+  const transitions = [];
+  const client = {
+    get isReady() { return ready; },
+    isOpen: true,
+    on: () => {},
+    connect: async () => { throw new Error('offline'); },
+    eval: async () => [0, 1000, 1000, '1'],
+    close: async () => {}
+  };
+  const store = new RedisRateLimitStore({ client, config: { connectTimeoutMs: 10 }, logger: createTestLogger() });
+  store.setStatusListener((event) => transitions.push(event.status));
+
+  assert.equal(await store.start(), false);
+  ready = true;
+  assert.equal((await store.reserve({ slots: [{ key: 'x', intervalMs: 1 }], blockKeys: [] })).status, 'ok');
+  assert.deepEqual(transitions, ['degraded', 'ready']);
+  await store.close();
+});

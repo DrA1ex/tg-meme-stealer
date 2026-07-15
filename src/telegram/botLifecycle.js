@@ -15,6 +15,7 @@ export class BotLifecycle {
     this.fatalErrorHandler = fatalErrorHandler;
     this.launchPromise = null;
     this.pollingLock = null;
+    this.releasePromise = null;
     this.stopping = false;
     this.failureReported = false;
   }
@@ -67,27 +68,60 @@ export class BotLifecycle {
   async stop(signal = 'SIGTERM', timeoutMs = 30000) {
     this.stopping = true;
     const bot = this.getBot();
+    const launchPromise = this.launchPromise;
     try {
       bot.stop(signal);
     } catch (error) {
       if (!isBotAlreadyStoppedError(error)) throw error;
     }
     await this.waitForIdle(timeoutMs);
+    if (launchPromise) {
+      const settled = await waitForSettlement(launchPromise, timeoutMs);
+      if (!settled) {
+        this.logger.warn('Bot polling did not settle before shutdown timeout; retaining polling lock until it actually stops', {
+          timeoutMs
+        });
+        return;
+      }
+    }
     await this.releaseLock();
   }
 
   async releaseLock() {
+    if (this.releasePromise) return this.releasePromise;
     const lock = this.pollingLock;
     this.pollingLock = null;
     if (!lock) return;
-    try {
-      await lock.release();
-    } catch (error) {
-      this.logger.error('Failed to release bot polling lock', { error: error?.message || String(error) });
-    }
+    this.releasePromise = (async () => {
+      try {
+        await lock.release();
+      } catch (error) {
+        this.logger.error('Failed to release bot polling lock', { error: error?.message || String(error) });
+      } finally {
+        this.releasePromise = null;
+      }
+    })();
+    return this.releasePromise;
   }
 }
 
 function isBotAlreadyStoppedError(error) {
   return /bot is not running|not running/i.test(String(error?.message || error));
+}
+
+
+async function waitForSettlement(promise, timeoutMs) {
+  let timeout;
+  const settled = Promise.resolve(promise).then(
+    () => true,
+    () => true
+  );
+  const expired = new Promise((resolve) => {
+    timeout = setTimeout(() => resolve(false), Math.max(1, Number(timeoutMs) || 30000));
+  });
+  try {
+    return await Promise.race([settled, expired]);
+  } finally {
+    clearTimeout(timeout);
+  }
 }

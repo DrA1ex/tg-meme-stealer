@@ -1,3 +1,4 @@
+import { SharedRateLimitUnavailableError } from './redisRateLimitStore.js';
 import { getLogger } from '../core/logger.js';
 import { assertQueueDeadline, getQueueDeadline, sleepWithSignal } from './rateLimitUtils.js';
 
@@ -11,6 +12,7 @@ export class BotApiRateLimiter {
     this.operationTimeoutMs = positiveNumber(this.sharedConfig.telegramOperationTimeoutMs, 60_000);
     this.randomFn = randomFn;
     this.redisExpected = config.rateLimit?.redis?.enabled === true;
+    this.redisRequired = config.rateLimit?.redis?.required === true;
     this.logger = getLogger('rateLimit.botApi');
     this.botId = getBotRateLimitId(config.telegram?.botToken);
     this.nextGlobalAt = 0;
@@ -48,6 +50,7 @@ export class BotApiRateLimiter {
       blockKeys
     });
     const sharedOk = shared?.status === 'ok';
+    this.assertSharedAvailable(shared?.status, 'reserve');
     const usingFallback = this.redisExpected && !sharedOk;
     let tokenFallbackDelayMs = 0;
     let destinationFallbackDelayMs = 0;
@@ -136,6 +139,7 @@ export class BotApiRateLimiter {
     for (let iteration = 0; iteration < 20; iteration += 1) {
       const validation = await this.sharedStore.validate({ blockKeys, scheduledAt: reservation.scheduledAt });
       if (validation.status !== 'ok') {
+        this.assertSharedAvailable(validation.status, 'validate');
         await this.waitConservativeFallback(chatId, validation.status, 'reservation_validation_failed', deadlineAt);
         return;
       }
@@ -147,6 +151,7 @@ export class BotApiRateLimiter {
         });
         reservation = await this.sharedStore.reserve({ slots, blockKeys });
         if (reservation.status !== 'ok') {
+          this.assertSharedAvailable(reservation.status, 'requeue');
           await this.waitConservativeFallback(chatId, reservation.status, 'reservation_requeue_failed', deadlineAt);
           return;
         }
@@ -201,6 +206,11 @@ export class BotApiRateLimiter {
     log('Waiting for Bot API rate-limit slot', { delayMs, ...fields });
     if (this.sleepFn) await this.sleepFn(delayMs);
     else await sleepWithSignal(delayMs, this.abortController.signal);
+  }
+
+  assertSharedAvailable(status, operation) {
+    if (!this.redisRequired || status === 'ok') return;
+    throw new SharedRateLimitUnavailableError(`Required Redis rate limiter is unavailable during Bot API ${operation}`);
   }
 
   close() {

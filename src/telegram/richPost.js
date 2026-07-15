@@ -4,14 +4,15 @@ import { withBotApiRetry } from './retry.js';
 
 const logger = getLogger('richPost');
 
-export async function sendRichPost({ telegram, chatId, mediaDownloader, post, index, templates, rateLimiter, operationTimeoutMs, signal, onBeforeSend }) {
+export async function sendRichPost({ telegram, chatId, mediaDownloader, post, index, templates, rateLimiter, operationTimeoutMs, signal, onBeforeSend, onRetryableError }) {
   const files = await mediaDownloader.downloadPostMedia(post);
   let pendingOperation = null;
   try {
     const caption = formatPostCaption(post, index, templates);
     if (files.length === 0) {
       return withBotApiRetry(() => telegram.sendMessage(chatId, caption), {
-        label: 'sendMessage', rateLimiter, chatId, operationTimeoutMs, signal, onBeforeOperation: onBeforeSend
+        label: 'sendMessage', rateLimiter, chatId, operationTimeoutMs, signal,
+        onBeforeOperation: onBeforeSend, onRetryableError
       });
     }
 
@@ -22,7 +23,10 @@ export async function sendRichPost({ telegram, chatId, mediaDownloader, post, in
           media: { source: file.path },
           ...(fileIndex === 0 ? { caption } : {})
         }))),
-        { label: 'sendMediaGroup', rateLimiter, chatId, operationTimeoutMs, signal, onBeforeOperation: onBeforeSend }
+        {
+          label: 'sendMediaGroup', rateLimiter, chatId, operationTimeoutMs, signal,
+          onBeforeOperation: onBeforeSend, onRetryableError
+        }
       );
     }
 
@@ -34,7 +38,8 @@ export async function sendRichPost({ telegram, chatId, mediaDownloader, post, in
       rateLimiter,
       operationTimeoutMs,
       signal,
-      onBeforeOperation: onBeforeSend
+      onBeforeOperation: onBeforeSend,
+      onRetryableError
     });
   } catch (error) {
     pendingOperation = getPendingTelegramOperation(error);
@@ -48,16 +53,16 @@ export async function sendRichPost({ telegram, chatId, mediaDownloader, post, in
   }
 }
 
-async function sendSingleMedia({ telegram, chatId, file, caption, rateLimiter, operationTimeoutMs, signal, onBeforeOperation }) {
+async function sendSingleMedia({ telegram, chatId, file, caption, rateLimiter, operationTimeoutMs, signal, onBeforeOperation, onRetryableError }) {
   if (file.kind === 'video') {
     return withBotApiRetry(
       () => telegram.sendVideo(chatId, { source: file.path }, caption ? { caption } : undefined),
-      { label: 'sendVideo', rateLimiter, chatId, operationTimeoutMs, signal, onBeforeOperation }
+      { label: 'sendVideo', rateLimiter, chatId, operationTimeoutMs, signal, onBeforeOperation, onRetryableError }
     );
   }
   return withBotApiRetry(
     () => telegram.sendPhoto(chatId, { source: file.path }, caption ? { caption } : undefined),
-    { label: 'sendPhoto', rateLimiter, chatId, operationTimeoutMs, signal, onBeforeOperation }
+    { label: 'sendPhoto', rateLimiter, chatId, operationTimeoutMs, signal, onBeforeOperation, onRetryableError }
   );
 }
 

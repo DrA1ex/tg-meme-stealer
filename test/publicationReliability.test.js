@@ -225,3 +225,181 @@ test('unexpected network failures are deferred without consuming the request ret
   assert.equal(calls[0].options.countAttempt, false);
   assert.equal(calls[0].options.maxAttempts, Number.POSITIVE_INFINITY);
 });
+
+test('source-scoped CHANNEL_INVALID stops the whole publication after the first affected post', async () => {
+  const state = createHarness(5);
+  state.publisher.publishPost = async (_post, _index, onBeforeSend) => {
+    await onBeforeSend();
+    state.attempts += 1;
+    const error = new Error('Telegram API error 400: CHANNEL_INVALID');
+    error.response = { error_code: 400, description: 'CHANNEL_INVALID' };
+    error.telegramFailureScope = 'source';
+    throw error;
+  };
+
+  const result = await state.publisher.processPublicationRequest(state.request);
+
+  assert.equal(result.failed, true);
+  assert.equal(result.scope, 'source');
+  assert.equal(result.position, 1);
+  assert.equal(state.attempts, 1);
+  assert.equal(state.failedPosts.length, 0);
+  assert.equal(state.failedPublication.id, 77);
+  assert.equal(state.finished, null);
+});
+
+test('confirmed Telegram delivery stops as uncertain when the delivery checkpoint cannot be written', async () => {
+  let uncertain = null;
+  const state = createHarness(1, {
+    markPublicationPostDelivered: async () => { throw new Error('sqlite disk I/O error'); },
+    markPublicationPostSent: async () => {},
+    markPublicationUncertain: async (id, _owner, error) => { uncertain = { id, error }; }
+  });
+  state.publisher.publishPost = async (_post, _index, onBeforeSend) => {
+    await onBeforeSend();
+    return { message_id: 555 };
+  };
+
+  const result = await state.publisher.processPublicationRequest(state.request);
+
+  assert.equal(result.uncertain, true);
+  assert.equal(result.deliveryConfirmed, true);
+  assert.equal(uncertain.id, 77);
+  assert.equal(state.failedPosts.length, 0);
+  assert.equal(state.sentPosts.length, 0);
+  assert.equal(state.finished, null);
+});
+
+test('a delivered database checkpoint is finalized after restart without resending Telegram media', async () => {
+  const post = { chatId: -1001, messageId: 1, author: 'A', text: 'Post', likes: 1, dislikes: 0, data: { media: [] } };
+  let rowState = 'delivered';
+  let telegramSends = 0;
+  let finalized = 0;
+  let finished = null;
+  const repository = {
+    listPublicationPosts: async () => [{
+      publicationId: 77, chatId: '-1001', messageId: 1, position: 1,
+      botMessageId: 555, sendState: rowState
+    }],
+    markPublicationPostSent: async () => { rowState = 'sent'; finalized += 1; },
+    finishPublication: async (_id, payload) => { finished = payload; }
+  };
+  const publisher = new SelectionPublisher({
+    repository,
+    mediaDownloader: { downloadPostMedia: async () => [], cleanupFiles: async () => {} },
+    setupAssistant: null,
+    config: {
+      telegram: { botToken: 'token', adminId: 1, publishChannelId: -1002, sourceChatId: -1001 },
+      logging: { logLevel: 'silent' },
+      publish: { dryRun: false },
+      rateLimit: { telegramOperationTimeoutMs: 1000 },
+      schedule: { timezone: 'UTC' },
+      templates: { publish: { postCaption: '{{text}}' } }
+    }
+  });
+  publisher.publishPost = async () => { telegramSends += 1; };
+
+  const result = await publisher.processPublicationRequest({
+    id: 77,
+    key: 'publish:test',
+    status: 'running',
+    data: { selection: { key: 'best.test', title: 'Test', posts: [post] } }
+  });
+
+  assert.deepEqual(result, { published: true, skippedPosts: 0 });
+  assert.equal(finalized, 1);
+  assert.equal(telegramSends, 0);
+  assert.equal(finished.status, 'published');
+});
+
+test('header_delivered recovery advances to running without sending a duplicate header', async () => {
+  const state = createHarness(1, {
+    markPublicationRunning: async () => { state.runningTransitions += 1; },
+    listPublicationPosts: async () => [{ position: 1, sendState: 'sent' }]
+  });
+  state.runningTransitions = 0;
+  state.request.status = 'header_delivered';
+  state.publisher.bot.telegram.sendMessage = async () => assert.fail('header must not be sent again');
+  state.publisher.publishPost = async () => assert.fail('already sent post must not be sent again');
+
+  const result = await state.publisher.processPublicationRequest(state.request);
+
+  assert.deepEqual(result, { published: true, skippedPosts: 0 });
+  assert.equal(state.runningTransitions, 1);
+});
+
+test('post network failure is durably deferred without consuming post or request retry limits', async () => {
+  let deferred = null;
+  const state = createHarness(1, {
+    deferPublicationRetry: async (id, ownerId, error, options) => {
+      deferred = { id, ownerId, error, options };
+      return { failed: false, nextAttemptAt: '2026-07-16T00:00:00.000Z' };
+    }
+  });
+  state.publisher.publishPost = async (_post, _index, onBeforeSend) => {
+    await onBeforeSend();
+    throw Object.assign(new Error('Telegram offline'), { code: 'ENETUNREACH' });
+  };
+
+  const result = await state.publisher.processPublicationRequest(state.request);
+
+  assert.equal(result.deferred, true);
+  assert.equal(result.network, true);
+  assert.equal(deferred.id, 77);
+  assert.equal(deferred.options.countAttempt, false);
+  assert.equal(deferred.options.status, 'running');
+  assert.equal(state.failedPosts.length, 0);
+});
+
+test('Bot API retry_after returns the post to pending before the next delivery attempt', async () => {
+  const transitions = [];
+  const state = createHarness(1, {
+    markPublicationPostSending: async () => transitions.push('sending'),
+    markPublicationPostPending: async () => transitions.push('pending'),
+    markPublicationPostDelivered: async () => transitions.push('delivered'),
+    markPublicationPostSent: async () => transitions.push('sent')
+  });
+  let attempts = 0;
+  state.publisher.botRateLimiter = {
+    wait: async () => {},
+    noteRateLimit: async () => true
+  };
+  state.publisher.bot.telegram = {
+    sendMessage: async () => {
+      attempts += 1;
+      if (attempts === 1) {
+        const error = new Error('Too Many Requests: retry after 1');
+        error.response = {
+          error_code: 429,
+          description: 'Too Many Requests: retry after 1',
+          parameters: { retry_after: 1 }
+        };
+        throw error;
+      }
+      return { message_id: 501 };
+    }
+  };
+
+  const result = await state.publisher.processPublicationRequest(state.request);
+
+  assert.deepEqual(result, { published: true, skippedPosts: 0 });
+  assert.equal(attempts, 2);
+  assert.deepEqual(transitions, ['sending', 'pending', 'sending', 'delivered', 'sent']);
+});
+
+test('a missing temporary file stops the publication as an infrastructure failure', async () => {
+  const state = createHarness(3);
+  state.publisher.publishPost = async (_post, _index, onBeforeSend) => {
+    await onBeforeSend();
+    state.attempts += 1;
+    throw Object.assign(new Error('temporary media file disappeared'), { code: 'ENOENT' });
+  };
+
+  const result = await state.publisher.processPublicationRequest(state.request);
+
+  assert.equal(result.failed, true);
+  assert.equal(result.scope, 'infrastructure');
+  assert.equal(state.attempts, 1);
+  assert.equal(state.failedPublication?.id, 77);
+  assert.equal(state.finished, null);
+});

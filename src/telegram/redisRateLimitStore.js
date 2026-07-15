@@ -112,30 +112,48 @@ redis.call('SET', lastFloodKey, now, 'PX', penaltyTtlMs)
 return { untilMs, tostring(updated) }
 `;
 
+
+export class SharedRateLimitUnavailableError extends Error {
+  constructor(message = 'Shared Redis rate limiter is required but unavailable', cause = null) {
+    super(message, cause ? { cause } : undefined);
+    this.name = 'SharedRateLimitUnavailableError';
+    this.code = 'RATE_LIMIT_SHARED_UNAVAILABLE';
+  }
+}
+
 export async function createRedisRateLimitStore(config = {}, options = {}) {
   const redisConfig = config.rateLimit?.redis || {};
   if (redisConfig.enabled !== true) return null;
 
   const logger = options.logger || getLogger('rateLimit.redis');
+  const required = redisConfig.required === true;
   let client = options.client;
   try {
     client ||= (options.createClientFn || createClient)({
       url: redisConfig.url || 'redis://127.0.0.1:6379',
       socket: {
-        connectTimeout: toPositiveInteger(redisConfig.connectTimeoutMs, 500),
+        connectTimeout: toPositiveInteger(redisConfig.connectTimeoutMs, 3000),
         reconnectStrategy: (retries) => Math.min(250 * (retries + 1), 5000)
       },
       disableOfflineQueue: true
     });
   } catch (error) {
-    logger.error('Shared Redis rate limiter could not be initialized; using local fallback', {
+    logger.error(required
+      ? 'Required shared Redis rate limiter could not be initialized; startup aborted'
+      : 'Shared Redis rate limiter could not be initialized; using local fallback', {
       backend: 'redis',
+      required,
       error: sanitizeError(error)
     });
+    if (required) throw new SharedRateLimitUnavailableError('Required Redis rate limiter could not be initialized', error);
     return null;
   }
   const store = new RedisRateLimitStore({ client, config: redisConfig, logger });
-  await store.start();
+  const ready = await store.start();
+  if (!ready && required) {
+    await store.close();
+    throw new SharedRateLimitUnavailableError('Required Redis rate limiter did not become ready before the connection timeout');
+  }
   return store;
 }
 
@@ -145,9 +163,9 @@ export class RedisRateLimitStore {
     this.config = config;
     this.logger = logger;
     this.prefix = sanitizeKeyPart(config.keyPrefix || 'tg-memes:rate-limit');
-    this.operationTimeoutMs = toPositiveInteger(config.operationTimeoutMs, 200);
+    this.operationTimeoutMs = toPositiveInteger(config.operationTimeoutMs, 1000);
     this.circuitBreakMs = toPositiveInteger(config.circuitBreakMs, 5000);
-    this.connectTimeoutMs = toPositiveInteger(config.connectTimeoutMs, 500);
+    this.connectTimeoutMs = toPositiveInteger(config.connectTimeoutMs, 3000);
     this.ttlMs = toPositiveInteger(config.keyTtlMs, 86_400_000);
     this.penaltyTtlMs = toPositiveInteger(config.penaltyTtlMs, 3_600_000);
     this.penaltyQuietPeriodMs = toPositiveInteger(config.penaltyQuietPeriodMs, 60_000);
@@ -159,6 +177,9 @@ export class RedisRateLimitStore {
     this.closed = false;
     this.circuitOpenUntil = 0;
     this.instanceId = getInstanceId();
+    this.required = config.required === true;
+    this.health = 'initializing';
+    this.statusListeners = new Set();
     this.attachEvents();
   }
 
@@ -321,7 +342,9 @@ export class RedisRateLimitStore {
 
   async run(operation, callback, fields = {}) {
     if (Date.now() < this.circuitOpenUntil) {
-      this.logger.debug('Redis rate-limit circuit is open; using local fallback', {
+      this.logger.debug(this.required
+        ? 'Redis rate-limit circuit is open; shared Telegram operations remain paused'
+        : 'Redis rate-limit circuit is open; using local fallback', {
         operation,
         circuitOpenUntil: new Date(this.circuitOpenUntil).toISOString(),
         instanceId: this.instanceId
@@ -346,6 +369,7 @@ export class RedisRateLimitStore {
       const result = await raceWithAbort(Promise.resolve(callback(client)), controller.signal);
       if (this.wasUnavailable) {
         this.wasUnavailable = false;
+        this.setHealth('ready', { recovered: true });
         this.logger.info('Shared Redis rate limiter recovered', {
           backend: 'redis',
           instanceId: this.instanceId
@@ -391,25 +415,52 @@ export class RedisRateLimitStore {
 
   noteUnavailable(message, error, fields = {}) {
     this.wasUnavailable = true;
+    const effectiveMessage = this.required
+      ? message
+          .replace(/; using (?:conservative )?local fallback/i, '; shared Telegram operations are paused')
+          .replace(/; using conservative fallback/i, '; shared Telegram operations are paused')
+      : message;
     const now = Date.now();
     const metadata = {
       backend: 'redis',
       instanceId: this.instanceId,
+      required: this.required,
       ...fields,
       error: sanitizeError(error)
     };
+    this.setHealth('degraded', metadata);
     if (now - this.lastWarningAt >= this.warningIntervalMs) {
       this.lastWarningAt = now;
-      this.logger.error(message, metadata);
+      this.logger.error(effectiveMessage, metadata);
     } else {
-      this.logger.debug(message, metadata);
+      this.logger.debug(effectiveMessage, metadata);
     }
   }
 
   logReady(message) {
+    this.setHealth('ready');
     if (this.readyLogged) return;
     this.readyLogged = true;
     this.logger.info(message, { backend: 'redis', prefix: this.prefix, instanceId: this.instanceId });
+  }
+
+  setStatusListener(listener) {
+    if (typeof listener !== 'function') return () => {};
+    this.statusListeners.add(listener);
+    return () => this.statusListeners.delete(listener);
+  }
+
+  setHealth(status, details = {}) {
+    const previous = this.health;
+    this.health = status;
+    if (previous === status) return;
+    for (const listener of this.statusListeners) {
+      try {
+        listener({ status, previous, required: this.required, ...details });
+      } catch (error) {
+        this.logger.error('Redis rate-limit status listener failed', { error: sanitizeError(error) });
+      }
+    }
   }
 }
 

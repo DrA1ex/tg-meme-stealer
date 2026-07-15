@@ -589,3 +589,30 @@ test('validateConfig accepts explicit fallback markers and a supported number lo
 
   assert.doesNotThrow(() => validateConfig(config));
 });
+
+test('applyEnv maps Redis required mode explicitly', () => {
+  const config = applyEnv({
+    rateLimit: { redis: { enabled: false, required: false } }
+  }, {
+    RATE_LIMIT_REDIS_ENABLED: 'true',
+    RATE_LIMIT_REDIS_REQUIRED: 'true'
+  });
+
+  assert.equal(config.rateLimit.redis.enabled, true);
+  assert.equal(config.rateLimit.redis.required, true);
+});
+
+test('validateConfig rejects required Redis mode while Redis is disabled', () => {
+  const config = validConfig();
+  config.rateLimit = {
+    maxQueueDelayMs: 300_000,
+    longWaitWarnMs: 10_000,
+    telegramOperationTimeoutMs: 60_000,
+    redis: { enabled: false, required: true }
+  };
+
+  assert.throws(
+    () => validateConfig(config),
+    /required cannot be true when Redis rate limiting is disabled/
+  );
+});

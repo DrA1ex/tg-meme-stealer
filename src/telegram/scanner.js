@@ -423,7 +423,7 @@ export class TelegramScanner {
     this.logger.info('Requesting message by id', { chatId: peerId, messageId });
     const messages = await withTelegramRetry(
       () => this.client.getMessages(peerId, [messageId]),
-      { label: 'getMessages', rateLimiter: this.throttle, kind: 'media', signal: this.signal }
+      { label: 'getMessages', rateLimiter: this.throttle, kind: 'media', signal: this.signal, indeterminateOnTimeout: false, indeterminateOnAbort: false }
     );
     await this.enrichMessagesWithNativeReactions(messages.filter(Boolean), parsing);
     return messages[0] || null;
@@ -538,7 +538,7 @@ export class TelegramScanner {
       });
       const reactionSummaries = await withTelegramRetry(
         () => this.client.getMessageReactions(candidates),
-        { label: 'getMessageReactions', rateLimiter: this.throttle, kind: 'reactions', signal: this.signal }
+        { label: 'getMessageReactions', rateLimiter: this.throttle, kind: 'reactions', signal: this.signal, indeterminateOnTimeout: false, indeterminateOnAbort: false }
       );
 
       for (let index = 0; index < candidates.length; index += 1) {
@@ -555,10 +555,14 @@ export class TelegramScanner {
         enriched: candidates.filter(hasEnrichedNativeReactions).length
       });
     } catch (error) {
-      this.logger.warn('Failed to enrich native reactions', {
+      this.logger.error('Failed to enrich required native reactions; synchronization is incomplete', {
         requested: candidates.length,
-        error: error.message
+        error: error?.message || String(error)
       });
+      const enrichmentError = new Error(`Native reaction enrichment failed for ${candidates.length} message(s): ${error?.message || String(error)}`, { cause: error });
+      enrichmentError.code = 'NATIVE_REACTIONS_UNAVAILABLE';
+      enrichmentError.telegramFailureScope = 'source';
+      throw enrichmentError;
     }
     return messages;
   }
@@ -572,7 +576,7 @@ export class TelegramScanner {
     });
     const history = await withTelegramRetry(
       () => this.client.getHistory(peerId, params),
-      { label: 'getHistory', rateLimiter: this.throttle, kind: 'history', signal: this.signal }
+      { label: 'getHistory', rateLimiter: this.throttle, kind: 'history', signal: this.signal, indeterminateOnTimeout: false, indeterminateOnAbort: false }
     );
     await this.enrichMessagesWithNativeReactions([...history], parsing);
     this.logger.debug('History request completed', { hasNext: Boolean(history.next) });

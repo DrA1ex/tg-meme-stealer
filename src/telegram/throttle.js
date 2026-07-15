@@ -1,3 +1,4 @@
+import { SharedRateLimitUnavailableError } from './redisRateLimitStore.js';
 import { getLogger } from '../core/logger.js';
 import { assertQueueDeadline, getQueueDeadline, sleepWithSignal } from './rateLimitUtils.js';
 
@@ -11,6 +12,7 @@ export class TelegramThrottle {
     this.nowFn = nowFn;
     this.sharedStore = sharedStore;
     this.operationTimeoutMs = positiveNumber(this.sharedConfig.telegramOperationTimeoutMs, 60_000);
+    this.redisRequired = config.rateLimit?.redis?.required === true;
     this.logger = getLogger('rateLimit.mtproto');
     this.group = String(this.sharedConfig.mtprotoGroup || 'default');
     this.nextAllowedAt = new Map();
@@ -33,6 +35,7 @@ export class TelegramThrottle {
       blockKeys
     });
     const sharedOk = shared?.status === 'ok';
+    this.assertSharedAvailable(shared?.status, 'reserve');
     const redisExpected = this.sharedConfig.redis?.enabled === true;
     const usingFallback = redisExpected && !sharedOk;
     const fallbackMultiplier = usingFallback
@@ -121,6 +124,7 @@ export class TelegramThrottle {
     for (let iteration = 0; iteration < 20; iteration += 1) {
       const validation = await this.sharedStore.validate({ blockKeys, scheduledAt: reservation.scheduledAt });
       if (validation.status !== 'ok') {
+        this.assertSharedAvailable(validation.status, 'validate');
         const fallbackMs = baseIntervalMs * Math.max(
           1,
           Number(this.sharedConfig.redis?.fallbackMultiplier) || 3
@@ -145,6 +149,7 @@ export class TelegramThrottle {
           blockKeys
         });
         if (reservation.status !== 'ok') {
+          this.assertSharedAvailable(reservation.status, 'requeue');
           const fallbackMs = baseIntervalMs * Math.max(
             1,
             Number(this.sharedConfig.redis?.fallbackMultiplier) || 3
@@ -191,6 +196,11 @@ export class TelegramThrottle {
     log('Waiting for MTProto rate-limit slot', { delayMs, ...fields });
     if (this.sleepFn) await this.sleepFn(delayMs);
     else await sleepWithSignal(delayMs, this.abortController.signal);
+  }
+
+  assertSharedAvailable(status, operation) {
+    if (!this.redisRequired || status === 'ok') return;
+    throw new SharedRateLimitUnavailableError(`Required Redis rate limiter is unavailable during MTProto ${operation}`);
   }
 
   close() {

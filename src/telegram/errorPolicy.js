@@ -18,6 +18,29 @@ const NETWORK_CODES = new Set([
   'UND_ERR_SOCKET'
 ]);
 
+const CANCELLED_CODES = new Set([
+  'ABORT_ERR',
+  'APPLICATION_SHUTDOWN',
+  'RATE_LIMIT_CANCELLED',
+  'TELEGRAM_OPERATION_CANCELLED'
+]);
+
+const BACKPRESSURE_CODES = new Set([
+  'RATE_LIMIT_QUEUE_DELAY_EXCEEDED',
+  'RATE_LIMIT_SHARED_UNAVAILABLE'
+]);
+
+const LOCAL_INFRASTRUCTURE_CODES = new Set([
+  'EACCES',
+  'EIO',
+  'EMFILE',
+  'ENFILE',
+  'ENOENT',
+  'ENOSPC',
+  'EPERM',
+  'EROFS'
+]);
+
 const PERMANENT_HTTP_CODES = new Set([400, 401, 403, 404, 405, 406, 410, 413, 414, 415, 422]);
 const TRANSIENT_HTTP_CODES = new Set([408, 425, 429, 500, 502, 503, 504]);
 
@@ -25,37 +48,53 @@ export function classifyTelegramError(error) {
   if (error?.telegramFailureClass) return error.telegramFailureClass;
   if (error?.indeterminate === true) return 'indeterminate';
   if (error?.code === 'PUBLICATION_LEASE_LOST' || error?.reason?.code === 'PUBLICATION_LEASE_LOST') return 'lease_lost';
-  if (error?.code === 'MEDIA_TOO_LARGE' || error?.code === 'ENOENT') return 'permanent';
-  if (error?.code === 'TELEGRAM_OPERATION_CANCELLED') return error.indeterminate ? 'indeterminate' : 'cancelled';
+
+  const code = String(error?.code || error?.cause?.code || '').toUpperCase();
+  if (CANCELLED_CODES.has(code)) return error?.indeterminate ? 'indeterminate' : 'cancelled';
+  if (code === 'TELEGRAM_OPERATION_TIMEOUT') return error?.indeterminate ? 'indeterminate' : 'network';
+  if (BACKPRESSURE_CODES.has(code)) return 'network';
+  if (LOCAL_INFRASTRUCTURE_CODES.has(code)) return 'permanent';
+  if (error?.code === 'MEDIA_TOO_LARGE' || error?.code === 'SOURCE_MEDIA_NOT_FOUND') return 'permanent';
 
   const status = getStatusCode(error);
   if (TRANSIENT_HTTP_CODES.has(status)) return 'network';
   if (PERMANENT_HTTP_CODES.has(status)) return 'permanent';
-
-  const code = String(error?.code || error?.cause?.code || '').toUpperCase();
   if (NETWORK_CODES.has(code)) return 'network';
 
-  const text = String(
-    error?.description ||
-    error?.response?.description ||
-    error?.message ||
-    error ||
-    ''
-  ).toLowerCase();
-
+  const text = getErrorText(error).toLowerCase();
   if (/flood_wait|too many requests|retry after/.test(text)) return 'network';
   if (/network|socket|timed? ?out|connection (?:closed|reset|refused)|fetch failed|temporary failure|bad gateway|service unavailable|gateway timeout/.test(text)) {
     return 'network';
   }
-  if (/bad request|forbidden|unauthorized|chat not found|message is too long|caption is too long|wrong file identifier|file is too big|not enough rights/.test(text)) {
+  if (/bad request|forbidden|unauthorized|chat not found|channel_invalid|channel_private|peer_id_invalid|message is too long|caption is too long|wrong file identifier|file is too big|not enough rights/.test(text)) {
     return 'permanent';
   }
   return 'unknown';
 }
 
+export function getTelegramErrorScope(error, fallback = 'post') {
+  if (error?.telegramFailureScope) return error.telegramFailureScope;
+  const code = String(error?.code || error?.cause?.code || '').toUpperCase();
+  if (LOCAL_INFRASTRUCTURE_CODES.has(code)) return 'infrastructure';
+  if (['MEDIA_TOO_LARGE', 'SOURCE_MEDIA_NOT_FOUND'].includes(code)) return 'post';
+
+  const text = getErrorText(error).toUpperCase();
+  if (/BOT_WAS_KICKED|CHAT_WRITE_FORBIDDEN|CHAT_NOT_FOUND|USER_IS_BLOCKED|NOT_ENOUGH_RIGHTS|RIGHT_FORBIDDEN|ADMIN_REQUIRED/.test(text)) {
+    return 'target';
+  }
+  if (/CHANNEL_INVALID|CHANNEL_PRIVATE|PEER_ID_INVALID/.test(text)) {
+    return fallback;
+  }
+  if (/MESSAGE_TOO_LONG|CAPTION_TOO_LONG|WRONG_FILE_IDENTIFIER|FILE.*TOO_BIG|MEDIA_EMPTY|PHOTO_INVALID|VIDEO_CONTENT_TYPE_INVALID/.test(text)) {
+    return 'post';
+  }
+  return fallback;
+}
+
 export async function runWithTelegramFailurePolicy(operation, options = {}) {
   const label = options.label || 'Telegram operation';
   const maxUnknownRetries = nonNegativeInteger(options.maxUnknownRetries, 3);
+  const maxNetworkRetries = normalizeRetryLimit(options.maxNetworkRetries, Number.POSITIVE_INFINITY);
   const baseDelayMs = positiveNumber(options.baseDelayMs, 1_000);
   const maxDelayMs = positiveNumber(options.maxDelayMs, 60_000);
   const sleepFn = options.sleepFn || sleepWithSignal;
@@ -75,6 +114,11 @@ export async function runWithTelegramFailurePolicy(operation, options = {}) {
       }
 
       if (classification === 'network') {
+        if (networkRetries >= maxNetworkRetries) {
+          error.telegramFailureClass = 'network';
+          error.retryCount = networkRetries;
+          throw error;
+        }
         networkRetries += 1;
         const delayMs = exponentialDelay(baseDelayMs, maxDelayMs, networkRetries);
         await options.onRetry?.({ error, classification, retry: networkRetries, delayMs, label });
@@ -111,6 +155,16 @@ function getStatusCode(error) {
   return 0;
 }
 
+function getErrorText(error) {
+  return String(
+    error?.description ||
+    error?.response?.description ||
+    error?.message ||
+    error ||
+    ''
+  );
+}
+
 function exponentialDelay(baseDelayMs, maxDelayMs, attempt) {
   const exponent = Math.min(10, Math.max(0, attempt - 1));
   return Math.min(maxDelayMs, baseDelayMs * (2 ** exponent));
@@ -122,6 +176,12 @@ function positiveNumber(value, fallback) {
 }
 
 function nonNegativeInteger(value, fallback) {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
+function normalizeRetryLimit(value, fallback) {
+  if (value === Number.POSITIVE_INFINITY) return value;
   const parsed = Number(value);
   return Number.isInteger(parsed) && parsed >= 0 ? parsed : fallback;
 }

@@ -1,6 +1,5 @@
 import fsSync from 'node:fs';
 import fs from 'node:fs/promises';
-import os from 'node:os';
 import path from 'node:path';
 import { Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
@@ -31,31 +30,54 @@ export class MediaDownloader {
       chatId: post.chatId,
       messageId: post.messageId,
       mediaItems: mediaItems.length,
+      portableFileIds: mediaItems.filter((item) => Boolean(item?.fileId)).length,
       attemptDir
     });
 
     try {
+      const missingLocationIds = [...new Set(mediaItems
+        .filter((item) => !item?.fileId)
+        .map((item) => Number(item?.messageId || post.messageId))
+        .filter(Number.isInteger))];
+      const messagesById = missingLocationIds.length
+        ? await this.loadMessages(post.chatId, missingLocationIds)
+        : new Map();
+
       for (let index = 0; index < mediaItems.length; index += 1) {
         const media = mediaItems[index];
-        const messageId = media.messageId || post.messageId;
-        const message = await this.loadMessage(post.chatId, messageId);
-        if (!message?.media) continue;
+        const messageId = Number(media.messageId || post.messageId);
+        const message = messagesById.get(messageId) || null;
+        let location = media.fileId || message?.media;
+        if (!location) throw new SourceMediaNotFoundError(post.chatId, messageId);
 
         const maxBytes = positiveNumber(this.config.sync?.mediaMaxBytes, 512 * 1024 * 1024);
-        const declaredBytes = getDeclaredMediaSize(message.media);
+        let declaredBytes = positiveNumber(media.fileSize, 0) || getDeclaredMediaSize(message?.media);
         if (declaredBytes > maxBytes) throw new MediaTooLargeError(declaredBytes, maxBytes);
 
         const kind = media.mediaKind || 'photo';
         const extension = kind === 'video' ? 'mp4' : 'jpg';
         const filePath = path.join(attemptDir, `${String(index + 1).padStart(2, '0')}-${randomCode()}.${extension}`);
-        const bytes = await this.downloadToPath(message.media, filePath, maxBytes);
-        if (bytes === 0) {
-          await fs.rm(filePath, { force: true });
-          continue;
+        let bytes;
+        try {
+          bytes = await this.downloadToPath(location, filePath, maxBytes);
+        } catch (error) {
+          if (!media.fileId || !isFileReferenceError(error)) throw error;
+          this.logger.warn('Stored media file reference expired; refreshing it from source history', {
+            chatId: post.chatId,
+            messageId,
+            error: error?.message || String(error)
+          });
+          const refreshed = await this.loadMessageViaHistory(post.chatId, messageId);
+          location = refreshed?.media;
+          if (!location) throw new SourceMediaNotFoundError(post.chatId, messageId);
+          declaredBytes = getDeclaredMediaSize(location);
+          if (declaredBytes > maxBytes) throw new MediaTooLargeError(declaredBytes, maxBytes);
+          bytes = await this.downloadToPath(location, filePath, maxBytes);
         }
+        if (bytes === 0) throw new SourceMediaNotFoundError(post.chatId, messageId, 'Telegram returned an empty media stream');
 
         files.push({ path: filePath, kind, tempDir: attemptDir, bytes });
-        this.logger.info('Media file downloaded', { chatId: post.chatId, messageId, kind, bytes });
+        this.logger.info('Media file downloaded', { chatId: post.chatId, messageId, kind, bytes, portableFileId: Boolean(media.fileId) });
       }
 
       this.logger.info('Post media download finished', {
@@ -66,7 +88,11 @@ export class MediaDownloader {
       if (files.length === 0) await fs.rm(attemptDir, { recursive: true, force: true });
       return files;
     } catch (error) {
-      await fs.rm(attemptDir, { recursive: true, force: true }).catch(() => {});
+      if (error?.operationSettled && typeof error.operationSettled.then === 'function') {
+        this.cleanupAttemptAfterOperation(attemptDir, error.operationSettled);
+      } else {
+        await fs.rm(attemptDir, { recursive: true, force: true }).catch(() => {});
+      }
       throw error;
     }
   }
@@ -92,18 +118,77 @@ export class MediaDownloader {
       label: 'downloadAsNodeStream',
       rateLimiter: this.throttle,
       kind: 'media',
-      signal: this.signal
+      signal: this.signal,
+      indeterminateOnTimeout: false,
+      indeterminateOnAbort: false
     });
   }
 
-  async loadMessage(chatId, messageId) {
-    this.logger.info('Requesting message', { chatId, messageId });
+  async loadMessages(chatId, messageIds) {
     const peerId = normalizeTelegramPeerId(chatId);
-    const messages = await withTelegramRetry(
-      () => this.client.getMessages(peerId, [messageId]),
-      { label: 'getMessages', rateLimiter: this.throttle, kind: 'media', signal: this.signal }
-    );
-    return messages[0] || null;
+    this.logger.info('Requesting messages for legacy media references', { chatId: peerId, messageIds });
+    try {
+      const messages = await withTelegramRetry(
+        () => this.client.getMessages(peerId, messageIds),
+        { label: 'getMessages', rateLimiter: this.throttle, kind: 'media', signal: this.signal, indeterminateOnTimeout: false, indeterminateOnAbort: false }
+      );
+      return new Map(messages.filter(Boolean).map((message) => [Number(message.id), message]));
+    } catch (error) {
+      if (!isChannelResolutionError(error) || typeof this.client.getHistory !== 'function') {
+        markSourcePeerError(error, chatId);
+        throw error;
+      }
+
+      this.logger.warn('Direct channel message lookup failed; retrying through history', {
+        chatId: peerId,
+        messageIds,
+        error: error?.message || String(error)
+      });
+      return this.loadMessagesViaHistory(peerId, messageIds);
+    }
+  }
+
+  async loadMessagesViaHistory(peerId, messageIds) {
+    const result = new Map();
+    for (const messageId of messageIds) {
+      try {
+        const history = await withTelegramRetry(
+          () => this.client.getHistory(peerId, {
+            limit: 2,
+            offset: { id: Number(messageId) + 1, date: 0 }
+          }),
+          { label: 'getHistoryForMedia', rateLimiter: this.throttle, kind: 'media', signal: this.signal, indeterminateOnTimeout: false, indeterminateOnAbort: false }
+        );
+        const message = [...history].find((item) => Number(item?.id) === Number(messageId));
+        if (message) result.set(Number(messageId), message);
+      } catch (error) {
+        markSourcePeerError(error, peerId);
+        throw error;
+      }
+    }
+    return result;
+  }
+
+  async loadMessage(chatId, messageId) {
+    const messages = await this.loadMessages(chatId, [messageId]);
+    return messages.get(Number(messageId)) || null;
+  }
+
+  async loadMessageViaHistory(chatId, messageId) {
+    const peerId = normalizeTelegramPeerId(chatId);
+    const messages = await this.loadMessagesViaHistory(peerId, [Number(messageId)]);
+    return messages.get(Number(messageId)) || null;
+  }
+
+  cleanupAttemptAfterOperation(attemptDir, operationSettled) {
+    void Promise.resolve(operationSettled)
+      .finally(() => fs.rm(attemptDir, { recursive: true, force: true }))
+      .catch((error) => {
+        this.logger.warn('Deferred media download cleanup failed', {
+          path: attemptDir,
+          error: error?.message || String(error)
+        });
+      });
   }
 
   async cleanupFiles(files = []) {
@@ -170,9 +255,40 @@ export class MediaTooLargeError extends Error {
     super(`Media is too large: ${actualBytes} bytes exceeds configured limit ${maxBytes} bytes`);
     this.name = 'MediaTooLargeError';
     this.code = 'MEDIA_TOO_LARGE';
+    this.telegramFailureScope = 'post';
     this.actualBytes = actualBytes;
     this.maxBytes = maxBytes;
   }
+}
+
+export class SourceMediaNotFoundError extends Error {
+  constructor(chatId, messageId, detail = 'Source message no longer contains downloadable media') {
+    super(`${detail}: chat ${chatId}, message ${messageId}`);
+    this.name = 'SourceMediaNotFoundError';
+    this.code = 'SOURCE_MEDIA_NOT_FOUND';
+    this.telegramFailureScope = 'post';
+    this.chatId = chatId;
+    this.messageId = messageId;
+  }
+}
+
+function markSourcePeerError(error, chatId) {
+  if (!error || typeof error !== 'object') return;
+  error.telegramFailureScope = 'source';
+  error.sourceChatId = chatId;
+}
+
+function isChannelResolutionError(error) {
+  return /CHANNEL_INVALID|CHANNEL_PRIVATE|PEER_ID_INVALID|peer .*not found|not found in local cache/i.test(
+    String(error?.message || error?.description || error)
+  );
+}
+
+
+function isFileReferenceError(error) {
+  return /FILE_REFERENCE_(?:EXPIRED|INVALID|EMPTY)|FILEREF_UPGRADE_NEEDED/i.test(
+    String(error?.message || error?.description || error)
+  );
 }
 
 function getDeclaredMediaSize(media) {

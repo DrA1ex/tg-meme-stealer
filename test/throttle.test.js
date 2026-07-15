@@ -191,3 +191,17 @@ test('TelegramThrottle requeues a reservation invalidated by another process FLO
   assert.equal(validations, 2);
   assert.deepEqual(waits, [10, 30]);
 });
+
+test('TelegramThrottle refuses local fallback when shared Redis is required', async () => {
+  const limiter = new TelegramThrottle(
+    {
+      sync: { throttle: { enabled: true, historyMinMs: 0, historyMaxMs: 0 } },
+      rateLimit: { redis: { enabled: true, required: true } }
+    },
+    async () => {},
+    () => 1000,
+    { reserve: async () => ({ status: 'unavailable' }) }
+  );
+
+  await assert.rejects(limiter.wait('history'), (error) => error.code === 'RATE_LIMIT_SHARED_UNAVAILABLE');
+});

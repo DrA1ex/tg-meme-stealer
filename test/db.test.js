@@ -77,9 +77,12 @@ test('PostRepository publication requests are durable and block duplicates until
   assert.equal(typeof retry, 'number');
   assert.notEqual(retry, first);
 
+  const publishedPost = post({ messageId: 10, likes: 5, dislikes: 1 });
+  await repository.markPublicationPostDelivered({ publicationId: retry, post: publishedPost, position: 1, botMessageId: 100 });
+  await repository.markPublicationPostSent({ publicationId: retry, post: publishedPost, position: 1, botMessageId: 100 });
   await repository.finishPublication(retry, {
     status: 'published',
-    posts: [post({ messageId: 10, likes: 5, dislikes: 1 })],
+    posts: [publishedPost],
     data: { count: 1 }
   });
   const afterPublished = await repository.tryCreatePublicationRequest(publicationClaim());
@@ -457,11 +460,13 @@ test('PostRepository applies numbered migrations and exposes the reliability sch
 
     assert.deepEqual(getMigrations(), [
       { version: 1, name: '0000_initial' },
-      { version: 2, name: '0001_publication_reliability' }
+      { version: 2, name: '0001_publication_reliability' },
+      { version: 3, name: '0002_delivery_commit_state' }
     ]);
-    assert.equal(version[0].user_version, 2);
+    assert.equal(version[0].user_version, 3);
     assert.ok(publicationColumns.some((column) => column.name === 'last_progress_at'));
     assert.ok(publicationColumns.some((column) => column.name === 'next_attempt_at'));
+    assert.ok(publicationColumns.some((column) => column.name === 'header_message_id'));
     assert.ok(postColumns.some((column) => column.name === 'last_error_code'));
   } finally {
     await repository.close();
@@ -512,7 +517,7 @@ test('PostRepository upgrades a 0000_initial database without losing rows', asyn
     const columns = await repository.all('PRAGMA table_info(publication_posts)');
     const version = await repository.all('PRAGMA user_version');
     assert.equal(row.title, 'Legacy');
-    assert.equal(version[0].user_version, 2);
+    assert.equal(version[0].user_version, 3);
     assert.ok(columns.some((column) => column.name === 'attempt_count'));
     assert.ok(columns.some((column) => column.name === 'last_error_code'));
   } finally {
@@ -617,3 +622,74 @@ function post(overrides) {
     data: { media: [] }
   };
 }
+
+test('PostRepository preserves running phase when a network retry is deferred', async () => {
+  const dbPath = path.join(os.tmpdir(), `tg-memes-${process.pid}-${Date.now()}-defer-phase.sqlite`);
+  await fs.rm(dbPath, { force: true });
+  const repository = new PostRepository(dbPath);
+  await repository.init();
+  try {
+    const id = await repository.tryCreatePublicationRequest(publicationClaim());
+    await repository.getNextPublicationRequest({ ownerId: 'worker', leaseMs: 60_000 });
+    await repository.markPublicationRunning(id, 'worker');
+    const before = await repository.getPublicationById(id);
+    const retry = await repository.deferPublicationRetry(
+      id,
+      'worker',
+      Object.assign(new Error('offline'), { code: 'ENETUNREACH' }),
+      { delayMs: 5000, countAttempt: false, maxAttempts: Number.POSITIVE_INFINITY, status: 'running' }
+    );
+    const after = await repository.getPublicationById(id);
+
+    assert.equal(retry.failed, false);
+    assert.equal(after.status, 'running');
+    assert.equal(after.attemptCount, 0);
+    assert.ok(after.nextAttemptAt);
+    assert.ok(new Date(after.lastProgressAt) >= new Date(before.lastProgressAt));
+  } finally {
+    await repository.close();
+    await fs.rm(dbPath, { force: true });
+  }
+});
+
+test('PostRepository records delivered and committed post phases separately', async () => {
+  const dbPath = path.join(os.tmpdir(), `tg-memes-${process.pid}-${Date.now()}-delivery-phases.sqlite`);
+  await fs.rm(dbPath, { force: true });
+  const repository = new PostRepository(dbPath);
+  await repository.init();
+  try {
+    const id = await repository.tryCreatePublicationRequest(publicationClaim());
+    const item = post({ messageId: 55, likes: 9, dislikes: 1 });
+    await repository.markPublicationPostDelivered({ publicationId: id, post: item, position: 1, botMessageId: 777 });
+    let rows = await repository.listPublicationPosts(id);
+    assert.equal(rows[0].sendState, 'delivered');
+    assert.equal(rows[0].botMessageId, 777);
+
+    await repository.markPublicationPostSent({ publicationId: id, post: item, position: 1, botMessageId: 777 });
+    rows = await repository.listPublicationPosts(id);
+    assert.equal(rows[0].sendState, 'sent');
+    assert.equal(rows[0].botMessageId, 777);
+  } finally {
+    await repository.close();
+    await fs.rm(dbPath, { force: true });
+  }
+});
+
+test('PostRepository keeps header delivery checkpoint for restart recovery', async () => {
+  const dbPath = path.join(os.tmpdir(), `tg-memes-${process.pid}-${Date.now()}-header-delivered.sqlite`);
+  await fs.rm(dbPath, { force: true });
+  const repository = new PostRepository(dbPath);
+  await repository.init();
+  try {
+    const id = await repository.tryCreatePublicationRequest(publicationClaim());
+    await repository.getNextPublicationRequest({ ownerId: 'worker', leaseMs: 60_000 });
+    await repository.markPublicationHeaderSending(id, 'worker');
+    await repository.markPublicationHeaderDelivered(id, 'worker', 888);
+    const row = await repository.getPublicationById(id);
+    assert.equal(row.status, 'header_delivered');
+    assert.equal(row.headerMessageId, 888);
+  } finally {
+    await repository.close();
+    await fs.rm(dbPath, { force: true });
+  }
+});

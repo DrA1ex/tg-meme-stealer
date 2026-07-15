@@ -146,7 +146,7 @@ test('withBotApiRetry waits and retries 429 responses', async () => {
 
   assert.equal(result, 'ok');
   assert.equal(attempts, 2);
-  assert.equal(beforeOperationCalls, 1);
+  assert.equal(beforeOperationCalls, 2);
   assert.deepEqual(waits, [3000]);
   assert.equal(warnings.length, 1);
   assert.match(warnings[0], /\[WARN\] \[retry\] sendPhoto hit Too Many Requests/);
@@ -181,4 +181,41 @@ test('withTelegramRetry delegates FLOOD_WAIT cooldown to the adaptive limiter', 
     ['wait', 'reactions'],
     ['success', 'reactions']
   ]);
+});
+
+test('withTelegramRetry classifies read timeouts as determinate when requested', async () => {
+  await assert.rejects(
+    withTelegramRetry(() => new Promise(() => {}), {
+      label: 'getHistory',
+      operationTimeoutMs: 5,
+      indeterminateOnTimeout: false
+    }),
+    (error) => error instanceof TelegramOperationTimeoutError
+      && error.code === 'TELEGRAM_OPERATION_TIMEOUT'
+      && error.indeterminate === false
+  );
+});
+
+test('withTelegramRetry treats cancellation of an in-flight read as determinate', async () => {
+  const controller = new AbortController();
+  let operationStarted;
+  const started = new Promise((resolve) => { operationStarted = resolve; });
+  const request = withTelegramRetry(() => {
+    operationStarted();
+    return new Promise(() => {});
+  }, {
+    label: 'getHistory',
+    signal: controller.signal,
+    indeterminateOnAbort: false
+  });
+
+  await started;
+  controller.abort(new Error('shutdown'));
+
+  await assert.rejects(
+    request,
+    (error) => error instanceof TelegramOperationCancelledError
+      && error.code === 'TELEGRAM_OPERATION_CANCELLED'
+      && error.indeterminate === false
+  );
 });

@@ -124,7 +124,7 @@ test('TelegramScanner aborts an in-flight Telegram request during shutdown', asy
 
   await assert.rejects(request, {
     code: 'TELEGRAM_OPERATION_CANCELLED',
-    indeterminate: true
+    indeterminate: false
   });
 });
 
@@ -416,3 +416,25 @@ function albumMessage(id, isoDate, groupedId, text) {
     media: { type: 'photo', fileSize: 10 }
   };
 }
+
+test('TelegramScanner fails synchronization when required native reaction enrichment fails', async () => {
+  const message = { id: 1, reactions: { results: [] } };
+  const history = [message];
+  history.next = null;
+  const scanner = new TelegramScanner({
+    client: {
+      getHistory: async () => history,
+      getMessageReactions: async () => { throw new Error('reaction endpoint unavailable'); }
+    },
+    repository: {},
+    config: scannerConfig({
+      likes: [{ path: 'nativeReactions[]', transform: 'reactionCount' }],
+      dislikes: []
+    })
+  });
+
+  await assert.rejects(
+    scanner.getHistory({ limit: 100 }),
+    (error) => error.code === 'NATIVE_REACTIONS_UNAVAILABLE' && error.telegramFailureScope === 'source'
+  );
+});

@@ -5,6 +5,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { configureLogger } from '../src/core/logger.js';
 import { SelectionPublisher } from '../src/telegram/publisher.js';
+import { JobGate } from '../src/runtime/jobGate.js';
 
 configureLogger({ logging: { logLevel: 'SILENT' } });
 
@@ -103,7 +104,8 @@ function createPublisher({
   syncWorker = null,
   pollingLockFile,
   restartHandler,
-  fatalBotErrorHandler
+  fatalBotErrorHandler,
+  jobGate
 } = {}) {
   return new SelectionPublisher({
     repository,
@@ -113,6 +115,7 @@ function createPublisher({
     },
     setupAssistant: null,
     syncWorker,
+    jobGate,
     restartHandler,
     fatalBotErrorHandler,
     config: {
@@ -167,4 +170,47 @@ test('a synchronous polling launch failure releases the acquired lock', async ()
   await assert.rejects(() => publisher.launchBot(), expected);
   await assert.rejects(() => fs.access(lockPath), { code: 'ENOENT' });
   await fs.rm(tempDir, { recursive: true, force: true });
+});
+
+
+test('bot polling lock remains held until the polling promise actually settles', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'tg-memes-bot-stop-settle-'));
+  const lockPath = path.join(tempDir, 'polling.lock');
+  const polling = deferred();
+  const publisher = createPublisher({ pollingLockFile: lockPath });
+  let stopCalled = false;
+  publisher.bot = {
+    telegram: { getMe: async () => ({ id: 1 }) },
+    launch: () => polling.promise,
+    stop: () => { stopCalled = true; }
+  };
+
+  await publisher.launchBot();
+  const stopPromise = publisher.stopBot('SIGTERM', 1000);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  assert.equal(stopCalled, true);
+  await fs.access(lockPath);
+  polling.resolve();
+  await stopPromise;
+  await assert.rejects(() => fs.access(lockPath), { code: 'ENOENT' });
+  await fs.rm(tempDir, { recursive: true, force: true });
+});
+
+test('manual publish planning is rejected while synchronization owns the shared job gate', async () => {
+  const gate = new JobGate();
+  const blocker = deferred();
+  gate.run('sync', () => blocker.promise);
+  const publisher = createPublisher({ jobGate: gate });
+  const replies = [];
+
+  await publisher.runManualPublish({
+    message: { text: '/publish best.day' },
+    reply: async (message) => replies.push(message)
+  });
+
+  assert.equal(replies.length, 1);
+  assert.match(replies[0], /busy|another job is running/i);
+  blocker.resolve({ ok: true });
+  await gate.waitForIdle();
 });

@@ -128,3 +128,18 @@ test('BotApiRateLimiter slows token and chat quotas while configured Redis is un
   assert.equal(await limiter.wait(-100), 3000);
   assert.deepEqual(waits, [3000]);
 });
+
+test('BotApiRateLimiter refuses local fallback when shared Redis is required', async () => {
+  const limiter = new BotApiRateLimiter(
+    {
+      telegram: { botToken: '123456:token' },
+      publish: { throttle: { enabled: true, globalMinMs: 0, perChatMinMs: 0 } },
+      rateLimit: { redis: { enabled: true, required: true } }
+    },
+    async () => {},
+    () => 1000,
+    { reserve: async () => ({ status: 'unavailable' }) }
+  );
+
+  await assert.rejects(limiter.wait(-1001), (error) => error.code === 'RATE_LIMIT_SHARED_UNAVAILABLE');
+});

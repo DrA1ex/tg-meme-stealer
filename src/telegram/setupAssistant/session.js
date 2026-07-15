@@ -17,7 +17,6 @@ import {
   sourcesKeyboard,
   setupMenuKeyboard,
   replyJsonCode,
-  replaceObjectContents,
   createSetupMeta
 } from './deps.js';
 
@@ -233,7 +232,7 @@ export function getCurrentView(ctx) {
 }
 
 export function reloadConfig() {
-  replaceObjectContents(this.config, this.configLoader());
+  this.config = structuredClone(this.configLoader());
 }
 
 export const sessionMethods = {

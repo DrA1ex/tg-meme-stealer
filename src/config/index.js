@@ -92,6 +92,7 @@ const CONFIG_SCHEMA = {
     telegramOperationTimeoutMs: NUMBER,
     redis: {
       enabled: BOOLEAN,
+      required: BOOLEAN,
       mode: STRING,
       url: STRING,
       keyPrefix: STRING,
@@ -239,6 +240,9 @@ export function applyEnv(config, env) {
         ...(env.RATE_LIMIT_REDIS_URL ? { url: env.RATE_LIMIT_REDIS_URL } : {}),
         ...(env.RATE_LIMIT_REDIS_ENABLED !== undefined
           ? { enabled: booleanFromEnv(env.RATE_LIMIT_REDIS_ENABLED) }
+          : {}),
+        ...(env.RATE_LIMIT_REDIS_REQUIRED !== undefined
+          ? { required: booleanFromEnv(env.RATE_LIMIT_REDIS_REQUIRED) }
           : {})
       }
     }
@@ -369,6 +373,9 @@ function validateSharedRateLimitConfig(config) {
   }
   if (!(Number(config.publish?.workerLeaseMs ?? 900_000) > maxQueueDelayMs)) {
     throw new Error('publish.workerLeaseMs must be greater than rateLimit.maxQueueDelayMs');
+  }
+  if (redis?.required === true && redis.enabled !== true) {
+    throw new Error('rateLimit.redis.required cannot be true when Redis rate limiting is disabled');
   }
   if (redis?.enabled !== true) return;
   if (redis.mode !== 'standalone') {

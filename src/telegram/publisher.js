@@ -5,7 +5,7 @@ import { buildSelectionSpecs, loadSelection } from '../core/selection.js';
 import { JobGate } from '../runtime/jobGate.js';
 import { getLocalTimestampBucket } from '../runtime/scheduler.js';
 import { withBotApiRetry } from './retry.js';
-import { classifyTelegramError, runWithTelegramFailurePolicy } from './errorPolicy.js';
+import { classifyTelegramError, getTelegramErrorScope, runWithTelegramFailurePolicy } from './errorPolicy.js';
 import { PublicationLeaseGuard } from './publicationLease.js';
 import { AdminCommandController } from './adminCommands.js';
 import { BotLifecycle } from './botLifecycle.js';
@@ -60,6 +60,7 @@ export class SelectionPublisher {
       backgroundTasks: this.backgroundTasks,
       resolveIdle: () => this.resolveIdle(),
       publishAll: (...args) => this.publishAll(...args),
+      planManualPublication: (...args) => this.planManualPublication(...args),
       runPublicationWorker: (...args) => this.runPublicationWorker(...args),
       restartHandler: this.restartHandler
     });
@@ -85,6 +86,14 @@ export class SelectionPublisher {
 
   async publishAll(now = new Date(), keys = null, options = {}) {
     return this.planPublicationRequests(now, keys, options);
+  }
+
+  planManualPublication(now = new Date(), keys = null, options = {}) {
+    const operation = () => this.planPublicationRequests(now, keys, { ...options, source: 'admin' });
+    if (typeof this.jobGate.runIfIdle === 'function') {
+      return this.jobGate.runIfIdle('publish-plan:manual', operation);
+    }
+    return { status: 'running', key: 'publish-plan:manual', promise: Promise.resolve().then(operation) };
   }
 
   schedulePublicationRequestFromSchedule(key, scheduledAt = new Date()) {
@@ -381,12 +390,38 @@ export class SelectionPublisher {
       );
     }
 
+    if (request.status === 'header_delivered') {
+      await this.repository.markPublicationRunning(request.id, this.workerId);
+      request.status = 'running';
+    }
+
     if (request.status === 'created') {
       const headerResult = await this.sendPublicationHeader(request, selection, lease);
       if (headerResult?.stopped) return headerResult;
     }
 
-    const rows = await this.repository.listPublicationPosts(request.id);
+    let rows = await this.repository.listPublicationPosts(request.id);
+    for (const delivered of rows.filter((row) => row.sendState === 'delivered')) {
+      const post = selection.posts[delivered.position - 1];
+      if (!post) {
+        const error = new Error(`Delivered publication row has no snapshot post at position ${delivered.position}`);
+        error.code = 'PUBLICATION_SNAPSHOT_MISMATCH';
+        throw error;
+      }
+      if (typeof this.repository.markPublicationPostSent === 'function') {
+        await this.repository.markPublicationPostSent({
+          publicationId: request.id,
+          post,
+          position: delivered.position,
+          botMessageId: delivered.botMessageId,
+          ownerId: this.workerId
+        });
+      }
+    }
+    if (rows.some((row) => row.sendState === 'delivered')) {
+      rows = await this.repository.listPublicationPosts(request.id);
+    }
+
     const interrupted = rows.find((row) => row.sendState === 'sending');
     if (interrupted) {
       return this.markRecoveredDeliveryUncertain(
@@ -420,21 +455,38 @@ export class SelectionPublisher {
       }
 
       lease.assertActive();
+      const post = selection.posts[index];
+      let result;
       try {
-        const post = selection.posts[index];
-        const result = await runWithTelegramFailurePolicy(
-          () => this.publishPost(post, index, async () => {
-            lease.assertActive();
-            await this.repository.markPublicationPostSending?.({
-              publicationId: request.id,
-              post,
-              position,
-              ownerId: this.workerId
-            });
-          }, lease.signal),
+        result = await runWithTelegramFailurePolicy(
+          () => this.publishPost(
+            post,
+            index,
+            async () => {
+              lease.assertActive();
+              await this.repository.markPublicationPostSending?.({
+                publicationId: request.id,
+                post,
+                position,
+                ownerId: this.workerId
+              });
+            },
+            lease.signal,
+            async ({ error }) => {
+              lease.assertActive();
+              await this.repository.markPublicationPostPending?.({
+                publicationId: request.id,
+                post,
+                position,
+                error,
+                ownerId: this.workerId
+              });
+            }
+          ),
           {
             label: `publish post ${position}`,
             maxUnknownRetries: getPostMaxRetries(this.config),
+            maxNetworkRetries: 0,
             baseDelayMs: this.config.publish?.retryBaseMs,
             maxDelayMs: this.config.publish?.retryMaxMs,
             signal: lease.signal,
@@ -459,15 +511,6 @@ export class SelectionPublisher {
             })
           }
         );
-        lease.assertActive();
-        await this.repository.recordPublicationPost({
-          publicationId: request.id,
-          post,
-          position,
-          botMessageId: getBotMessageId(result),
-          ownerId: this.workerId
-        });
-        consecutiveFailures = 0;
       } catch (error) {
         const classification = classifyTelegramError(error);
         if (classification === 'lease_lost') throw error;
@@ -480,10 +523,36 @@ export class SelectionPublisher {
           await this.repository.releasePublicationLease?.(request.id, this.workerId, error);
           return { stopped: true, cancelled: true };
         }
+        if (classification === 'network') {
+          const retry = await this.repository.deferPublicationRetry(request.id, this.workerId, error, {
+            delayMs: getRequestRetryDelay(this.config, 1),
+            maxAttempts: Number.POSITIVE_INFINITY,
+            countAttempt: false,
+            status: 'running'
+          });
+          this.logger.warn('Publication deferred until Telegram connectivity recovers', {
+            publicationId: request.id,
+            position,
+            nextAttemptAt: retry.nextAttemptAt,
+            error: error?.message || String(error)
+          });
+          return { stopped: true, deferred: true, network: true };
+        }
+
+        const scope = getTelegramErrorScope(error, 'post');
+        if (classification === 'permanent' && scope !== 'post') {
+          await this.repository.failPublication(request.id, error, this.workerId);
+          await this.safeNotifyAdmin([
+            `Publication ${request.id} (${request.key}) stopped at post ${position}.`,
+            `The ${scope} Telegram resource is unavailable: ${error?.message || String(error)}`,
+            `Use /publication ${request.id} for details. Resolve the channel/session problem, run /sync, then start a new /publish command.`
+          ].join('\n'));
+          return { stopped: true, failed: true, scope, position };
+        }
 
         await this.repository.markPublicationPostFailed({
           publicationId: request.id,
-          post: selection.posts[index],
+          post,
           position,
           error,
           ownerId: this.workerId
@@ -495,6 +564,7 @@ export class SelectionPublisher {
           publicationId: request.id,
           position,
           classification,
+          scope,
           countsTowardsFailureStreak,
           consecutiveFailures,
           error: error?.message || String(error)
@@ -502,7 +572,67 @@ export class SelectionPublisher {
         if (countsTowardsFailureStreak && consecutiveFailures > getMaxConsecutivePostFailures(this.config)) {
           return this.failPublicationForPostStreak(request, consecutiveFailures, position, error);
         }
+        continue;
       }
+
+      lease.assertActive();
+      const botMessageId = getBotMessageId(result);
+      if (typeof this.repository.markPublicationPostDelivered !== 'function'
+          || typeof this.repository.markPublicationPostSent !== 'function') {
+        await this.repository.recordPublicationPost({
+          publicationId: request.id,
+          post,
+          position,
+          botMessageId,
+          ownerId: this.workerId
+        });
+        consecutiveFailures = 0;
+        continue;
+      }
+      try {
+        await this.repository.markPublicationPostDelivered({
+          publicationId: request.id,
+          post,
+          position,
+          botMessageId,
+          ownerId: this.workerId
+        });
+      } catch (error) {
+        error.telegramDeliveryConfirmed = true;
+        try {
+          await this.repository.markPublicationUncertain(request.id, this.workerId, error);
+        } catch (stateError) {
+          this.logger.error('Failed to persist uncertain state after confirmed Telegram delivery', {
+            publicationId: request.id,
+            position,
+            error: stateError?.message || String(stateError)
+          });
+        }
+        await this.safeNotifyAdmin(`Publication ${request.id} (${request.key}) delivered post ${position} to Telegram, but failed to persist the delivery checkpoint. Automatic sending stopped to prevent a duplicate.`);
+        return { stopped: true, uncertain: true, position, deliveryConfirmed: true };
+      }
+
+      try {
+        await this.repository.markPublicationPostSent({
+          publicationId: request.id,
+          post,
+          position,
+          botMessageId,
+          ownerId: this.workerId
+        });
+      } catch (error) {
+        const retry = await this.repository.deferPublicationRetry(request.id, this.workerId, error, {
+          delayMs: getRequestRetryDelay(this.config, Number(request.attemptCount || 0) + 1),
+          maxAttempts: getRequestMaxRetries(this.config),
+          countAttempt: true,
+          status: 'running'
+        });
+        if (retry.failed) {
+          await this.safeNotifyAdmin(`Publication ${request.id} (${request.key}) delivered post ${position}, but repeatedly failed to finalize its database state. The publication is now failed; do not force-retry it without checking the target channel.`);
+        }
+        return { stopped: true, deferred: !retry.failed, failed: retry.failed, deliveryConfirmed: true };
+      }
+      consecutiveFailures = 0;
     }
 
     await this.recordPublication(request.id, selection, 'published', {
@@ -525,8 +655,9 @@ export class SelectionPublisher {
       key: request.key
     });
 
+    let result;
     try {
-      await runWithTelegramFailurePolicy(
+      result = await runWithTelegramFailurePolicy(
         () => withBotApiRetry(
           () => this.bot.telegram.sendMessage(this.config.telegram.publishChannelId, formatSelectionHeader(selection.title)),
           {
@@ -538,12 +669,16 @@ export class SelectionPublisher {
             onBeforeOperation: async () => {
               lease.assertActive();
               await this.repository.markPublicationHeaderSending(request.id, this.workerId);
+            },
+            onRetryableError: async ({ error }) => {
+              await this.repository.resetPublicationHeaderForRetry?.(request.id, this.workerId, error);
             }
           }
         ),
         {
           label: 'publish selection header',
           maxUnknownRetries: getRequestMaxRetries(this.config),
+          maxNetworkRetries: 0,
           baseDelayMs: this.config.publish?.retryBaseMs,
           maxDelayMs: this.config.publish?.retryMaxMs,
           signal: lease.signal,
@@ -554,9 +689,6 @@ export class SelectionPublisher {
           }
         }
       );
-      lease.assertActive();
-      await this.repository.markPublicationRunning(request.id, this.workerId);
-      return { sent: true };
     } catch (error) {
       const classification = classifyTelegramError(error);
       if (classification === 'lease_lost') throw error;
@@ -569,7 +701,7 @@ export class SelectionPublisher {
         await this.repository.releasePublicationLease?.(request.id, this.workerId, error);
         return { stopped: true, cancelled: true };
       }
-      if (classification === 'permanent') {
+      if (classification === 'permanent' || classification === 'unknown_exhausted') {
         await this.repository.failPublication(request.id, error, this.workerId);
         await this.safeNotifyAdmin(`Publication ${request.id} (${request.key}) failed while sending its header: ${error?.message || String(error)}`);
         return { stopped: true, failed: true };
@@ -577,13 +709,48 @@ export class SelectionPublisher {
 
       const retry = await this.repository.deferPublicationRetry(request.id, this.workerId, error, {
         delayMs: getRequestRetryDelay(this.config, Number(request.attemptCount || 0) + 1),
-        maxAttempts: getRequestMaxRetries(this.config)
+        maxAttempts: Number.POSITIVE_INFINITY,
+        countAttempt: false,
+        status: 'created'
+      });
+      return { stopped: true, deferred: true, network: true, nextAttemptAt: retry.nextAttemptAt };
+    }
+
+    lease.assertActive();
+    if (typeof this.repository.markPublicationHeaderDelivered !== 'function') {
+      await this.repository.markPublicationRunning(request.id, this.workerId);
+      return { sent: true };
+    }
+    try {
+      await this.repository.markPublicationHeaderDelivered(request.id, this.workerId, getBotMessageId(result));
+    } catch (error) {
+      try {
+        await this.repository.markPublicationUncertain(request.id, this.workerId, error);
+      } catch (stateError) {
+        this.logger.error('Failed to persist uncertain state after confirmed header delivery', {
+          publicationId: request.id,
+          error: stateError?.message || String(stateError)
+        });
+      }
+      await this.safeNotifyAdmin(`Publication ${request.id} (${request.key}) delivered its header, but failed to persist the delivery checkpoint. Automatic retries stopped to prevent a duplicate header.`);
+      return { stopped: true, uncertain: true, deliveryConfirmed: true };
+    }
+
+    try {
+      await this.repository.markPublicationRunning(request.id, this.workerId);
+    } catch (error) {
+      const retry = await this.repository.deferPublicationRetry(request.id, this.workerId, error, {
+        delayMs: getRequestRetryDelay(this.config, Number(request.attemptCount || 0) + 1),
+        maxAttempts: getRequestMaxRetries(this.config),
+        countAttempt: true,
+        status: 'header_delivered'
       });
       if (retry.failed) {
-        await this.safeNotifyAdmin(`Publication ${request.id} (${request.key}) failed after repeated header errors: ${error?.message || String(error)}`);
+        await this.safeNotifyAdmin(`Publication ${request.id} (${request.key}) sent its header but repeatedly failed to finalize the database state. Check the channel before retrying.`);
       }
-      return { stopped: true, deferred: !retry.failed, failed: retry.failed };
+      return { stopped: true, deferred: !retry.failed, failed: retry.failed, deliveryConfirmed: true };
     }
+    return { sent: true };
   }
 
   async markRecoveredDeliveryUncertain(request, error, extra = {}) {
@@ -611,7 +778,7 @@ export class SelectionPublisher {
     return { stopped: true, failed: true, consecutiveFailures };
   }
 
-  async publishPost(post, index, onBeforeSend, signal = this.signal) {
+  async publishPost(post, index, onBeforeSend, signal = this.signal, onRetryableError = null) {
     this.logger.info('Publishing post', {
       targetChatId: this.config.telegram.publishChannelId,
       sourceChatId: post.chatId,
@@ -628,7 +795,8 @@ export class SelectionPublisher {
       rateLimiter: this.botRateLimiter,
       operationTimeoutMs: this.config.rateLimit?.telegramOperationTimeoutMs,
       signal,
-      onBeforeSend
+      onBeforeSend,
+      onRetryableError
     });
   }
 
@@ -673,9 +841,9 @@ export class SelectionPublisher {
     return this.getAdminCommands().runManualPublish(ctx);
   }
 
-  async safeNotifyAdmin(message) {
+  async safeNotifyAdmin(message, options = {}) {
     try {
-      await this.notifyAdmin(message);
+      await this.notifyAdmin(message, options);
       return true;
     } catch (error) {
       this.logger.error('Failed to notify admin', { error: error?.message || String(error) });
@@ -683,13 +851,13 @@ export class SelectionPublisher {
     }
   }
 
-  async notifyAdmin(message) {
+  async notifyAdmin(message, { bypassRateLimiter = false } = {}) {
     if (!message) return;
     return withBotApiRetry(
       () => this.bot.telegram.sendMessage(this.config.telegram.adminId, String(message)),
       {
         label: 'notifyAdmin',
-        rateLimiter: this.botRateLimiter,
+        rateLimiter: bypassRateLimiter ? null : this.botRateLimiter,
         chatId: this.config.telegram.adminId,
         operationTimeoutMs: this.config.rateLimit?.telegramOperationTimeoutMs,
         signal: this.signal,
@@ -815,7 +983,7 @@ function getPublicationKeyFromSpec(spec, config) {
 }
 
 function isBlockingPublication(publication) {
-  return ['created', 'running', 'published'].includes(publication?.status);
+  return ['created', 'header_sending', 'header_delivered', 'running', 'uncertain', 'published'].includes(publication?.status);
 }
 
 function isBeforeFirstSendAt(scheduledAtIso, firstSendAtIso) {

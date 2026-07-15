@@ -11,6 +11,7 @@ export class AdminCommandController {
     backgroundTasks,
     resolveIdle,
     publishAll,
+    planManualPublication = null,
     runPublicationWorker,
     restartHandler
   }) {
@@ -21,6 +22,7 @@ export class AdminCommandController {
     this.backgroundTasks = backgroundTasks;
     this.resolveIdle = resolveIdle;
     this.publishAll = publishAll;
+    this.planManualPublication = planManualPublication;
     this.runPublicationWorker = runPublicationWorker;
     this.restartHandler = restartHandler;
   }
@@ -169,8 +171,21 @@ export class AdminCommandController {
       await ctx.reply(formatPublishHelp());
       return;
     }
-    const result = await this.publishAll(new Date(), keys, { force });
-    const job = result.selections.some((selection) => selection.requested)
+    const planningJob = this.planManualPublication
+      ? this.planManualPublication(new Date(), keys, { force })
+      : null;
+    if (planningJob && (planningJob.status === 'busy' || planningJob.status === 'skipped')) {
+      await ctx.reply(`Publish planning is ${planningJob.status}: ${planningJob.reason || 'another job is running'}. Try again after the current sync or maintenance job finishes.`);
+      return;
+    }
+    const result = planningJob
+      ? await planningJob.promise
+      : await this.publishAll(new Date(), keys, { force });
+    if (result?.failed) {
+      await ctx.reply(`Publish planning failed: ${result.error || result.reason || 'unknown error'}`);
+      return;
+    }
+    const job = result.selections?.some((selection) => selection.requested)
       ? this.runPublicationWorker('admin')
       : null;
     await ctx.reply(formatPublishResult(result, job));

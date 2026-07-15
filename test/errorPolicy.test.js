@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { classifyTelegramError, runWithTelegramFailurePolicy } from '../src/telegram/errorPolicy.js';
+import { classifyTelegramError, getTelegramErrorScope, runWithTelegramFailurePolicy } from '../src/telegram/errorPolicy.js';
 
 test('classifyTelegramError distinguishes definitive, network, and indeterminate failures', () => {
   assert.equal(classifyTelegramError({ response: { error_code: 400, description: 'Bad Request' } }), 'permanent');
@@ -57,4 +57,29 @@ test('runWithTelegramFailurePolicy never retries a definitive Telegram response'
     throw error;
   }, { sleepFn: async () => assert.fail('must not sleep') }), (caught) => caught.telegramFailureClass === 'permanent');
   assert.equal(attempts, 1);
+});
+
+test('classifyTelegramError treats shutdown and shared limiter failures as non-post outcomes', () => {
+  assert.equal(classifyTelegramError(Object.assign(new Error('shutdown'), { code: 'APPLICATION_SHUTDOWN' })), 'cancelled');
+  assert.equal(classifyTelegramError(Object.assign(new Error('aborted'), { code: 'ABORT_ERR' })), 'cancelled');
+  assert.equal(classifyTelegramError(Object.assign(new Error('redis required'), { code: 'RATE_LIMIT_SHARED_UNAVAILABLE' })), 'network');
+});
+
+test('runWithTelegramFailurePolicy can hand a network failure back for durable retry immediately', async () => {
+  let attempts = 0;
+  const error = Object.assign(new Error('offline'), { code: 'ENETUNREACH' });
+  await assert.rejects(
+    runWithTelegramFailurePolicy(async () => {
+      attempts += 1;
+      throw error;
+    }, { maxNetworkRetries: 0, sleepFn: async () => assert.fail('must not sleep') }),
+    (caught) => caught === error && caught.telegramFailureClass === 'network'
+  );
+  assert.equal(attempts, 1);
+});
+
+test('local filesystem failures are publication-wide infrastructure errors', () => {
+  const error = Object.assign(new Error('temporary media disappeared'), { code: 'ENOENT' });
+  assert.equal(classifyTelegramError(error), 'permanent');
+  assert.equal(getTelegramErrorScope(error), 'infrastructure');
 });

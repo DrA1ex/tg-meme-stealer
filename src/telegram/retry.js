@@ -4,12 +4,14 @@ import { sleepWithSignal } from './rateLimitUtils.js';
 const logger = getLogger('retry');
 
 export class TelegramOperationTimeoutError extends Error {
-  constructor(label, timeoutMs, operationSettled = null) {
-    super(`${label} did not settle within ${timeoutMs}ms; delivery outcome is unknown`);
+  constructor(label, timeoutMs, operationSettled = null, { indeterminate = true } = {}) {
+    super(indeterminate
+      ? `${label} did not settle within ${timeoutMs}ms; delivery outcome is unknown`
+      : `${label} did not settle within ${timeoutMs}ms`);
     this.name = 'TelegramOperationTimeoutError';
     this.code = 'TELEGRAM_OPERATION_TIMEOUT';
     this.timeoutMs = timeoutMs;
-    this.indeterminate = true;
+    this.indeterminate = indeterminate;
     this.operationSettled = operationSettled;
   }
 }
@@ -29,7 +31,7 @@ export async function withTelegramRetry(operation, options = {}) {
   const maxRetries = options.maxRetries ?? 5;
   const label = options.label || 'telegram request';
   const sleepFn = options.sleepFn || sleep;
-  const onBeforeOperation = onceAsync(options.onBeforeOperation);
+  const onBeforeOperation = options.onBeforeOperation;
 
   for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
     try {
@@ -54,6 +56,7 @@ export async function withTelegramRetry(operation, options = {}) {
         [options.kind, waitSeconds],
         `${label} FLOOD_WAIT accounting`
       ) === true;
+      await options.onRetryableError?.({ error, attempt: attempt + 1, maxRetries, waitSeconds });
       if (attempt === maxRetries) throw error;
       const waitMs = (waitSeconds + 1) * 1000;
       const log = hasLimiterHandler ? logger.debug : logger.warn;
@@ -73,7 +76,7 @@ export async function withBotApiRetry(operation, options = {}) {
   const maxRetries = options.maxRetries ?? 5;
   const label = options.label || 'bot api request';
   const sleepFn = options.sleepFn || sleep;
-  const onBeforeOperation = onceAsync(options.onBeforeOperation);
+  const onBeforeOperation = options.onBeforeOperation;
 
   for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
     try {
@@ -91,6 +94,7 @@ export async function withBotApiRetry(operation, options = {}) {
         [retryAfter, options.chatId],
         `${label} retry_after accounting`
       ) === true;
+      await options.onRetryableError?.({ error, attempt: attempt + 1, maxRetries, retryAfter });
       if (attempt === maxRetries) throw error;
       const waitMs = (retryAfter + 1) * 1000;
       const log = hasLimiterHandler ? logger.debug : logger.warn;
@@ -172,14 +176,16 @@ async function runTelegramOperation(operation, options, label) {
   );
   const timeoutPromise = new Promise((_, reject) => {
     timeout = setTimeout(
-      () => reject(new TelegramOperationTimeoutError(label, timeoutMs, operationSettled)),
+      () => reject(new TelegramOperationTimeoutError(label, timeoutMs, operationSettled, {
+        indeterminate: options.indeterminateOnTimeout !== false
+      })),
       timeoutMs
     );
   });
   const abortPromise = createAbortPromise(
     options.signal,
     label,
-    () => operationStarted,
+    () => operationStarted && (options.indeterminateOnAbort ?? options.indeterminateOnTimeout ?? true),
     operationSettled
   );
   removeAbortListener = abortPromise.removeListener;
@@ -213,15 +219,6 @@ function createAbortPromise(signal, label, isIndeterminate, operationSettled = n
     removeListener() {
       signal.removeEventListener('abort', onAbort);
     }
-  };
-}
-
-function onceAsync(fn) {
-  if (typeof fn !== 'function') return undefined;
-  let promise;
-  return () => {
-    promise ||= Promise.resolve().then(fn);
-    return promise;
   };
 }
 

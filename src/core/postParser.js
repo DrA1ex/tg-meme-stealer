@@ -299,8 +299,38 @@ export function buildMediaReference(message) {
     mediaKind: kind,
     photoId: photo?.id ? String(photo.id) : null,
     documentId: document?.id ? String(document.id) : null,
-    mimeType: document?.mimeType || null
+    mimeType: document?.mimeType || null,
+    fileId: getPortableMediaFileId(message?.media),
+    fileSize: getPortableMediaFileSize(message?.media)
   };
+}
+
+
+function getPortableMediaFileId(media) {
+  if (!media) return null;
+  try {
+    const value = media.fileId || media.file_id;
+    return typeof value === 'string' && value ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function getPortableMediaFileSize(media) {
+  const candidates = [
+    media?.fileSize,
+    media?.file_size,
+    media?.size,
+    media?.document?.size,
+    media?.document?.fileSize,
+    media?.photo?.size,
+    media?.file?.size
+  ];
+  for (const candidate of candidates) {
+    const value = Number(candidate);
+    if (Number.isFinite(value) && value > 0) return value;
+  }
+  return null;
 }
 
 export function parsePostMessage(message, options) {

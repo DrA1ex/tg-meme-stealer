@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { debugParseMessage, getPathTrace, getValuesByPath, parseCount, parseCountDetails, parseMessagesToPosts, parseReactions, passesFilters } from '../src/core/postParser.js';
+import { buildMediaReference, debugParseMessage, getPathTrace, getValuesByPath, parseCount, parseCountDetails, parseMessagesToPosts, parseReactions, passesFilters } from '../src/core/postParser.js';
 
 test('parseCount supports plain and compact counters', () => {
   assert.equal(parseCount('👍 42'), 42);
@@ -418,4 +418,16 @@ test('grouped post parsing takes caption, markup, and sender from their respecti
   assert.equal(posts[0].likes, 25);
   assert.equal(posts[0].dislikes, 4);
   assert.equal(posts[0].data.media.length, 2);
+});
+
+
+test('buildMediaReference persists portable mtcute file ids and declared size', () => {
+  const reference = buildMediaReference({
+    id: 42,
+    media: { type: 'photo', fileId: 'mtcute-portable-id', fileSize: 12345 }
+  });
+
+  assert.equal(reference.fileId, 'mtcute-portable-id');
+  assert.equal(reference.fileSize, 12345);
+  assert.equal(reference.messageId, 42);
 });

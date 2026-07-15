@@ -156,14 +156,176 @@ test('MediaDownloader removes an empty attempt directory when referenced media c
     throttle: { wait: async () => {}, onFloodWait: async () => {} }
   });
 
-  const files = await downloader.downloadPostMedia({
-    chatId: -1001,
-    messageId: 10,
-    data: { media: [{ messageId: 10, mediaKind: 'photo' }] }
-  });
+  await assert.rejects(
+    downloader.downloadPostMedia({
+      chatId: -1001,
+      messageId: 10,
+      data: { media: [{ messageId: 10, mediaKind: 'photo' }] }
+    }),
+    { code: 'SOURCE_MEDIA_NOT_FOUND' }
+  );
   const entries = await fs.readdir(dir);
-
-  assert.deepEqual(files, []);
   assert.deepEqual(entries, []);
   await fs.rm(dir, { recursive: true, force: true });
 });
+
+test('MediaDownloader uses stored portable file ids without reloading the source message', async () => {
+  const { Readable } = await import('node:stream');
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'tg-memes-media-file-id-'));
+  const locations = [];
+  const downloader = new MediaDownloader({
+    client: {
+      getMessages: async () => assert.fail('portable media must not call getMessages'),
+      downloadAsNodeStream: (location) => {
+        locations.push(location);
+        return Readable.from([Buffer.from('portable')]);
+      }
+    },
+    config: {
+      logging: { logLevel: 'silent' },
+      sync: { mediaDir: dir, mediaMaxBytes: 100, mediaMaxAgeHours: 24, throttle: { enabled: false } }
+    }
+  });
+
+  const files = await downloader.downloadPostMedia({
+    chatId: -1001,
+    messageId: 10,
+    data: { media: [{ messageId: 10, mediaKind: 'photo', fileId: 'portable-file-id', fileSize: 8 }] }
+  });
+
+  assert.deepEqual(locations, ['portable-file-id']);
+  assert.equal(await fs.readFile(files[0].path, 'utf8'), 'portable');
+  await downloader.cleanupFiles(files);
+  await fs.rm(dir, { recursive: true, force: true });
+});
+
+test('MediaDownloader falls back to history when direct channel lookup returns CHANNEL_INVALID', async () => {
+  const calls = [];
+  const downloader = new MediaDownloader({
+    client: {
+      getMessages: async () => {
+        calls.push('getMessages');
+        throw new Error('Telegram API error 400: CHANNEL_INVALID');
+      },
+      getHistory: async (peerId, params) => {
+        calls.push({ peerId, params });
+        return [{ id: 10, media: { type: 'photo' } }];
+      }
+    },
+    config: {
+      logging: { logLevel: 'silent' },
+      sync: { mediaDir: os.tmpdir(), throttle: { enabled: false } }
+    }
+  });
+
+  const message = await downloader.loadMessage('-1001341205233', 10);
+
+  assert.equal(message.id, 10);
+  assert.equal(calls[0], 'getMessages');
+  assert.deepEqual(calls[1], {
+    peerId: -1001341205233,
+    params: { limit: 2, offset: { id: 11, date: 0 } }
+  });
+});
+
+test('MediaDownloader marks an unrecoverable legacy source lookup as publication-wide source failure', async () => {
+  const downloader = new MediaDownloader({
+    client: {
+      getMessages: async () => { throw new Error('CHANNEL_INVALID'); },
+      getHistory: async () => { throw new Error('CHANNEL_PRIVATE'); }
+    },
+    config: {
+      logging: { logLevel: 'silent' },
+      sync: { mediaDir: os.tmpdir(), throttle: { enabled: false } }
+    }
+  });
+
+  await assert.rejects(
+    downloader.loadMessage(-1001, 10),
+    (error) => error.telegramFailureScope === 'source' && /CHANNEL_PRIVATE/.test(error.message)
+  );
+});
+
+test('MediaDownloader refreshes an expired portable file reference through source history', async () => {
+  const { Readable } = await import('node:stream');
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'tg-memes-media-refresh-file-id-'));
+  const locations = [];
+  const downloader = new MediaDownloader({
+    client: {
+      getMessages: async () => assert.fail('expired portable media should refresh directly through history'),
+      getHistory: async (_peerId, params) => {
+        assert.deepEqual(params, { limit: 2, offset: { id: 11, date: 0 } });
+        return [{ id: 10, media: { type: 'photo', fileSize: 9 } }];
+      },
+      downloadAsNodeStream: (location) => {
+        locations.push(location);
+        if (location === 'expired-file-id') {
+          return Readable.from((async function* fail() {
+            throw new Error('Telegram API error 400: FILE_REFERENCE_EXPIRED');
+          })());
+        }
+        return Readable.from([Buffer.from('refreshed')]);
+      }
+    },
+    config: {
+      logging: { logLevel: 'silent' },
+      sync: { mediaDir: dir, mediaMaxBytes: 100, mediaMaxAgeHours: 24, throttle: { enabled: false } }
+    }
+  });
+
+  const files = await downloader.downloadPostMedia({
+    chatId: -1001,
+    messageId: 10,
+    data: { media: [{ messageId: 10, mediaKind: 'photo', fileId: 'expired-file-id', fileSize: 9 }] }
+  });
+
+  assert.equal(locations[0], 'expired-file-id');
+  assert.deepEqual(locations[1], { type: 'photo', fileSize: 9 });
+  assert.equal(await fs.readFile(files[0].path, 'utf8'), 'refreshed');
+  await downloader.cleanupFiles(files);
+  await fs.rm(dir, { recursive: true, force: true });
+});
+
+test('MediaDownloader retains its attempt directory until a timed-out background stream settles', async () => {
+  const { Readable } = await import('node:stream');
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'tg-memes-media-read-timeout-'));
+  let operationFinished;
+  const finished = new Promise((resolve) => { operationFinished = resolve; });
+  const downloader = new MediaDownloader({
+    client: {
+      downloadAsNodeStream: () => Readable.from((async function* delayed() {
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        yield Buffer.from('late-data');
+        operationFinished();
+      })())
+    },
+    config: {
+      logging: { logLevel: 'silent' },
+      sync: { mediaDir: dir, mediaMaxBytes: 100, mediaMaxAgeHours: 24, throttle: { enabled: false } }
+    },
+    throttle: { wait: async () => {}, operationTimeoutMs: 5 }
+  });
+
+  await assert.rejects(
+    downloader.downloadPostMedia({
+      chatId: -1001,
+      messageId: 10,
+      data: { media: [{ messageId: 10, mediaKind: 'photo', fileId: 'portable-file-id', fileSize: 9 }] }
+    }),
+    (error) => error.code === 'TELEGRAM_OPERATION_TIMEOUT' && error.indeterminate === false
+  );
+
+  assert.equal((await fs.readdir(dir)).length, 1);
+  await finished;
+  await waitUntil(async () => (await fs.readdir(dir)).length === 0);
+  await fs.rm(dir, { recursive: true, force: true });
+});
+
+async function waitUntil(predicate, timeoutMs = 1000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  assert.fail('condition did not become true before timeout');
+}

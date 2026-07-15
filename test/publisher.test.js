@@ -490,21 +490,20 @@ test('SelectionPublisher scheduled enqueue skips same canonical key but queues d
   ]);
 });
 
-test('SelectionPublisher keeps retrying network failures until Telegram recovers', async () => {
+test('SelectionPublisher durably defers network failures without holding the worker', async () => {
   const rows = [request({ id: 42, status: 'created' })];
   let sends = 0;
-  let finished = null;
+  let deferred = null;
   const publisher = new SelectionPublisher({
     repository: {
       getNextPublicationRequest: async () => rows.shift() || null,
       markPublicationHeaderSending: async () => {},
       resetPublicationHeaderForRetry: async () => {},
-      markPublicationRunning: async () => {},
-      markPublicationPostSending: async () => {},
-      markPublicationPostPending: async () => {},
-      recordPublicationPost: async () => {},
-      listPublicationPosts: async () => [],
-      finishPublication: async (id, payload) => { finished = { id, payload }; }
+      deferPublicationRetry: async (id, ownerId, error, options) => {
+        deferred = { id, ownerId, error, options };
+        return { failed: false, attemptCount: 0, nextAttemptAt: '2026-07-15T20:00:00.000Z' };
+      },
+      listPublicationPosts: async () => []
     },
     mediaDownloader: { downloadPostMedia: async () => [], cleanupFiles: async () => {} },
     setupAssistant: null,
@@ -513,17 +512,17 @@ test('SelectionPublisher keeps retrying network failures until Telegram recovers
   publisher.bot.telegram = {
     sendMessage: async () => {
       sends += 1;
-      if (sends <= 4) throw Object.assign(new Error('network failed'), { code: 'ENETUNREACH' });
-      return { message_id: sends };
+      throw Object.assign(new Error('network failed'), { code: 'ENETUNREACH' });
     }
   };
 
   const result = await publisher.processPublicationQueue();
 
   assert.equal(result.processed, 1);
-  assert.equal(sends, 7); // four header attempts, then header success and two posts
-  assert.equal(finished.id, 42);
-  assert.equal(finished.payload.status, 'published');
+  assert.equal(sends, 1);
+  assert.equal(deferred.id, 42);
+  assert.equal(deferred.options.countAttempt, false);
+  assert.equal(deferred.options.status, 'created');
 });
 
 test('SelectionPublisher stops automatic retries when a started delivery has an uncertain outcome', async () => {
