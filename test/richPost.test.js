@@ -80,3 +80,136 @@ test('sendRichPost cleans media files when sending fails', async () => {
 
   assert.deepEqual(cleaned, ['/tmp/1.jpg']);
 });
+
+test('sendRichPost keeps a single media file until Telegraf has finished reading it', async () => {
+  const fs = await import('node:fs/promises');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'tg-memes-rich-post-single-'));
+  const filePath = path.join(dir, 'media.jpg');
+  await fs.writeFile(filePath, 'image');
+  let cleaned = false;
+
+  const mediaDownloader = {
+    downloadPostMedia: async () => [{ path: filePath, kind: 'photo', tempDir: dir }],
+    cleanupFiles: async () => {
+      cleaned = true;
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  };
+  const telegram = {
+    sendPhoto: async (_chatId, media) => {
+      await delay(20);
+      assert.equal(await fs.realpath(media.source), filePath);
+      assert.equal(await fs.readFile(media.source, 'utf8'), 'image');
+      assert.equal(cleaned, false);
+      return { message_id: 1 };
+    }
+  };
+
+  const result = await sendRichPost({
+    telegram,
+    chatId: 42,
+    mediaDownloader,
+    index: 0,
+    templates: { publish: { postCaption: 'Post {{messageId}}' } },
+    post: { chatId: -1001, messageId: 10, data: { media: [{ mediaKind: 'photo', messageId: 10 }] } }
+  });
+
+  assert.deepEqual(result, { message_id: 1 });
+  assert.equal(cleaned, true);
+  await assert.rejects(fs.access(filePath), { code: 'ENOENT' });
+});
+
+test('sendRichPost keeps album files until Telegraf has finished building the media group', async () => {
+  const fs = await import('node:fs/promises');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'tg-memes-rich-post-album-'));
+  const firstPath = path.join(dir, 'first.jpg');
+  const secondPath = path.join(dir, 'second.jpg');
+  await Promise.all([fs.writeFile(firstPath, 'first'), fs.writeFile(secondPath, 'second')]);
+
+  const mediaDownloader = {
+    downloadPostMedia: async () => [
+      { path: firstPath, kind: 'photo', tempDir: dir },
+      { path: secondPath, kind: 'photo', tempDir: dir }
+    ],
+    cleanupFiles: async () => fs.rm(dir, { recursive: true, force: true })
+  };
+  const telegram = {
+    sendMediaGroup: async (_chatId, media) => {
+      await delay(20);
+      assert.equal(await fs.readFile(media[0].media.source, 'utf8'), 'first');
+      assert.equal(await fs.readFile(media[1].media.source, 'utf8'), 'second');
+      return [{ message_id: 1 }, { message_id: 2 }];
+    }
+  };
+
+  await sendRichPost({
+    telegram,
+    chatId: 42,
+    mediaDownloader,
+    index: 0,
+    templates: { publish: { postCaption: 'Post {{messageId}}' } },
+    post: {
+      chatId: -1001,
+      messageId: 10,
+      data: { media: [{ mediaKind: 'photo', messageId: 10 }, { mediaKind: 'photo', messageId: 11 }] }
+    }
+  });
+
+  await assert.rejects(fs.access(firstPath), { code: 'ENOENT' });
+  await assert.rejects(fs.access(secondPath), { code: 'ENOENT' });
+});
+
+test('sendRichPost defers cleanup when the watchdog times out before Telegraf settles', async () => {
+  const fs = await import('node:fs/promises');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'tg-memes-rich-post-timeout-'));
+  const filePath = path.join(dir, 'media.jpg');
+  await fs.writeFile(filePath, 'image');
+  let finishOperation;
+  const operationFinished = new Promise((resolve) => { finishOperation = resolve; });
+  let finishCleanup;
+  const cleanupFinished = new Promise((resolve) => { finishCleanup = resolve; });
+
+  const mediaDownloader = {
+    downloadPostMedia: async () => [{ path: filePath, kind: 'photo', tempDir: dir }],
+    cleanupFiles: async () => {
+      await fs.rm(dir, { recursive: true, force: true });
+      finishCleanup();
+    }
+  };
+  const telegram = {
+    sendPhoto: async (_chatId, media) => {
+      await delay(30);
+      assert.equal(await fs.realpath(media.source), filePath);
+      finishOperation();
+      return { message_id: 1 };
+    }
+  };
+
+  await assert.rejects(
+    sendRichPost({
+      telegram,
+      chatId: 42,
+      mediaDownloader,
+      operationTimeoutMs: 5,
+      index: 0,
+      templates: { publish: { postCaption: 'Post {{messageId}}' } },
+      post: { chatId: -1001, messageId: 10, data: { media: [{ mediaKind: 'photo', messageId: 10 }] } }
+    }),
+    { code: 'TELEGRAM_OPERATION_TIMEOUT' }
+  );
+
+  assert.equal(await fs.readFile(filePath, 'utf8'), 'image');
+  await operationFinished;
+  await cleanupFinished;
+  await assert.rejects(fs.access(filePath), { code: 'ENOENT' });
+});
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}

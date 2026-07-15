@@ -4,22 +4,24 @@ import { sleepWithSignal } from './rateLimitUtils.js';
 const logger = getLogger('retry');
 
 export class TelegramOperationTimeoutError extends Error {
-  constructor(label, timeoutMs) {
+  constructor(label, timeoutMs, operationSettled = null) {
     super(`${label} did not settle within ${timeoutMs}ms; delivery outcome is unknown`);
     this.name = 'TelegramOperationTimeoutError';
     this.code = 'TELEGRAM_OPERATION_TIMEOUT';
     this.timeoutMs = timeoutMs;
     this.indeterminate = true;
+    this.operationSettled = operationSettled;
   }
 }
 
 export class TelegramOperationCancelledError extends Error {
-  constructor(label, { indeterminate = false, reason } = {}) {
+  constructor(label, { indeterminate = false, reason, operationSettled = null } = {}) {
     super(`${label} cancelled during shutdown${indeterminate ? '; delivery outcome is unknown' : ''}`);
     this.name = 'TelegramOperationCancelledError';
     this.code = 'TELEGRAM_OPERATION_CANCELLED';
     this.indeterminate = indeterminate;
     this.reason = reason;
+    this.operationSettled = operationSettled;
   }
 }
 
@@ -156,16 +158,31 @@ async function runTelegramOperation(operation, options, label) {
   let operationStarted = false;
   let timeout;
   let removeAbortListener = () => {};
-  const timeoutPromise = new Promise((_, reject) => {
-    timeout = setTimeout(() => reject(new TelegramOperationTimeoutError(label, timeoutMs)), timeoutMs);
-  });
-  const abortPromise = createAbortPromise(options.signal, label, () => operationStarted);
-  removeAbortListener = abortPromise.removeListener;
   const operationPromise = Promise.resolve().then(() => {
     throwIfAborted(options.signal, label);
     operationStarted = true;
     return operation();
   });
+  // Promise.race does not cancel the losing operation. Keep an eagerly attached
+  // rejection handler and expose its settlement so callers can retain resources
+  // (for example temporary media files) until the real request has finished.
+  const operationSettled = operationPromise.then(
+    () => undefined,
+    () => undefined
+  );
+  const timeoutPromise = new Promise((_, reject) => {
+    timeout = setTimeout(
+      () => reject(new TelegramOperationTimeoutError(label, timeoutMs, operationSettled)),
+      timeoutMs
+    );
+  });
+  const abortPromise = createAbortPromise(
+    options.signal,
+    label,
+    () => operationStarted,
+    operationSettled
+  );
+  removeAbortListener = abortPromise.removeListener;
   try {
     return await Promise.race([operationPromise, timeoutPromise, abortPromise.promise]);
   } finally {
@@ -179,13 +196,14 @@ function throwIfAborted(signal, label) {
   throw new TelegramOperationCancelledError(label, { reason: signal.reason });
 }
 
-function createAbortPromise(signal, label, isIndeterminate) {
+function createAbortPromise(signal, label, isIndeterminate, operationSettled = null) {
   if (!signal) return { promise: new Promise(() => {}), removeListener() {} };
   let onAbort;
   const promise = new Promise((_, reject) => {
     onAbort = () => reject(new TelegramOperationCancelledError(label, {
       indeterminate: Boolean(isIndeterminate()),
-      reason: signal.reason
+      reason: signal.reason,
+      operationSettled
     }));
     signal.addEventListener('abort', onAbort, { once: true });
     if (signal.aborted) onAbort();

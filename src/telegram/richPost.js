@@ -1,8 +1,12 @@
 import { formatPostCaption } from '../core/format.js';
+import { getLogger } from '../core/logger.js';
 import { withBotApiRetry } from './retry.js';
+
+const logger = getLogger('richPost');
 
 export async function sendRichPost({ telegram, chatId, mediaDownloader, post, index, templates, rateLimiter, operationTimeoutMs, signal, onBeforeSend }) {
   const files = await mediaDownloader.downloadPostMedia(post);
+  let pendingOperation = null;
   try {
     const caption = formatPostCaption(post, index, templates);
     if (files.length === 0) {
@@ -12,7 +16,7 @@ export async function sendRichPost({ telegram, chatId, mediaDownloader, post, in
     }
 
     if (files.length > 1) {
-      return withBotApiRetry(
+      return await withBotApiRetry(
         () => telegram.sendMediaGroup(chatId, files.map((file, fileIndex) => ({
           type: file.kind === 'video' ? 'video' : 'photo',
           media: { source: file.path },
@@ -22,7 +26,7 @@ export async function sendRichPost({ telegram, chatId, mediaDownloader, post, in
       );
     }
 
-    return sendSingleMedia({
+    return await sendSingleMedia({
       telegram,
       chatId,
       file: files[0],
@@ -32,8 +36,15 @@ export async function sendRichPost({ telegram, chatId, mediaDownloader, post, in
       signal,
       onBeforeOperation: onBeforeSend
     });
+  } catch (error) {
+    pendingOperation = getPendingTelegramOperation(error);
+    throw error;
   } finally {
-    await mediaDownloader.cleanupFiles?.(files);
+    if (pendingOperation) {
+      scheduleCleanupAfterOperation(mediaDownloader, files, pendingOperation);
+    } else {
+      await mediaDownloader.cleanupFiles?.(files);
+    }
   }
 }
 
@@ -48,4 +59,21 @@ async function sendSingleMedia({ telegram, chatId, file, caption, rateLimiter, o
     () => telegram.sendPhoto(chatId, { source: file.path }, caption ? { caption } : undefined),
     { label: 'sendPhoto', rateLimiter, chatId, operationTimeoutMs, signal, onBeforeOperation }
   );
+}
+
+function getPendingTelegramOperation(error) {
+  return error?.operationSettled && typeof error.operationSettled.then === 'function'
+    ? error.operationSettled
+    : null;
+}
+
+function scheduleCleanupAfterOperation(mediaDownloader, files, operationSettled) {
+  void operationSettled
+    .then(() => mediaDownloader.cleanupFiles?.(files))
+    .catch((error) => {
+      logger.warn('Deferred media cleanup failed', {
+        files: files.length,
+        error: error?.message || String(error)
+      });
+    });
 }
