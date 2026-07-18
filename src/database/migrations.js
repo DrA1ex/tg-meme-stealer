@@ -89,6 +89,24 @@ const MIGRATIONS = [
         );
       `);
     }
+  },
+  {
+    name: '0003_pending_error_logs',
+    async up(db) {
+      await db.exec(`
+        CREATE TABLE IF NOT EXISTS pending_error_logs (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          timestamp TEXT NOT NULL,
+          type TEXT NOT NULL,
+          scope TEXT NOT NULL,
+          message TEXT NOT NULL,
+          error TEXT,
+          fields TEXT NOT NULL DEFAULT '{}'
+        );
+        CREATE INDEX IF NOT EXISTS idx_pending_error_logs_type_time
+        ON pending_error_logs(type, timestamp, id);
+      `);
+    }
   }
 ];
 

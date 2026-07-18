@@ -783,6 +783,49 @@ export class PostRepository {
     assertClaimUpdated(result, publicationId, ownerId);
   }
 
+  async addPendingErrorLog(event) {
+    const result = await this.run(
+      `INSERT INTO pending_error_logs (timestamp, type, scope, message, error, fields)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [
+        event.timestamp,
+        event.type,
+        event.scope,
+        event.message,
+        event.error || null,
+        JSON.stringify(event.fields || {})
+      ]
+    );
+    return result.lastID;
+  }
+
+  async listPendingErrorLogs() {
+    const rows = await this.all(
+      `SELECT id, timestamp, type, scope, message, error, fields
+       FROM pending_error_logs
+       ORDER BY id ASC`
+    );
+    return rows.map((row) => ({
+      ...row,
+      fields: safeParseJson(row.fields, {
+        logger: this.logger,
+        entity: 'pending_error_log',
+        id: row.id
+      }) || {}
+    }));
+  }
+
+  async countPendingErrorLogs() {
+    const rows = await this.all('SELECT COUNT(*) AS count FROM pending_error_logs');
+    return Number(rows[0]?.count || 0);
+  }
+
+  async deletePendingErrorLogsThrough(maxId) {
+    if (!Number.isInteger(Number(maxId)) || Number(maxId) <= 0) return 0;
+    const result = await this.run('DELETE FROM pending_error_logs WHERE id <= ?', [Number(maxId)]);
+    return Number(result.changes || 0);
+  }
+
   async run(sql, params = []) {
     return this.db.run(sql, params);
   }

@@ -19,7 +19,7 @@ export class MediaDownloader {
     this.staleCleanupPromise = null;
   }
 
-  async downloadPostMedia(post) {
+  async downloadPostMedia(post, options = {}) {
     const mediaDir = path.resolve(this.config.sync.mediaDir);
     await fs.mkdir(mediaDir, { recursive: true });
     await this.ensureStaleCleanup(mediaDir);
@@ -28,39 +28,50 @@ export class MediaDownloader {
     const mediaItems = post.data?.media || [];
 
     const portableFileIds = mediaItems.filter((item) => Boolean(item?.fileId)).length;
-    const freshPortableFileIds = mediaItems.filter((item) => this.isPortableFileIdFresh(item)).length;
+    const providedMessagesById = normalizeMessageMap(options?.sourceMessagesById);
+    const freshPortableFileIds = mediaItems.filter((item) => {
+      const messageId = Number(item?.messageId || post.messageId);
+      return !providedMessagesById.has(messageId) && this.isPortableFileIdFresh(item);
+    }).length;
     this.logger.info('Downloading post media', {
       chatId: post.chatId,
       messageId: post.messageId,
       mediaItems: mediaItems.length,
       portableFileIds,
       freshPortableFileIds,
+      providedMessages: providedMessagesById.size,
       attemptDir
     });
 
     try {
-      // Telegram file references are deliberately short-lived. Legacy rows have no
-      // capture timestamp, and old references should be refreshed before download
-      // instead of producing one expected FILE_REFERENCE_EXPIRED error per post.
+      // Setup previews can pass the exact messages they just scanned. Scheduled
+      // publications may use a stored portable file ID only inside the configured
+      // short freshness window. Everything else is refreshed through history.
       const refreshLocationIds = [...new Set(mediaItems
-        .filter((item) => !this.isPortableFileIdFresh(item))
+        .filter((item) => {
+          const messageId = Number(item?.messageId || post.messageId);
+          return !providedMessagesById.has(messageId) && !this.isPortableFileIdFresh(item);
+        })
         .map((item) => Number(item?.messageId || post.messageId))
         .filter(Number.isInteger))];
-      const messagesById = refreshLocationIds.length
-        ? await this.loadRefreshMessages(post.chatId, refreshLocationIds)
-        : new Map();
+      const messagesById = new Map(providedMessagesById);
+      if (refreshLocationIds.length) {
+        const refreshedMessages = await this.loadRefreshMessages(post.chatId, refreshLocationIds);
+        for (const [messageId, message] of refreshedMessages) messagesById.set(messageId, message);
+      }
 
       for (let index = 0; index < mediaItems.length; index += 1) {
         const media = mediaItems[index];
         const messageId = Number(media.messageId || post.messageId);
-        const usePortableFileId = this.isPortableFileIdFresh(media);
+        const providedMessage = providedMessagesById.get(messageId) || null;
+        const usePortableFileId = !providedMessage && this.isPortableFileIdFresh(media);
         const message = messagesById.get(messageId) || null;
-        let location = usePortableFileId ? media.fileId : message?.media;
+        let location = providedMessage?.media || (usePortableFileId ? media.fileId : message?.media);
         if (!location) throw new SourceMediaNotFoundError(post.chatId, messageId);
-        if (!usePortableFileId) this.rememberPortableFileId(media, message?.media);
+        if (!usePortableFileId) this.rememberPortableFileId(media, location);
 
         const maxBytes = positiveNumber(this.config.sync?.mediaMaxBytes, 512 * 1024 * 1024);
-        let declaredBytes = positiveNumber(media.fileSize, 0) || getDeclaredMediaSize(message?.media);
+        let declaredBytes = positiveNumber(media.fileSize, 0) || getDeclaredMediaSize(location);
         if (declaredBytes > maxBytes) throw new MediaTooLargeError(declaredBytes, maxBytes);
 
         const kind = media.mediaKind || 'photo';
@@ -70,11 +81,14 @@ export class MediaDownloader {
         try {
           bytes = await this.downloadToPath(location, filePath, maxBytes);
         } catch (error) {
-          if (!usePortableFileId || !isFileReferenceError(error)) throw error;
-          this.logger.info('Fresh media file reference expired early; refreshing it from source history', {
+          if (!isFileReferenceError(error)) throw error;
+          this.logger.error('Media file reference expired before its configured freshness window; refreshing from source history', {
+            errorCode: 'FILE_REFERENCE_EXPIRED',
             chatId: post.chatId,
             messageId,
-            capturedAt: media.fileIdCapturedAt,
+            source: providedMessage ? String(options?.source || 'provided-messages') : usePortableFileId ? 'stored-file-id' : 'history',
+            capturedAt: media.fileIdCapturedAt || null,
+            maxAgeHours: positiveNumber(this.config.sync?.mediaFileIdMaxAgeHours, 0.5),
             error: error?.message || String(error)
           });
           const refreshed = await this.loadMessageViaHistory(post.chatId, messageId);
@@ -93,7 +107,9 @@ export class MediaDownloader {
           messageId,
           kind,
           bytes,
-          portableFileId: usePortableFileId
+          locationSource: providedMessage
+            ? String(options?.source || 'provided-messages')
+            : usePortableFileId ? 'stored-file-id' : 'history'
         });
       }
 
@@ -118,7 +134,7 @@ export class MediaDownloader {
     if (!media?.fileId) return false;
     const capturedAt = Date.parse(media.fileIdCapturedAt || '');
     if (!Number.isFinite(capturedAt)) return false;
-    const maxAgeMs = positiveNumber(this.config.sync?.mediaFileIdMaxAgeHours, 6) * 60 * 60 * 1000;
+    const maxAgeMs = positiveNumber(this.config.sync?.mediaFileIdMaxAgeHours, 0.5) * 60 * 60 * 1000;
     const ageMs = this.nowFn() - capturedAt;
     return ageMs >= -5 * 60 * 1000 && ageMs <= maxAgeMs;
   }
@@ -357,6 +373,19 @@ function getDeclaredMediaSize(media) {
     if (Number.isFinite(parsed) && parsed > 0) return parsed;
   }
   return 0;
+}
+
+
+function normalizeMessageMap(value) {
+  if (value instanceof Map) {
+    return new Map([...value.entries()]
+      .map(([messageId, message]) => [Number(messageId), message])
+      .filter(([messageId, message]) => Number.isInteger(messageId) && message));
+  }
+  if (!value || typeof value !== 'object') return new Map();
+  return new Map(Object.entries(value)
+    .map(([messageId, message]) => [Number(messageId), message])
+    .filter(([messageId, message]) => Number.isInteger(messageId) && message));
 }
 
 function positiveNumber(value, fallback) {

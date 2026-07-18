@@ -162,7 +162,7 @@ If the same period was already scheduled or published, `/publish` reports that e
 /publish weekly_best -force
 ```
 
-For later maintenance, usually run only `npm start`. Use admin `/sync` for one refresh pass, `/sync --force` only to override the deletion safety threshold after inspection, `/backfill 90` to fill a larger historical window, `/publish weekly_best` to manually publish one selection, `/setup` to edit supported config sections, and `/restart` after saving runtime config changes.
+For later maintenance, usually run only `npm start`. Use `/logs` to send and clear pending grouped ERROR logs. Use admin `/sync` for one refresh pass, `/sync --force` only to override the deletion safety threshold after inspection, `/backfill 90` to fill a larger historical window, `/publish weekly_best` to manually publish one selection, `/setup` to edit supported config sections, and `/restart` after saving runtime config changes.
 
 ## Configuration
 
@@ -176,7 +176,7 @@ cp config.default.json config.json
 
 The complete default configuration is documented in [`config.default.json`](./config.default.json). Keep `config.json` limited to local overrides instead of copying defaults that you do not need.
 
-`logging.logLevel` can be `DEBUG`, `INFO`, `WARN`, `ERROR`, or `SILENT` and is case-insensitive. `logging.color` can be `auto`, `always`, or `never`; `auto` uses colors only for interactive terminals. Log levels are colored, scopes are highlighted, and high-signal fields such as `status`, `key`, `publicationId`, `messageId`, `reason`, and `error` get distinct colors. Sync logs include the scan window, each Telegram history request, fetched message counts, matched post counts, saved rows, skipped old posts, and deleted-post cleanup. `sync.runOnStart` controls whether the daemon runs one sync immediately after startup. `sync.intervalHours` controls the recurring sync interval. `sync.retentionDays` controls how long source post rows stay in `posts`; the default is 60 days. Retention starts after `sync.retentionInitialDelayMinutes` and then repeats every `sync.retentionIntervalHours`; it uses the same in-memory job gate as sync and publishing. Set `sync.runOnStart` to `false` to disable the initial startup sync.
+`logging.logLevel` can be `DEBUG`, `INFO`, `WARN`, `ERROR`, or `SILENT` and is case-insensitive. `logging.color` can be `auto`, `always`, or `never`; `auto` uses colors only for interactive terminals. Every `ERROR` event is also stored in SQLite and sent to the admin once per day at `logging.errorDigestTime` in `schedule.timezone`. Reports are grouped by stable error type but still list every captured event with its timestamp, scope, message, error, and diagnostic fields. `/logs` sends and clears the current pending snapshot immediately. Log levels are colored, scopes are highlighted, and high-signal fields such as `status`, `key`, `publicationId`, `messageId`, `reason`, and `error` get distinct colors. Sync logs include the scan window, each Telegram history request, fetched message counts, matched post counts, saved rows, skipped old posts, and deleted-post cleanup. `sync.runOnStart` controls whether the daemon runs one sync immediately after startup. `sync.intervalHours` controls the recurring sync interval. `sync.retentionDays` controls how long source post rows stay in `posts`; the default is 60 days. Retention starts after `sync.retentionInitialDelayMinutes` and then repeats every `sync.retentionIntervalHours`; it uses the same in-memory job gate as sync and publishing. Set `sync.runOnStart` to `false` to disable the initial startup sync.
 
 `parsing.countLocale` controls grouped and decimal reaction counters. Fallback reaction parsing uses only the explicit `parsing.fallbackReactions.likeMarkers` and `dislikeMarkers` arrays; include `+` or `-` there when those symbols should count as reactions.
 
@@ -830,6 +830,7 @@ Commands work only in a private chat with `TELEGRAM_ADMIN_ID`.
 /sync
 /backfill
 /publish
+/logs
 /setup
 /setup status
 /setup check
@@ -840,6 +841,8 @@ Commands work only in a private chat with `TELEGRAM_ADMIN_ID`.
 `/jobs` shows all active publication jobs and the last 5 terminal jobs, sorted by `updated_at`, including progress and the latest error.
 
 `/publications` shows the last 10 publication records with IDs, status, selection, progress, update time, and title. `/publication <id>` shows the posts for one publication as an aligned table with source message IDs, reactions, send status, bot message ID, and parsed author.
+
+`/logs` sends all pending `ERROR` events grouped by type, lists every captured event inside its group, and clears only the successfully delivered snapshot. New errors arriving while the report is sent remain pending. The same pending queue is sent automatically once per day at the configured local digest time.
 
 `/sync [--force]` runs one recent refresh pass. `/backfill [days]` fills missing historical posts. Both commands use the in-memory sync worker, so overlapping sync/backfill requests are skipped. Failed synchronization is retried with backoff; after retries are exhausted, publishing is paused and the admin receives recovery instructions. A later successful `/sync` clears the pause. `/publish [key...]` creates publication request rows immediately. If at least one request was created, the publication worker is asked to process the queue; the worker still runs one job at a time.
 
@@ -863,7 +866,7 @@ Publication rows use a durable `key` per selection period. Scheduled publishing 
 
 The daemon periodically deletes rows in `posts` older than `sync.retentionDays` so the database does not grow indefinitely. Retention waits 15 minutes after daemon startup by default, then runs every 24 hours, and it is serialized through the same job gate as sync and publishing. Publication history remains in `publications` and `publication_posts`; old publication post details may no longer have joined source text/author after the source post row is pruned.
 
-Media is not stored permanently. During sync, the database stores portable mtcute file IDs together with the time they were captured. Publishing uses a stored reference only while it is considered fresh; legacy rows without a capture timestamp and references older than `sync.mediaFileIdMaxAgeHours` are refreshed through the same exact history path used by synchronization before download begins. An unexpectedly early `FILE_REFERENCE_EXPIRED` response is also refreshed automatically and is treated as an informational recovery rather than a publication error. Media is streamed to a unique per-attempt directory under `sync.mediaDir`, bounded by `sync.mediaMaxBytes`, and deleted only after the underlying download and Bot API upload operations have settled. Stale attempt directories older than `sync.mediaMaxAgeHours` are removed during cleanup.
+Media is not stored permanently. During sync, the database may retain portable mtcute file IDs as metadata, but scheduled publishing does not use those stored references as download locations because Telegram file references can expire independently of their age. Immediately before each download, publishing resolves the current media location through the same exact source-history path used by synchronization. If even that newly returned reference is rejected, it is refreshed once more before the post fails. Media is streamed to a unique per-attempt directory under `sync.mediaDir`, bounded by `sync.mediaMaxBytes`, and deleted only after the underlying download and Bot API upload operations have settled. Stale attempt directories older than `sync.mediaMaxAgeHours` are removed during cleanup.
 
 Telegram can return `FLOOD_WAIT` for read-only API calls too, including history reads, reaction enrichment, and media downloads. All MTProto traffic shares one adaptive limiter: calls are paced per method, a server-requested wait pauses the whole client, and the affected method backs off before slowly returning to its configured rate. Tune `sync.throttle.historyMinMs` / `historyMaxMs`, `reactionsMinMs` / `reactionsMaxMs`, and `mediaMinMs` / `mediaMaxMs` as needed.
 

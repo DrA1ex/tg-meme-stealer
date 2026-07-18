@@ -153,6 +153,15 @@ test('migrateLegacyReliabilityDefaults upgrades the old one-second Redis timeout
       }
     }
   );
+
+  assert.deepEqual(
+    migrateLegacyReliabilityDefaults({
+      sync: { mediaFileIdMaxAgeHours: 6, pageSize: 100 }
+    }),
+    {
+      sync: { mediaFileIdMaxAgeHours: 6, pageSize: 100 }
+    }
+  );
 });
 
 test('migrateOldPublishSelections converts nested selections to publish templates', () => {
@@ -579,7 +588,9 @@ test('validateConfig rejects invalid semantic ranges, timezone, and parser local
   config.sync.intervalHours = 0;
   config.sync.pageSize = 0;
   config.sync.maxMissingRatio = 1.2;
+  config.sync.mediaFileIdMaxAgeHours = 0;
   config.schedule.timezone = 'Not/A_Timezone';
+  config.logging.errorDigestTime = '25:99';
   config.parsing.countLocale = 'invalid_locale_@@';
   config.publish.postMaxRetries = -1;
   config.publish.maxConsecutivePostFailures = 1.5;
@@ -589,7 +600,9 @@ test('validateConfig rejects invalid semantic ranges, timezone, and parser local
     assert.match(error.message, /sync\.intervalHours/);
     assert.match(error.message, /sync\.pageSize/);
     assert.match(error.message, /sync\.maxMissingRatio/);
+    assert.match(error.message, /sync\.mediaFileIdMaxAgeHours/);
     assert.match(error.message, /schedule\.timezone/);
+    assert.match(error.message, /logging\.errorDigestTime/);
     assert.match(error.message, /parsing\.countLocale/);
     assert.match(error.message, /publish\.postMaxRetries/);
     assert.match(error.message, /publish\.maxConsecutivePostFailures/);
@@ -611,6 +624,8 @@ test('validateConfig accepts explicit fallback markers and a supported number lo
   config.sync.retryMaxMs = 1000;
   config.sync.mediaMaxBytes = 1024;
   config.sync.mediaMaxAgeHours = 1;
+  config.sync.mediaFileIdMaxAgeHours = 0.5;
+  config.logging.errorDigestTime = '12:00';
   config.publish.postMaxRetries = 3;
   config.publish.maxConsecutivePostFailures = 3;
   config.publish.requestMaxRetries = 3;

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { configureLogger, createLogger, getLogger, formatLogLine } from '../src/core/logger.js';
+import { configureLogger, createLogger, getLogger, formatLogLine, subscribeToErrorLogs } from '../src/core/logger.js';
 
 test('formatLogLine renders timestamp, level, scope and fields', () => {
   const line = formatLogLine({
@@ -51,4 +51,23 @@ test('global logger picks up configuration after creation', () => {
   assert.equal(lines.length, 1);
   assert.equal(lines[0][0], 'warn');
   assert.match(lines[0][1], /\[WARN\] \[global-test\] Visible/);
+});
+
+
+test('error listeners receive ERROR logs even when terminal logging is silent', () => {
+  const events = [];
+  const unsubscribe = subscribeToErrorLogs((event) => events.push(event));
+  try {
+    configureLogger({ logging: { logLevel: 'SILENT' } }, {
+      log() {}, warn() {}, error() {}
+    });
+    getLogger('collector-test').error('Hidden from terminal', { errorCode: 'COLLECTED_ERROR' });
+  } finally {
+    unsubscribe();
+  }
+
+  assert.equal(events.length, 1);
+  assert.equal(events[0].scope, 'collector-test');
+  assert.equal(events[0].message, 'Hidden from terminal');
+  assert.equal(events[0].fields.errorCode, 'COLLECTED_ERROR');
 });

@@ -6,6 +6,7 @@ import path from 'node:path';
 import { openSqliteDatabase } from '../src/database/sqliteDatabase.js';
 import { PostRepository } from '../src/database/postRepository.js';
 import { getMigrations } from '../src/database/migrations.js';
+import { ErrorLogCollector } from '../src/runtime/errorLogCollector.js';
 import { compileReactionScore, compileSourceWhere } from '../src/core/sourceExpression.js';
 
 test('PostRepository upserts and orders top posts', async () => {
@@ -457,17 +458,20 @@ test('PostRepository applies numbered migrations and exposes the reliability sch
     const version = await repository.all('PRAGMA user_version');
     const publicationColumns = await repository.all('PRAGMA table_info(publications)');
     const postColumns = await repository.all('PRAGMA table_info(publication_posts)');
+    const errorLogColumns = await repository.all('PRAGMA table_info(pending_error_logs)');
 
     assert.deepEqual(getMigrations(), [
       { version: 1, name: '0000_initial' },
       { version: 2, name: '0001_publication_reliability' },
-      { version: 3, name: '0002_delivery_commit_state' }
+      { version: 3, name: '0002_delivery_commit_state' },
+      { version: 4, name: '0003_pending_error_logs' }
     ]);
-    assert.equal(version[0].user_version, 3);
+    assert.equal(version[0].user_version, 4);
     assert.ok(publicationColumns.some((column) => column.name === 'last_progress_at'));
     assert.ok(publicationColumns.some((column) => column.name === 'next_attempt_at'));
     assert.ok(publicationColumns.some((column) => column.name === 'header_message_id'));
     assert.ok(postColumns.some((column) => column.name === 'last_error_code'));
+    assert.ok(errorLogColumns.some((column) => column.name === 'type'));
   } finally {
     await repository.close();
     await fs.rm(dbPath, { force: true });
@@ -517,9 +521,73 @@ test('PostRepository upgrades a 0000_initial database without losing rows', asyn
     const columns = await repository.all('PRAGMA table_info(publication_posts)');
     const version = await repository.all('PRAGMA user_version');
     assert.equal(row.title, 'Legacy');
-    assert.equal(version[0].user_version, 3);
+    assert.equal(version[0].user_version, 4);
     assert.ok(columns.some((column) => column.name === 'attempt_count'));
     assert.ok(columns.some((column) => column.name === 'last_error_code'));
+  } finally {
+    await repository.close();
+    await fs.rm(dbPath, { force: true });
+  }
+});
+
+test('pending ERROR logs survive a repository restart', async () => {
+  const dbPath = path.join(os.tmpdir(), `tg-memes-${process.pid}-${Date.now()}-error-restart.sqlite`);
+  await fs.rm(dbPath, { force: true });
+  let repository = new PostRepository(dbPath);
+  await repository.init();
+  const collector = new ErrorLogCollector({ repository });
+  collector.record({
+    level: 'error',
+    scope: 'media',
+    message: 'Reference expired',
+    fields: { errorCode: 'FILE_REFERENCE_EXPIRED' },
+    now: new Date('2026-07-18T06:00:00.000Z')
+  });
+  await collector.close();
+  await repository.close();
+
+  repository = new PostRepository(dbPath);
+  await repository.init();
+  try {
+    const rows = await repository.listPendingErrorLogs();
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].type, 'FILE_REFERENCE_EXPIRED');
+  } finally {
+    await repository.close();
+    await fs.rm(dbPath, { force: true });
+  }
+});
+
+test('PostRepository stores and atomically clears pending ERROR logs through a snapshot id', async () => {
+  const dbPath = path.join(os.tmpdir(), `tg-memes-${process.pid}-${Date.now()}-error-logs.sqlite`);
+  await fs.rm(dbPath, { force: true });
+  const repository = new PostRepository(dbPath);
+  await repository.init();
+  try {
+    const firstId = await repository.addPendingErrorLog({
+      timestamp: '2026-07-18T06:00:00.000Z',
+      type: 'FILE_REFERENCE_EXPIRED',
+      scope: 'media',
+      message: 'Reference expired',
+      error: 'Telegram API error 400: FILE_REFERENCE_EXPIRED',
+      fields: { messageId: 10 }
+    });
+    const secondId = await repository.addPendingErrorLog({
+      timestamp: '2026-07-18T06:01:00.000Z',
+      type: 'REDIS_RESERVE_TIMEOUT',
+      scope: 'rateLimit.redis',
+      message: 'Reserve timed out',
+      error: 'Redis reserve timed out',
+      fields: { operation: 'reserve' }
+    });
+
+    assert.equal(await repository.countPendingErrorLogs(), 2);
+    const rows = await repository.listPendingErrorLogs();
+    assert.deepEqual(rows.map((row) => row.id), [firstId, secondId]);
+    assert.deepEqual(rows[0].fields, { messageId: 10 });
+
+    assert.equal(await repository.deletePendingErrorLogsThrough(firstId), 1);
+    assert.deepEqual((await repository.listPendingErrorLogs()).map((row) => row.id), [secondId]);
   } finally {
     await repository.close();
     await fs.rm(dbPath, { force: true });

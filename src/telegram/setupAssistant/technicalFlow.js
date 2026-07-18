@@ -286,7 +286,11 @@ export async function technicalSendPreviewMessage(ctx, messageId, page = 0) {
     post: posts[0],
     index: 0,
     templates: this.getDraft(ctx).templates,
-    rateLimiter: this.botRateLimiter
+    rateLimiter: this.botRateLimiter,
+    mediaContext: {
+      sourceMessagesById: new Map([[Number(message.id), message]]),
+      source: 'setup-message-preview'
+    }
   });
   await this.replyWithKeyboard(ctx, `Preview sent for message #${messageId}.`, technicalMessagePreviewKeyboard(safePage, messageId, true));
 }

@@ -1,5 +1,5 @@
 import { PostRepository } from '../database/postRepository.js';
-import { getLogger } from '../core/logger.js';
+import { getLogger, subscribeToErrorLogs } from '../core/logger.js';
 import { MediaDownloader } from '../telegram/media.js';
 import { BotApiRateLimiter } from '../telegram/botRateLimiter.js';
 import { createRedisRateLimitStore } from '../telegram/redisRateLimitStore.js';
@@ -11,6 +11,7 @@ import { startUserClient } from '../telegram/userClient.js';
 import { JobGate } from './jobGate.js';
 import { RetentionWorker } from './retentionWorker.js';
 import { SyncWorker } from './syncWorker.js';
+import { ErrorLogCollector } from './errorLogCollector.js';
 
 export async function createApp(config) {
   const logger = getLogger('app');
@@ -37,12 +38,16 @@ export async function createApp(config) {
   let mediaDownloader;
   let setupAssistant;
   let publisher;
+  let errorLogCollector;
+  let errorLogUnsubscribe = null;
   let redisStatusUnsubscribe = null;
 
   try {
     repository = new PostRepository(config.database.path);
     await repository.init();
     logger.info('Database initialized', { path: config.database.path });
+    errorLogCollector = new ErrorLogCollector({ repository });
+    errorLogUnsubscribe = subscribeToErrorLogs((event) => errorLogCollector.record(event));
 
     userClient = await startUserClient(config);
     logger.info('Telegram user client started', {
@@ -77,7 +82,13 @@ export async function createApp(config) {
       jobGate,
       config,
       botRateLimiter,
-      signal: shutdownController.signal
+      signal: shutdownController.signal,
+      errorLogCollector
+    });
+    errorLogCollector.setNotifier((message) => publisher.notifyAdmin(message, { bypassRateLimiter: true }));
+    errorLogCollector.startDailyDigest({
+      time: config.logging?.errorDigestTime || '12:00',
+      timezone: config.schedule?.timezone || 'UTC'
     });
     syncWorker.setAdminNotifier((message) => publisher.notifyAdmin(message));
     if (sharedRateLimitStore) {
@@ -110,6 +121,8 @@ export async function createApp(config) {
       telegramThrottle,
       sharedRateLimitStore,
       userClient,
+      errorLogCollector,
+      errorLogUnsubscribe,
       repository
     });
     if (cleanupErrors.length) {
@@ -131,6 +144,7 @@ export async function createApp(config) {
     jobGate.close();
     telegramThrottle.close();
     botRateLimiter.close();
+    errorLogCollector?.stopDailyDigest();
   }
 
   function closeResources() {
@@ -139,14 +153,33 @@ export async function createApp(config) {
       logger.debug('Closing app resources');
       redisStatusUnsubscribe?.();
       redisStatusUnsubscribe = null;
-      const results = await Promise.allSettled([
+      const failures = [];
+      const externalResults = await Promise.allSettled([
         safeDestroyUserClient(userClient),
-        sharedRateLimitStore?.close(),
-        repository.close()
+        sharedRateLimitStore?.close()
       ]);
-      const failures = results.filter((result) => result.status === 'rejected');
+      for (const result of externalResults) {
+        if (result.status !== 'rejected') continue;
+        failures.push(result.reason);
+        logger.error('App resource failed to close', {
+          error: result.reason?.message || String(result.reason)
+        });
+      }
+
+      errorLogUnsubscribe?.();
+      errorLogUnsubscribe = null;
+      try {
+        await errorLogCollector?.close();
+      } catch (error) {
+        failures.push(error);
+      }
+      try {
+        await repository.close();
+      } catch (error) {
+        failures.push(error);
+      }
       if (failures.length) {
-        throw new AggregateError(failures.map((result) => result.reason), 'One or more app resources failed to close');
+        throw new AggregateError(failures, 'One or more app resources failed to close');
       }
       logger.debug('App resources closed');
     })();
@@ -161,6 +194,7 @@ export async function createApp(config) {
     syncWorker,
     retentionWorker,
     publisher,
+    errorLogCollector,
     cancelRateLimitWaits() {
       telegramThrottle.close();
       botRateLimiter.close();
@@ -241,6 +275,8 @@ export async function cleanupInitializedResources({
   telegramThrottle,
   sharedRateLimitStore,
   userClient,
+  errorLogCollector,
+  errorLogUnsubscribe,
   repository
 } = {}) {
   const cleanupSteps = [
@@ -248,6 +284,8 @@ export async function cleanupInitializedResources({
     () => safeClose(telegramThrottle),
     () => safeClose(sharedRateLimitStore),
     () => userClient ? safeDestroyUserClient(userClient) : undefined,
+    () => errorLogUnsubscribe?.(),
+    () => safeClose(errorLogCollector),
     () => safeClose(repository)
   ];
   const errors = [];

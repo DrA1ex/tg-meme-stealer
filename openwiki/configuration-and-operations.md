@@ -38,10 +38,13 @@ Commands are accepted only from `telegram.adminId` in a private chat (`src/teleg
 | `/sync [--force]` | Recent scan; force bypasses deletion-safety threshold only after investigation |
 | `/backfill [days]` | Historical fill/refresh |
 | `/publish [--force] <selection…>` | Create/drain publication requests; force intentionally bypasses normal duplicate/gate behavior |
+| `/logs` | Send grouped pending ERROR logs and clear the successfully delivered snapshot |
 | `/setup` | Open the draft configuration assistant |
 | `/restart` | Request service-manager restart after saved configuration changes |
 
 `/sync`/`/backfill` avoid waiting behind unrelated work: a busy response is safer than an opaque queued interactive request.
+
+All runtime `ERROR` events are retained in SQLite until delivered. The bot sends a digest daily at `logging.errorDigestTime` using `schedule.timezone`; events are grouped by stable type, but every event remains visible inside its group. `/logs` performs the same delivery manually. Failed or partial sends retain the snapshot for a later attempt.
 
 ## Operational safety and recovery
 

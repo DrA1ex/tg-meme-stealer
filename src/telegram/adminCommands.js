@@ -13,7 +13,8 @@ export class AdminCommandController {
     publishAll,
     planManualPublication = null,
     runPublicationWorker,
-    restartHandler
+    restartHandler,
+    errorLogCollector = null
   }) {
     this.repository = repository;
     this.syncWorker = syncWorker;
@@ -25,6 +26,7 @@ export class AdminCommandController {
     this.planManualPublication = planManualPublication;
     this.runPublicationWorker = runPublicationWorker;
     this.restartHandler = restartHandler;
+    this.errorLogCollector = errorLogCollector;
   }
 
   register(bot, { setupAssistant = null, onHandlerStart, onHandlerEnd } = {}) {
@@ -60,7 +62,7 @@ export class AdminCommandController {
       await next();
     });
 
-    bot.start((ctx) => ctx.reply('Available commands: /stats, /jobs, /publications, /publication, /sync, /backfill, /publish, /setup, /restart'));
+    bot.start((ctx) => ctx.reply('Available commands: /stats, /jobs, /publications, /publication, /sync, /backfill, /publish, /logs, /setup, /restart'));
     bot.command('stats', async (ctx) => {
       const stats = await buildStats(this.repository, this.config);
       await ctx.reply(formatStats(stats, this.config.templates));
@@ -71,6 +73,7 @@ export class AdminCommandController {
     bot.command('sync', async (ctx) => this.runManualSync(ctx));
     bot.command('backfill', async (ctx) => this.runManualBackfill(ctx));
     bot.command('publish', async (ctx) => this.runManualPublish(ctx));
+    bot.command('logs', async (ctx) => this.replyErrorLogs(ctx));
     bot.command('restart', async (ctx) => this.runRestart(ctx));
     setupAssistant?.register(bot);
   }
@@ -189,6 +192,21 @@ export class AdminCommandController {
       ? this.runPublicationWorker('admin')
       : null;
     await ctx.reply(formatPublishResult(result, job));
+  }
+
+  async replyErrorLogs(ctx) {
+    if (!this.errorLogCollector) {
+      await ctx.reply('ERROR log collection is not available.');
+      return;
+    }
+    const result = await this.errorLogCollector.flushPending({
+      sendMessage: (message) => ctx.reply(message),
+      title: 'Pending application ERROR logs',
+      sendEmpty: true
+    });
+    if (result.cleared > 0 && result.remaining > 0) {
+      await ctx.reply(`Cleared ${result.cleared} ERROR log event(s). ${result.remaining} newer event(s) remain pending.`);
+    }
   }
 
   async runRestart(ctx) {

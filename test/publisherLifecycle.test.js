@@ -82,6 +82,30 @@ test('unexpected polling failure is reported once and releases the polling lock'
   await fs.rm(tempDir, { recursive: true, force: true });
 });
 
+
+test('/logs sends and clears the pending ERROR snapshot', async () => {
+  const replies = [];
+  const calls = [];
+  const publisher = createPublisher({
+    errorLogCollector: {
+      flushPending: async (options) => {
+        calls.push(options);
+        await options.sendMessage('FILE_REFERENCE_EXPIRED × 4');
+        return { cleared: 4, remaining: 0 };
+      }
+    }
+  });
+
+  await publisher.getAdminCommands().replyErrorLogs({
+    reply: async (message) => replies.push(message)
+  });
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].title, 'Pending application ERROR logs');
+  assert.equal(calls[0].sendEmpty, true);
+  assert.deepEqual(replies, ['FILE_REFERENCE_EXPIRED × 4']);
+});
+
 test('/restart acknowledges the command and invokes the configured restart handler', async () => {
   const replies = [];
   let restarted = 0;
@@ -105,7 +129,8 @@ function createPublisher({
   pollingLockFile,
   restartHandler,
   fatalBotErrorHandler,
-  jobGate
+  jobGate,
+  errorLogCollector = null
 } = {}) {
   return new SelectionPublisher({
     repository,
@@ -118,6 +143,7 @@ function createPublisher({
     jobGate,
     restartHandler,
     fatalBotErrorHandler,
+    errorLogCollector,
     config: {
       telegram: {
         botToken: 'token',

@@ -126,3 +126,62 @@ function plainCtx({ replies = [], edits = [] } = {}) {
     }
   };
 }
+
+test('setup preview passes freshly scanned messages to the media downloader', async () => {
+  const replies = [];
+  const edits = [];
+  const sent = [];
+  const captured = [];
+  const message = { id: 77, media: { type: 'photo', fileId: 'fresh-preview-location' } };
+  const post = {
+    chatId: -1001,
+    messageId: 77,
+    messageDate: new Date().toISOString(),
+    text: 'Preview post',
+    author: 'Alice',
+    likes: 10,
+    dislikes: 1,
+    data: { media: [{ messageId: 77, mediaKind: 'photo' }] }
+  };
+  const assistant = new SetupAssistant({
+    scanner: {
+      previewRecent: async (_limit, _draft, options) => {
+        assert.deepEqual(options, { includeMessages: true });
+        return { scanned: 1, posts: [post], messages: [message] };
+      }
+    },
+    mediaDownloader: {
+      downloadPostMedia: async (actualPost, mediaContext) => {
+        captured.push({ actualPost, mediaContext });
+        return [];
+      },
+      cleanupFiles: async () => {}
+    },
+    config: { telegram: { sourceChatId: -1001 }, parsing: {}, publish: {}, templates: {} },
+    configLoader: () => ({ telegram: { sourceChatId: -1001 }, parsing: {}, publish: {}, templates: {} })
+  });
+  assistant.sessions.set(1, { parsing: {}, publish: {}, templates: {} });
+  const ctx = {
+    from: { id: 1 },
+    chat: { id: 200 },
+    message: { text: '/preview 1 10' },
+    telegram: {
+      sendMessage: async (...args) => { sent.push(args); return { message_id: 500 }; },
+      editMessageText: async (...args) => edits.push(args),
+      deleteMessage: async () => {}
+    },
+    reply: async (...args) => {
+      replies.push(args);
+      return { message_id: 100 + replies.length, chat: { id: 200 } };
+    }
+  };
+
+  await assistant.sendPreview(ctx, { postCount: 1, messageCount: 10 });
+
+  assert.equal(captured.length, 1);
+  assert.equal(captured[0].actualPost, post);
+  assert.equal(captured[0].mediaContext.source, 'setup-preview');
+  assert.equal(captured[0].mediaContext.sourceMessagesById.get(77), message);
+  assert.equal(sent.length, 1);
+  assert.match(sent[0][1], /Preview post/);
+});

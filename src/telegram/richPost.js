@@ -4,8 +4,8 @@ import { withBotApiRetry } from './retry.js';
 
 const logger = getLogger('richPost');
 
-export async function sendRichPost({ telegram, chatId, mediaDownloader, post, index, templates, rateLimiter, operationTimeoutMs, signal, onBeforeSend, onRetryableError }) {
-  const files = await mediaDownloader.downloadPostMedia(post);
+export async function sendRichPost({ telegram, chatId, mediaDownloader, post, index, templates, rateLimiter, operationTimeoutMs, signal, onBeforeSend, onRetryableError, mediaContext = null }) {
+  const files = await mediaDownloader.downloadPostMedia(post, mediaContext || undefined);
   let pendingOperation = null;
   try {
     const caption = formatPostCaption(post, index, templates);

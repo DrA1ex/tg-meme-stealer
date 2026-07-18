@@ -54,6 +54,36 @@ test('sendRichPost sends albums atomically with the caption on the first media i
   assert.deepEqual(cleaned, ['/tmp/1.jpg', '/tmp/2.mp4']);
 });
 
+test('sendRichPost forwards transient media context to the downloader', async () => {
+  const mediaContext = {
+    source: 'setup-preview',
+    sourceMessagesById: new Map([[10, { id: 10 }]])
+  };
+  let receivedContext = null;
+  const mediaDownloader = {
+    downloadPostMedia: async (_post, context) => {
+      receivedContext = context;
+      return [];
+    },
+    cleanupFiles: async () => {}
+  };
+  const telegram = {
+    sendMessage: async () => ({ message_id: 1 })
+  };
+
+  await sendRichPost({
+    telegram,
+    chatId: 42,
+    mediaDownloader,
+    mediaContext,
+    index: 0,
+    templates: { publish: { postCaption: 'Post {{messageId}}' } },
+    post: { chatId: -1001, messageId: 10, data: { media: [] } }
+  });
+
+  assert.equal(receivedContext, mediaContext);
+});
+
 test('sendRichPost cleans media files when sending fails', async () => {
   const cleaned = [];
   const telegram = {

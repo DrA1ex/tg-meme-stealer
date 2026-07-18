@@ -22,7 +22,8 @@ export class SelectionPublisher {
     botRateLimiter = null,
     signal = null,
     restartHandler = null,
-    fatalBotErrorHandler = null
+    fatalBotErrorHandler = null,
+    errorLogCollector = null
   }) {
     this.repository = repository;
     this.mediaDownloader = mediaDownloader;
@@ -33,6 +34,7 @@ export class SelectionPublisher {
     this.botRateLimiter = botRateLimiter;
     this.signal = signal;
     this.restartHandler = restartHandler || defaultRestartHandler;
+    this.errorLogCollector = errorLogCollector;
     this.bot = new Telegraf(config.telegram.botToken);
     this.logger = getLogger('publisher');
     this.activeHandlers = 0;
@@ -62,7 +64,8 @@ export class SelectionPublisher {
       publishAll: (...args) => this.publishAll(...args),
       planManualPublication: (...args) => this.planManualPublication(...args),
       runPublicationWorker: (...args) => this.runPublicationWorker(...args),
-      restartHandler: this.restartHandler
+      restartHandler: this.restartHandler,
+      errorLogCollector: this.errorLogCollector
     });
     this.adminCommands.register(this.bot, {
       setupAssistant: this.setupAssistant,

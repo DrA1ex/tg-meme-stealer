@@ -8,6 +8,7 @@ const LEVELS = {
 
 let globalConfig = { logging: { logLevel: 'INFO' } };
 let globalSink = console;
+const errorListeners = new Set();
 
 export const logger = getLogger('app');
 
@@ -50,6 +51,12 @@ export function configureLogger(config = {}, sink = console) {
   globalSink = sink || console;
 }
 
+export function subscribeToErrorLogs(listener) {
+  if (typeof listener !== 'function') throw new TypeError('Error log listener must be a function');
+  errorListeners.add(listener);
+  return () => errorListeners.delete(listener);
+}
+
 export function getLogger(scope = 'app') {
   return createScopedLogger({
     scope,
@@ -87,6 +94,13 @@ export function formatLogLine({ level, scope, message, fields = {}, now = new Da
 }
 
 function writeLog(sink, config, level, scope, message, fields) {
+  if (level === 'error') notifyErrorListeners({
+    level,
+    scope,
+    message,
+    fields: fields || {},
+    now: new Date()
+  });
   const minLevel = getMinLevel(config);
   if (LEVELS[level] < minLevel) return;
   const line = shouldColorLogs(config, sink)
@@ -161,4 +175,14 @@ function colorizeFieldValue(key, value) {
 function colorize(value, color) {
   if (!color) return value;
   return `${color}${value}${ANSI.reset}`;
+}
+
+function notifyErrorListeners(event) {
+  for (const listener of errorListeners) {
+    try {
+      listener(event);
+    } catch {
+      // Error collection must never interfere with the original logging call.
+    }
+  }
 }

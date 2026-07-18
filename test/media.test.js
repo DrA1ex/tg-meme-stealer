@@ -5,6 +5,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { configureLogger } from '../src/core/logger.js';
 import { MediaDownloader } from '../src/telegram/media.js';
+import { subscribeToErrorLogs } from '../src/core/logger.js';
 
 configureLogger({ logging: { logLevel: 'SILENT' } });
 
@@ -169,15 +170,15 @@ test('MediaDownloader removes an empty attempt directory when referenced media c
   await fs.rm(dir, { recursive: true, force: true });
 });
 
-test('MediaDownloader uses stored portable file ids without reloading the source message', async () => {
+test('MediaDownloader uses a recently captured portable file id without a history lookup', async () => {
   const { Readable } = await import('node:stream');
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'tg-memes-media-file-id-'));
   const locations = [];
   const now = Date.parse('2026-07-18T06:00:00.000Z');
   const downloader = new MediaDownloader({
     client: {
-      getMessages: async () => assert.fail('portable media must not call getMessages'),
-      getHistory: async () => assert.fail('fresh portable media must not call getHistory'),
+      getMessages: async () => assert.fail('fresh portable media must not load the source message'),
+      getHistory: async () => assert.fail('fresh portable media must not load source history'),
       downloadAsNodeStream: (location) => {
         locations.push(location);
         return Readable.from([Buffer.from('portable')]);
@@ -189,28 +190,30 @@ test('MediaDownloader uses stored portable file ids without reloading the source
         mediaDir: dir,
         mediaMaxBytes: 100,
         mediaMaxAgeHours: 24,
-        mediaFileIdMaxAgeHours: 6,
+        mediaFileIdMaxAgeHours: 0.5,
         throttle: { enabled: false }
       }
     },
     nowFn: () => now
   });
+  const capturedAt = new Date(now - 60_000).toISOString();
+  const media = {
+    messageId: 10,
+    mediaKind: 'photo',
+    fileId: 'stored-file-id',
+    fileIdCapturedAt: capturedAt,
+    fileSize: 8
+  };
 
   const files = await downloader.downloadPostMedia({
     chatId: -1001,
     messageId: 10,
-    data: {
-      media: [{
-        messageId: 10,
-        mediaKind: 'photo',
-        fileId: 'portable-file-id',
-        fileIdCapturedAt: new Date(now - 60_000).toISOString(),
-        fileSize: 8
-      }]
-    }
+    data: { media: [media] }
   });
 
-  assert.deepEqual(locations, ['portable-file-id']);
+  assert.deepEqual(locations, ['stored-file-id']);
+  assert.equal(media.fileId, 'stored-file-id');
+  assert.equal(media.fileIdCapturedAt, capturedAt);
   assert.equal(await fs.readFile(files[0].path, 'utf8'), 'portable');
   await downloader.cleanupFiles(files);
   await fs.rm(dir, { recursive: true, force: true });
@@ -237,7 +240,6 @@ test('MediaDownloader treats legacy portable file ids without a capture timestam
         mediaDir: dir,
         mediaMaxBytes: 100,
         mediaMaxAgeHours: 24,
-        mediaFileIdMaxAgeHours: 6,
         throttle: { enabled: false }
       }
     }
@@ -295,7 +297,6 @@ test('MediaDownloader refreshes legacy or stale portable file ids before downloa
         mediaDir: dir,
         mediaMaxBytes: 100,
         mediaMaxAgeHours: 24,
-        mediaFileIdMaxAgeHours: 6,
         throttle: { enabled: false }
       }
     },
@@ -378,21 +379,28 @@ test('MediaDownloader marks an unrecoverable legacy source lookup as publication
   );
 });
 
-test('MediaDownloader refreshes an expired portable file reference through source history', async () => {
+test('MediaDownloader logs an early FILE_REFERENCE_EXPIRED as ERROR and refreshes through history', async () => {
   const { Readable } = await import('node:stream');
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'tg-memes-media-refresh-file-id-'));
   const locations = [];
+  const errors = [];
+  let historyCalls = 0;
   const now = Date.parse('2026-07-18T06:00:00.000Z');
+  const unsubscribe = subscribeToErrorLogs((event) => errors.push(event));
   const downloader = new MediaDownloader({
     client: {
-      getMessages: async () => assert.fail('expired portable media should refresh directly through history'),
+      getMessages: async () => assert.fail('media refresh must use source history'),
       getHistory: async (_peerId, params) => {
         assert.deepEqual(params, { limit: 2, offset: { id: 11, date: 0 } });
-        return [{ id: 10, media: { type: 'photo', fileSize: 9 } }];
+        historyCalls += 1;
+        return [{
+          id: 10,
+          media: { type: 'photo', fileId: 'refreshed-history-location', fileSize: 9 }
+        }];
       },
       downloadAsNodeStream: (location) => {
         locations.push(location);
-        if (location === 'expired-file-id') {
+        if (location === 'stored-file-id') {
           return Readable.from((async function* fail() {
             throw new Error('Telegram API error 400: FILE_REFERENCE_EXPIRED');
           })());
@@ -406,32 +414,40 @@ test('MediaDownloader refreshes an expired portable file reference through sourc
         mediaDir: dir,
         mediaMaxBytes: 100,
         mediaMaxAgeHours: 24,
-        mediaFileIdMaxAgeHours: 6,
+        mediaFileIdMaxAgeHours: 0.5,
         throttle: { enabled: false }
       }
     },
     nowFn: () => now
   });
-
-  const files = await downloader.downloadPostMedia({
-    chatId: -1001,
+  const media = {
     messageId: 10,
-    data: {
-      media: [{
-        messageId: 10,
-        mediaKind: 'photo',
-        fileId: 'expired-file-id',
-        fileIdCapturedAt: new Date(now - 60_000).toISOString(),
-        fileSize: 9
-      }]
-    }
-  });
+    mediaKind: 'photo',
+    fileId: 'stored-file-id',
+    fileIdCapturedAt: new Date(now - 60_000).toISOString(),
+    fileSize: 9
+  };
 
-  assert.equal(locations[0], 'expired-file-id');
-  assert.deepEqual(locations[1], { type: 'photo', fileSize: 9 });
-  assert.equal(await fs.readFile(files[0].path, 'utf8'), 'refreshed');
-  await downloader.cleanupFiles(files);
-  await fs.rm(dir, { recursive: true, force: true });
+  try {
+    const files = await downloader.downloadPostMedia({
+      chatId: -1001,
+      messageId: 10,
+      data: { media: [media] }
+    });
+
+    assert.equal(historyCalls, 1);
+    assert.equal(locations[0], 'stored-file-id');
+    assert.equal(locations[1].fileId, 'refreshed-history-location');
+    assert.equal(media.fileId, 'refreshed-history-location');
+    assert.equal(await fs.readFile(files[0].path, 'utf8'), 'refreshed');
+    assert.equal(errors.length, 1);
+    assert.equal(errors[0].level, 'error');
+    assert.equal(errors[0].fields.errorCode, 'FILE_REFERENCE_EXPIRED');
+    await downloader.cleanupFiles(files);
+  } finally {
+    unsubscribe();
+    await fs.rm(dir, { recursive: true, force: true });
+  }
 });
 
 test('MediaDownloader retains its attempt directory until a timed-out background stream settles', async () => {
@@ -441,6 +457,7 @@ test('MediaDownloader retains its attempt directory until a timed-out background
   const finished = new Promise((resolve) => { operationFinished = resolve; });
   const downloader = new MediaDownloader({
     client: {
+      getHistory: async () => [{ id: 10, media: { type: 'photo', fileId: 'current-file-id', fileSize: 9 } }],
       downloadAsNodeStream: () => Readable.from((async function* delayed() {
         await new Promise((resolve) => setTimeout(resolve, 30));
         yield Buffer.from('late-data');
@@ -477,3 +494,83 @@ async function waitUntil(predicate, timeoutMs = 1000) {
   }
   assert.fail('condition did not become true before timeout');
 }
+
+test('MediaDownloader uses transient setup messages without an extra history lookup', async () => {
+  const { Readable } = await import('node:stream');
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'tg-memes-media-setup-preview-'));
+  const location = { type: 'photo', fileId: 'setup-fresh-location', fileSize: 7 };
+  let historyCalls = 0;
+  const downloader = new MediaDownloader({
+    client: {
+      getHistory: async () => {
+        historyCalls += 1;
+        throw new Error('setup preview must not refetch a message it already has');
+      },
+      downloadAsNodeStream: (actualLocation) => {
+        assert.equal(actualLocation, location);
+        return Readable.from([Buffer.from('preview')]);
+      }
+    },
+    config: {
+      logging: { logLevel: 'silent' },
+      sync: { mediaDir: dir, mediaMaxBytes: 100, mediaMaxAgeHours: 24, throttle: { enabled: false } }
+    }
+  });
+
+  const files = await downloader.downloadPostMedia({
+    chatId: -1001,
+    messageId: 10,
+    data: { media: [{ messageId: 10, mediaKind: 'photo' }] }
+  }, {
+    source: 'setup-preview',
+    sourceMessagesById: new Map([[10, { id: 10, media: location }]])
+  });
+
+  assert.equal(historyCalls, 0);
+  assert.equal(await fs.readFile(files[0].path, 'utf8'), 'preview');
+  await downloader.cleanupFiles(files);
+  await fs.rm(dir, { recursive: true, force: true });
+});
+
+test('MediaDownloader refreshes a transient setup message only when its media reference already expired', async () => {
+  const { Readable } = await import('node:stream');
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'tg-memes-media-setup-refresh-'));
+  const staleLocation = { type: 'photo', fileId: 'setup-stale-location', fileSize: 7 };
+  const refreshedLocation = { type: 'photo', fileId: 'setup-refreshed-location', fileSize: 7 };
+  let historyCalls = 0;
+  const downloader = new MediaDownloader({
+    client: {
+      getHistory: async () => {
+        historyCalls += 1;
+        return [{ id: 10, media: refreshedLocation }];
+      },
+      downloadAsNodeStream: (location) => {
+        if (location === staleLocation) {
+          return Readable.from((async function* expired() {
+            throw new Error('Telegram API error 400: FILE_REFERENCE_EXPIRED');
+          })());
+        }
+        assert.equal(location, refreshedLocation);
+        return Readable.from([Buffer.from('preview')]);
+      }
+    },
+    config: {
+      logging: { logLevel: 'silent' },
+      sync: { mediaDir: dir, mediaMaxBytes: 100, mediaMaxAgeHours: 24, throttle: { enabled: false } }
+    }
+  });
+
+  const files = await downloader.downloadPostMedia({
+    chatId: -1001,
+    messageId: 10,
+    data: { media: [{ messageId: 10, mediaKind: 'photo' }] }
+  }, {
+    source: 'setup-preview',
+    sourceMessagesById: new Map([[10, { id: 10, media: staleLocation }]])
+  });
+
+  assert.equal(historyCalls, 1);
+  assert.equal(await fs.readFile(files[0].path, 'utf8'), 'preview');
+  await downloader.cleanupFiles(files);
+  await fs.rm(dir, { recursive: true, force: true });
+});

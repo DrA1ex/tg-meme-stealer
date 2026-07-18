@@ -80,7 +80,8 @@ const CONFIG_SCHEMA = {
   },
   logging: {
     logLevel: STRING,
-    color: STRING
+    color: STRING,
+    errorDigestTime: STRING
   },
   shutdown: {
     timeoutMs: NUMBER
@@ -209,16 +210,16 @@ export function loadConfig() {
 export function migrateLegacyReliabilityDefaults(config) {
   if (!config || typeof config !== 'object') return config;
   const redis = config.rateLimit?.redis;
-  if (
+  const needsRedisTimeoutUpgrade = Boolean(
     redis
     && Number(redis.operationTimeoutMs) === 1000
     && redis.operationFailureThreshold === undefined
-  ) {
-    const migrated = structuredClone(config);
-    migrated.rateLimit.redis.operationTimeoutMs = 5000;
-    return migrated;
-  }
-  return config;
+  );
+  if (!needsRedisTimeoutUpgrade) return config;
+
+  const migrated = structuredClone(config);
+  migrated.rateLimit.redis.operationTimeoutMs = 5000;
+  return migrated;
 }
 
 export function migrateOldPublishSelections(config) {
@@ -629,6 +630,7 @@ function validateRuntimeSemantics(config) {
   }
 
   if (config.schedule?.timezone !== undefined && !isValidTimezone(config.schedule.timezone)) issues.push('schedule.timezone: expected valid IANA timezone');
+  if (config.logging?.errorDigestTime !== undefined && !isValidTime(config.logging.errorDigestTime)) issues.push('logging.errorDigestTime: expected HH:mm');
   if (config.parsing?.countLocale !== undefined && !isValidLocale(config.parsing.countLocale)) issues.push('parsing.countLocale: expected valid locale');
   if (config.parsing?.fallbackReactions?.likeMarkers !== undefined && (!Array.isArray(config.parsing.fallbackReactions.likeMarkers) || config.parsing.fallbackReactions.likeMarkers.some((value) => !String(value)))) {
     issues.push('parsing.fallbackReactions.likeMarkers: expected non-empty strings');
