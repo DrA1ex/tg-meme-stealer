@@ -428,6 +428,7 @@ test('buildMediaReference persists portable mtcute file ids and declared size', 
   });
 
   assert.equal(reference.fileId, 'mtcute-portable-id');
+  assert.match(reference.fileIdCapturedAt, /^\d{4}-\d{2}-\d{2}T/);
   assert.equal(reference.fileSize, 12345);
   assert.equal(reference.messageId, 42);
 });

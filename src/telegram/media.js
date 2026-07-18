@@ -9,11 +9,12 @@ import { withTelegramRetry } from './retry.js';
 import { TelegramThrottle } from './throttle.js';
 
 export class MediaDownloader {
-  constructor({ client, config, throttle = new TelegramThrottle(config), signal = null }) {
+  constructor({ client, config, throttle = new TelegramThrottle(config), signal = null, nowFn = Date.now }) {
     this.client = client;
     this.config = config;
     this.throttle = throttle;
     this.signal = signal;
+    this.nowFn = nowFn;
     this.logger = getLogger('media');
     this.staleCleanupPromise = null;
   }
@@ -26,29 +27,37 @@ export class MediaDownloader {
     const files = [];
     const mediaItems = post.data?.media || [];
 
+    const portableFileIds = mediaItems.filter((item) => Boolean(item?.fileId)).length;
+    const freshPortableFileIds = mediaItems.filter((item) => this.isPortableFileIdFresh(item)).length;
     this.logger.info('Downloading post media', {
       chatId: post.chatId,
       messageId: post.messageId,
       mediaItems: mediaItems.length,
-      portableFileIds: mediaItems.filter((item) => Boolean(item?.fileId)).length,
+      portableFileIds,
+      freshPortableFileIds,
       attemptDir
     });
 
     try {
-      const missingLocationIds = [...new Set(mediaItems
-        .filter((item) => !item?.fileId)
+      // Telegram file references are deliberately short-lived. Legacy rows have no
+      // capture timestamp, and old references should be refreshed before download
+      // instead of producing one expected FILE_REFERENCE_EXPIRED error per post.
+      const refreshLocationIds = [...new Set(mediaItems
+        .filter((item) => !this.isPortableFileIdFresh(item))
         .map((item) => Number(item?.messageId || post.messageId))
         .filter(Number.isInteger))];
-      const messagesById = missingLocationIds.length
-        ? await this.loadMessages(post.chatId, missingLocationIds)
+      const messagesById = refreshLocationIds.length
+        ? await this.loadRefreshMessages(post.chatId, refreshLocationIds)
         : new Map();
 
       for (let index = 0; index < mediaItems.length; index += 1) {
         const media = mediaItems[index];
         const messageId = Number(media.messageId || post.messageId);
+        const usePortableFileId = this.isPortableFileIdFresh(media);
         const message = messagesById.get(messageId) || null;
-        let location = media.fileId || message?.media;
+        let location = usePortableFileId ? media.fileId : message?.media;
         if (!location) throw new SourceMediaNotFoundError(post.chatId, messageId);
+        if (!usePortableFileId) this.rememberPortableFileId(media, message?.media);
 
         const maxBytes = positiveNumber(this.config.sync?.mediaMaxBytes, 512 * 1024 * 1024);
         let declaredBytes = positiveNumber(media.fileSize, 0) || getDeclaredMediaSize(message?.media);
@@ -61,15 +70,17 @@ export class MediaDownloader {
         try {
           bytes = await this.downloadToPath(location, filePath, maxBytes);
         } catch (error) {
-          if (!media.fileId || !isFileReferenceError(error)) throw error;
-          this.logger.warn('Stored media file reference expired; refreshing it from source history', {
+          if (!usePortableFileId || !isFileReferenceError(error)) throw error;
+          this.logger.info('Fresh media file reference expired early; refreshing it from source history', {
             chatId: post.chatId,
             messageId,
+            capturedAt: media.fileIdCapturedAt,
             error: error?.message || String(error)
           });
           const refreshed = await this.loadMessageViaHistory(post.chatId, messageId);
           location = refreshed?.media;
           if (!location) throw new SourceMediaNotFoundError(post.chatId, messageId);
+          this.rememberPortableFileId(media, location);
           declaredBytes = getDeclaredMediaSize(location);
           if (declaredBytes > maxBytes) throw new MediaTooLargeError(declaredBytes, maxBytes);
           bytes = await this.downloadToPath(location, filePath, maxBytes);
@@ -77,7 +88,13 @@ export class MediaDownloader {
         if (bytes === 0) throw new SourceMediaNotFoundError(post.chatId, messageId, 'Telegram returned an empty media stream');
 
         files.push({ path: filePath, kind, tempDir: attemptDir, bytes });
-        this.logger.info('Media file downloaded', { chatId: post.chatId, messageId, kind, bytes, portableFileId: Boolean(media.fileId) });
+        this.logger.info('Media file downloaded', {
+          chatId: post.chatId,
+          messageId,
+          kind,
+          bytes,
+          portableFileId: usePortableFileId
+        });
       }
 
       this.logger.info('Post media download finished', {
@@ -95,6 +112,22 @@ export class MediaDownloader {
       }
       throw error;
     }
+  }
+
+  isPortableFileIdFresh(media) {
+    if (!media?.fileId) return false;
+    const capturedAt = Date.parse(media.fileIdCapturedAt || '');
+    if (!Number.isFinite(capturedAt)) return false;
+    const maxAgeMs = positiveNumber(this.config.sync?.mediaFileIdMaxAgeHours, 6) * 60 * 60 * 1000;
+    const ageMs = this.nowFn() - capturedAt;
+    return ageMs >= -5 * 60 * 1000 && ageMs <= maxAgeMs;
+  }
+
+  rememberPortableFileId(media, location) {
+    const fileId = getPortableMediaFileId(location);
+    if (!fileId || !media) return;
+    media.fileId = fileId;
+    media.fileIdCapturedAt = new Date(this.nowFn()).toISOString();
   }
 
   async downloadToPath(location, filePath, maxBytes) {
@@ -122,6 +155,14 @@ export class MediaDownloader {
       indeterminateOnTimeout: false,
       indeterminateOnAbort: false
     });
+  }
+
+  async loadRefreshMessages(chatId, messageIds) {
+    const peerId = normalizeTelegramPeerId(chatId);
+    if (typeof this.client.getHistory === 'function') {
+      return this.loadMessagesViaHistory(peerId, messageIds);
+    }
+    return this.loadMessages(peerId, messageIds);
   }
 
   async loadMessages(chatId, messageIds) {
@@ -289,6 +330,16 @@ function isFileReferenceError(error) {
   return /FILE_REFERENCE_(?:EXPIRED|INVALID|EMPTY)|FILEREF_UPGRADE_NEEDED/i.test(
     String(error?.message || error?.description || error)
   );
+}
+
+function getPortableMediaFileId(media) {
+  if (!media) return null;
+  try {
+    const value = media.fileId || media.file_id;
+    return typeof value === 'string' && value ? value : null;
+  } catch {
+    return null;
+  }
 }
 
 function getDeclaredMediaSize(media) {

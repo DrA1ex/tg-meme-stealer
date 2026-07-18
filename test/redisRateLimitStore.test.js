@@ -7,7 +7,7 @@ test('createRedisRateLimitStore stays disabled without requiring a Redis server'
   assert.equal(await createRedisRateLimitStore({ rateLimit: { redis: { enabled: false } } }), null);
 });
 
-test('createRedisRateLimitStore logs ERROR and falls back if client initialization fails', async () => {
+test('createRedisRateLimitStore logs WARN and falls back if client initialization fails', async () => {
   const logger = createTestLogger();
   const store = await createRedisRateLimitStore(
     { rateLimit: { redis: { enabled: true } } },
@@ -17,10 +17,10 @@ test('createRedisRateLimitStore logs ERROR and falls back if client initializati
     }
   );
   assert.equal(store, null);
-  assert.equal(logger.errors.length, 1);
-  assert.match(logger.errors[0][0], /could not be initialized.*local fallback/i);
-  assert.doesNotMatch(logger.errors[0][1].error, /super-secret/);
-  assert.match(logger.errors[0][1].error, /\[REDACTED\]/);
+  assert.equal(logger.warns.length, 1);
+  assert.match(logger.warns[0][0], /could not be initialized.*local fallback/i);
+  assert.doesNotMatch(logger.warns[0][1].error, /super-secret/);
+  assert.match(logger.warns[0][1].error, /\[REDACTED\]/);
 });
 
 test('RedisRateLimitStore treats malformed validation replies as indeterminate failures', async () => {
@@ -37,8 +37,8 @@ test('RedisRateLimitStore treats malformed validation replies as indeterminate f
     status: 'indeterminate',
     backend: 'redis'
   });
-  assert.equal(logger.errors.length, 1);
-  assert.match(logger.errors[0][0], /invalid validation result.*fallback/i);
+  assert.equal(logger.warns.length, 1);
+  assert.match(logger.warns[0][0], /invalid validation result.*fallback/i);
 });
 
 test('RedisRateLimitStore maps reservations and cooldowns to atomic scripts', async () => {
@@ -81,7 +81,7 @@ test('RedisRateLimitStore maps reservations and cooldowns to atomic scripts', as
   assert.match(evalCalls[1].keys[0], /mtproto:main:blocked$/);
 });
 
-test('RedisRateLimitStore logs ERROR and returns local fallback signal when Redis is unavailable', async () => {
+test('RedisRateLimitStore logs WARN and returns local fallback signal when optional Redis is unavailable', async () => {
   const logger = createTestLogger();
   const client = {
     isReady: false,
@@ -96,13 +96,13 @@ test('RedisRateLimitStore logs ERROR and returns local fallback signal when Redi
     status: 'unavailable',
     backend: 'redis'
   });
-  assert.equal(logger.errors.length, 1);
-  assert.match(logger.errors[0][0], /unavailable.*local fallback/i);
-  assert.match(logger.errors[0][1].error, /ECONNREFUSED/);
+  assert.equal(logger.warns.length, 1);
+  assert.match(logger.warns[0][0], /unavailable.*local fallback/i);
+  assert.match(logger.warns[0][1].error, /ECONNREFUSED/);
   assert.equal(logger.debugs.length, 1);
 });
 
-test('RedisRateLimitStore distinguishes an indeterminate operation timeout and opens its circuit', async () => {
+test('RedisRateLimitStore treats one optional operation timeout as transient and opens its circuit', async () => {
   const logger = createTestLogger();
   const client = {
     isReady: true,
@@ -112,9 +112,14 @@ test('RedisRateLimitStore distinguishes an indeterminate operation timeout and o
   };
   const store = new RedisRateLimitStore({
     client,
-    config: { operationTimeoutMs: 5, circuitBreakMs: 1000 },
+    config: {
+      operationTimeoutMs: 5,
+      operationFailureThreshold: 3,
+      circuitBreakMs: 1000
+    },
     logger
   });
+  await store.start();
 
   assert.deepEqual(await store.reserve({ slots: [{ key: 'x', intervalMs: 10 }] }), {
     status: 'indeterminate',
@@ -124,8 +129,41 @@ test('RedisRateLimitStore distinguishes an indeterminate operation timeout and o
     status: 'unavailable',
     backend: 'redis'
   });
-  assert.equal(logger.errors.length, 1);
-  assert.match(logger.errors[0][1].error, /timed out/);
+  assert.equal(store.health, 'ready');
+  assert.equal(logger.warns.length, 1);
+  assert.match(logger.warns[0][0], /operation timed out.*fallback/i);
+  assert.match(logger.warns[0][1].error, /timed out/);
+});
+
+test('RedisRateLimitStore enters degraded health after repeated optional operation timeouts', async () => {
+  const logger = createTestLogger();
+  const transitions = [];
+  const client = {
+    isReady: true,
+    isOpen: true,
+    on: () => {},
+    eval: async () => new Promise(() => {})
+  };
+  const store = new RedisRateLimitStore({
+    client,
+    config: {
+      operationTimeoutMs: 5,
+      operationFailureThreshold: 2,
+      circuitBreakMs: 1,
+      warningIntervalMs: 60_000
+    },
+    logger
+  });
+  await store.start();
+  store.setStatusListener(({ status }) => transitions.push(status));
+
+  assert.equal((await store.reserve({ slots: [{ key: 'x', intervalMs: 10 }] })).status, 'indeterminate');
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.equal((await store.reserve({ slots: [{ key: 'x', intervalMs: 10 }] })).status, 'indeterminate');
+
+  assert.equal(store.health, 'degraded');
+  assert.deepEqual(transitions, ['degraded']);
+  assert.equal(store.consecutiveOperationFailures, 2);
 });
 
 test('Redis operation timeout keeps an isolated process alive until fallback is selected', () => {

@@ -173,9 +173,11 @@ test('MediaDownloader uses stored portable file ids without reloading the source
   const { Readable } = await import('node:stream');
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'tg-memes-media-file-id-'));
   const locations = [];
+  const now = Date.parse('2026-07-18T06:00:00.000Z');
   const downloader = new MediaDownloader({
     client: {
       getMessages: async () => assert.fail('portable media must not call getMessages'),
+      getHistory: async () => assert.fail('fresh portable media must not call getHistory'),
       downloadAsNodeStream: (location) => {
         locations.push(location);
         return Readable.from([Buffer.from('portable')]);
@@ -183,18 +185,148 @@ test('MediaDownloader uses stored portable file ids without reloading the source
     },
     config: {
       logging: { logLevel: 'silent' },
-      sync: { mediaDir: dir, mediaMaxBytes: 100, mediaMaxAgeHours: 24, throttle: { enabled: false } }
-    }
+      sync: {
+        mediaDir: dir,
+        mediaMaxBytes: 100,
+        mediaMaxAgeHours: 24,
+        mediaFileIdMaxAgeHours: 6,
+        throttle: { enabled: false }
+      }
+    },
+    nowFn: () => now
   });
 
   const files = await downloader.downloadPostMedia({
     chatId: -1001,
     messageId: 10,
-    data: { media: [{ messageId: 10, mediaKind: 'photo', fileId: 'portable-file-id', fileSize: 8 }] }
+    data: {
+      media: [{
+        messageId: 10,
+        mediaKind: 'photo',
+        fileId: 'portable-file-id',
+        fileIdCapturedAt: new Date(now - 60_000).toISOString(),
+        fileSize: 8
+      }]
+    }
   });
 
   assert.deepEqual(locations, ['portable-file-id']);
   assert.equal(await fs.readFile(files[0].path, 'utf8'), 'portable');
+  await downloader.cleanupFiles(files);
+  await fs.rm(dir, { recursive: true, force: true });
+});
+
+test('MediaDownloader treats legacy portable file ids without a capture timestamp as stale', async () => {
+  const { Readable } = await import('node:stream');
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'tg-memes-media-legacy-file-id-'));
+  const locations = [];
+  const downloader = new MediaDownloader({
+    client: {
+      getHistory: async () => [{
+        id: 10,
+        media: { type: 'photo', fileId: 'fresh-file-id', fileSize: 6 }
+      }],
+      downloadAsNodeStream: (location) => {
+        locations.push(location);
+        return Readable.from([Buffer.from('legacy')]);
+      }
+    },
+    config: {
+      logging: { logLevel: 'silent' },
+      sync: {
+        mediaDir: dir,
+        mediaMaxBytes: 100,
+        mediaMaxAgeHours: 24,
+        mediaFileIdMaxAgeHours: 6,
+        throttle: { enabled: false }
+      }
+    }
+  });
+  const media = {
+    messageId: 10,
+    mediaKind: 'photo',
+    fileId: 'legacy-file-id',
+    fileSize: 6
+  };
+
+  const files = await downloader.downloadPostMedia({
+    chatId: -1001,
+    messageId: 10,
+    data: { media: [media] }
+  });
+
+  assert.equal(locations.length, 1);
+  assert.equal(typeof locations[0], 'object');
+  assert.equal(locations[0].fileId, 'fresh-file-id');
+  assert.equal(media.fileId, 'fresh-file-id');
+  assert.match(media.fileIdCapturedAt, /^\d{4}-\d{2}-\d{2}T/);
+  await downloader.cleanupFiles(files);
+  await fs.rm(dir, { recursive: true, force: true });
+});
+
+test('MediaDownloader refreshes legacy or stale portable file ids before download', async () => {
+  const { Readable } = await import('node:stream');
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'tg-memes-media-stale-file-id-'));
+  const now = Date.parse('2026-07-18T06:00:00.000Z');
+  const locations = [];
+  const historyCalls = [];
+  const downloader = new MediaDownloader({
+    client: {
+      getMessages: async () => assert.fail('stale portable media must use the stable history path'),
+      getHistory: async (peerId, params) => {
+        historyCalls.push({ peerId, params });
+        return [{
+          id: 10,
+          media: {
+            type: 'photo',
+            fileId: 'refreshed-file-id',
+            fileSize: 9
+          }
+        }];
+      },
+      downloadAsNodeStream: (location) => {
+        locations.push(location);
+        return Readable.from([Buffer.from('refreshed')]);
+      }
+    },
+    config: {
+      logging: { logLevel: 'silent' },
+      sync: {
+        mediaDir: dir,
+        mediaMaxBytes: 100,
+        mediaMaxAgeHours: 24,
+        mediaFileIdMaxAgeHours: 6,
+        throttle: { enabled: false }
+      }
+    },
+    nowFn: () => now
+  });
+  const media = {
+    messageId: 10,
+    mediaKind: 'photo',
+    fileId: 'stale-file-id',
+    fileIdCapturedAt: new Date(now - 7 * 60 * 60 * 1000).toISOString(),
+    fileSize: 9
+  };
+
+  const files = await downloader.downloadPostMedia({
+    chatId: -1001,
+    messageId: 10,
+    data: { media: [media] }
+  });
+
+  assert.deepEqual(historyCalls, [{
+    peerId: -1001,
+    params: { limit: 2, offset: { id: 11, date: 0 } }
+  }]);
+  assert.deepEqual(locations, [{
+    type: 'photo',
+    fileId: 'refreshed-file-id',
+    fileSize: 9
+  }]);
+  assert.equal(media.fileId, 'refreshed-file-id');
+  assert.equal(media.fileIdCapturedAt, new Date(now).toISOString());
+  assert.equal(await fs.readFile(files[0].path, 'utf8'), 'refreshed');
   await downloader.cleanupFiles(files);
   await fs.rm(dir, { recursive: true, force: true });
 });
@@ -250,6 +382,7 @@ test('MediaDownloader refreshes an expired portable file reference through sourc
   const { Readable } = await import('node:stream');
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'tg-memes-media-refresh-file-id-'));
   const locations = [];
+  const now = Date.parse('2026-07-18T06:00:00.000Z');
   const downloader = new MediaDownloader({
     client: {
       getMessages: async () => assert.fail('expired portable media should refresh directly through history'),
@@ -269,14 +402,29 @@ test('MediaDownloader refreshes an expired portable file reference through sourc
     },
     config: {
       logging: { logLevel: 'silent' },
-      sync: { mediaDir: dir, mediaMaxBytes: 100, mediaMaxAgeHours: 24, throttle: { enabled: false } }
-    }
+      sync: {
+        mediaDir: dir,
+        mediaMaxBytes: 100,
+        mediaMaxAgeHours: 24,
+        mediaFileIdMaxAgeHours: 6,
+        throttle: { enabled: false }
+      }
+    },
+    nowFn: () => now
   });
 
   const files = await downloader.downloadPostMedia({
     chatId: -1001,
     messageId: 10,
-    data: { media: [{ messageId: 10, mediaKind: 'photo', fileId: 'expired-file-id', fileSize: 9 }] }
+    data: {
+      media: [{
+        messageId: 10,
+        mediaKind: 'photo',
+        fileId: 'expired-file-id',
+        fileIdCapturedAt: new Date(now - 60_000).toISOString(),
+        fileSize: 9
+      }]
+    }
   });
 
   assert.equal(locations[0], 'expired-file-id');
@@ -310,7 +458,7 @@ test('MediaDownloader retains its attempt directory until a timed-out background
     downloader.downloadPostMedia({
       chatId: -1001,
       messageId: 10,
-      data: { media: [{ messageId: 10, mediaKind: 'photo', fileId: 'portable-file-id', fileSize: 9 }] }
+      data: { media: [{ messageId: 10, mediaKind: 'photo', fileId: 'portable-file-id', fileIdCapturedAt: new Date().toISOString(), fileSize: 9 }] }
     }),
     (error) => error.code === 'TELEGRAM_OPERATION_TIMEOUT' && error.indeterminate === false
   );

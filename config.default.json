@@ -26,7 +26,8 @@
       "keyPrefix": "tg-memes:local",
       "connectTimeoutMs": 3000,
       "reconnectIntervalMs": 5000,
-      "operationTimeoutMs": 1000,
+      "operationTimeoutMs": 5000,
+      "operationFailureThreshold": 3,
       "circuitBreakMs": 5000,
       "fallbackMultiplier": 3,
       "warningIntervalMs": 30000,
@@ -62,7 +63,8 @@
     "retryMaxMs": 60000,
     "maxMissingRatio": 0.3,
     "mediaMaxBytes": 536870912,
-    "mediaMaxAgeHours": 24
+    "mediaMaxAgeHours": 24,
+    "mediaFileIdMaxAgeHours": 6
   },
   "parsing": {
     "filters": [

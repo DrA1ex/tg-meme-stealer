@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { applyEnv, deepMerge, migrateOldPublishSelections, validateConfig } from '../src/config/index.js';
+import { applyEnv, deepMerge, migrateLegacyReliabilityDefaults, migrateOldPublishSelections, validateConfig } from '../src/config/index.js';
 
 test('deepMerge preserves object defaults and replaces user-defined publish templates', () => {
   const result = deepMerge(
@@ -123,6 +123,36 @@ test('deepMerge still merges publish sources by key', () => {
       ]
     }
   });
+});
+
+test('migrateLegacyReliabilityDefaults upgrades the old one-second Redis timeout only for legacy configs', () => {
+  assert.deepEqual(
+    migrateLegacyReliabilityDefaults({
+      rateLimit: { redis: { operationTimeoutMs: 1000 } }
+    }),
+    {
+      rateLimit: { redis: { operationTimeoutMs: 5000 } }
+    }
+  );
+
+  assert.deepEqual(
+    migrateLegacyReliabilityDefaults({
+      rateLimit: {
+        redis: {
+          operationTimeoutMs: 1000,
+          operationFailureThreshold: 2
+        }
+      }
+    }),
+    {
+      rateLimit: {
+        redis: {
+          operationTimeoutMs: 1000,
+          operationFailureThreshold: 2
+        }
+      }
+    }
+  );
 });
 
 test('migrateOldPublishSelections converts nested selections to publish templates', () => {

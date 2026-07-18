@@ -141,7 +141,8 @@ export async function createRedisRateLimitStore(config = {}, options = {}) {
       disableOfflineQueue: true
     });
   } catch (error) {
-    logger.error(required
+    const log = required ? logger.error.bind(logger) : logger.warn.bind(logger);
+    log(required
       ? 'Required shared Redis rate limiter could not be initialized; startup aborted'
       : 'Shared Redis rate limiter could not be initialized; using local fallback', {
       backend: 'redis',
@@ -166,7 +167,8 @@ export class RedisRateLimitStore {
     this.config = config;
     this.logger = logger;
     this.prefix = sanitizeKeyPart(config.keyPrefix || 'tg-memes:rate-limit');
-    this.operationTimeoutMs = toPositiveInteger(config.operationTimeoutMs, 1000);
+    this.operationTimeoutMs = toPositiveInteger(config.operationTimeoutMs, 5000);
+    this.operationFailureThreshold = toPositiveInteger(config.operationFailureThreshold, 3);
     this.circuitBreakMs = toPositiveInteger(config.circuitBreakMs, 5000);
     this.connectTimeoutMs = toPositiveInteger(config.connectTimeoutMs, 3000);
     this.reconnectIntervalMs = toPositiveInteger(config.reconnectIntervalMs, 5000);
@@ -180,6 +182,7 @@ export class RedisRateLimitStore {
     this.readyLogged = false;
     this.closed = false;
     this.circuitOpenUntil = 0;
+    this.consecutiveOperationFailures = 0;
     this.instanceId = getInstanceId();
     this.required = config.required === true;
     this.health = 'initializing';
@@ -401,6 +404,7 @@ export class RedisRateLimitStore {
         ? this.client.withAbortSignal(controller.signal)
         : this.client;
       const result = await raceWithAbort(Promise.resolve(callback(client)), controller.signal);
+      this.consecutiveOperationFailures = 0;
       if (this.wasUnavailable) {
         this.wasUnavailable = false;
         this.setHealth('ready', { recovered: true });
@@ -419,7 +423,26 @@ export class RedisRateLimitStore {
       return { status: 'ok', value: result };
     } catch (error) {
       this.openCircuit();
-      this.noteUnavailable('Shared Redis rate-limit operation failed; using local fallback', error, { operation });
+      this.consecutiveOperationFailures += 1;
+      const shouldDegrade = this.required
+        || !timedOut
+        || this.consecutiveOperationFailures >= this.operationFailureThreshold;
+      this.noteUnavailable(
+        timedOut
+          ? 'Shared Redis rate-limit operation timed out; using local fallback'
+          : 'Shared Redis rate-limit operation failed; using local fallback',
+        error,
+        {
+          operation,
+          latencyMs: Date.now() - startedAt,
+          timeoutMs: this.operationTimeoutMs,
+          consecutiveOperationFailures: this.consecutiveOperationFailures,
+          operationFailureThreshold: this.operationFailureThreshold,
+          clientReady: Boolean(this.client.isReady),
+          clientOpen: Boolean(this.client.isOpen)
+        },
+        { setHealth: shouldDegrade }
+      );
       return { status: timedOut ? 'indeterminate' : 'unavailable' };
     } finally {
       clearTimeout(timeout);
@@ -479,8 +502,7 @@ export class RedisRateLimitStore {
     }
   }
 
-  noteUnavailable(message, error, fields = {}) {
-    this.wasUnavailable = true;
+  noteUnavailable(message, error, fields = {}, { setHealth = true } = {}) {
     const effectiveMessage = this.required
       ? message
           .replace(/; using (?:conservative )?local fallback/i, '; shared Telegram operations are paused')
@@ -494,16 +516,21 @@ export class RedisRateLimitStore {
       ...fields,
       error: sanitizeError(error)
     };
-    this.setHealth('degraded', metadata);
+    if (setHealth) {
+      this.wasUnavailable = true;
+      this.setHealth('degraded', metadata);
+    }
     if (now - this.lastWarningAt >= this.warningIntervalMs) {
       this.lastWarningAt = now;
-      this.logger.error(effectiveMessage, metadata);
+      const log = this.required ? this.logger.error.bind(this.logger) : this.logger.warn.bind(this.logger);
+      log(effectiveMessage, metadata);
     } else {
       this.logger.debug(effectiveMessage, metadata);
     }
   }
 
   logReady(message) {
+    this.consecutiveOperationFailures = 0;
     this.setHealth('ready');
     if (this.readyLogged) return;
     this.readyLogged = true;

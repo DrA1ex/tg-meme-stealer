@@ -40,7 +40,7 @@ If shutdown/network ambiguity leaves a header or post as `sending`, recovery mar
 
 ## Delivery and media
 
-`richPost.js` sends a selection header, then text or reloaded source media. `media.js` downloads transient files under `sync.mediaDir`; albums send first item with caption and remaining items separately. Cleanup runs after attempts. Bot API limiter/retry policy wrap sends, so delivery changes must retain lease checks and indeterminate-outcome handling.
+`richPost.js` sends a selection header, then text or source media. `media.js` records when portable mtcute file IDs were captured, uses only fresh references directly, and proactively refreshes legacy or stale references through exact source history before download. Unexpected early `FILE_REFERENCE_EXPIRED` responses are refreshed once and do not count as publication failures. Downloads use transient files under `sync.mediaDir`; albums send first item with caption and remaining items separately. Cleanup runs after attempts. Bot API limiter/retry policy wrap sends, so delivery changes must retain lease checks and indeterminate-outcome handling.
 
 
 Test this domain through `db.test.js`, `selection.test.js`, `sourceExpression.test.js`, `scanner.test.js`, `publicationReliability.test.js`, `publisherLifecycle.test.js`, and media tests. See [configuration-and-operations.md](configuration-and-operations.md) for operator recovery.

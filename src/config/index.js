@@ -99,6 +99,7 @@ const CONFIG_SCHEMA = {
       connectTimeoutMs: NUMBER,
       reconnectIntervalMs: NUMBER,
       operationTimeoutMs: NUMBER,
+      operationFailureThreshold: NUMBER,
       circuitBreakMs: NUMBER,
       fallbackMultiplier: NUMBER,
       warningIntervalMs: NUMBER,
@@ -125,6 +126,7 @@ const CONFIG_SCHEMA = {
     maxMissingRatio: NUMBER,
     mediaMaxBytes: NUMBER,
     mediaMaxAgeHours: NUMBER,
+    mediaFileIdMaxAgeHours: NUMBER,
     throttle: {
       enabled: BOOLEAN,
       historyMinMs: NUMBER,
@@ -195,10 +197,27 @@ export function loadConfig() {
   const userConfigPath = path.resolve('config.json');
   const defaultConfig = JSON.parse(fs.readFileSync(defaultPath, 'utf8'));
   const userConfig = fs.existsSync(userConfigPath)
-    ? migrateOldPublishSelections(JSON.parse(fs.readFileSync(userConfigPath, 'utf8')))
+    ? migrateLegacyReliabilityDefaults(
+        migrateOldPublishSelections(JSON.parse(fs.readFileSync(userConfigPath, 'utf8')))
+      )
     : {};
   const config = applyEnv(deepMerge(defaultConfig, userConfig), process.env);
   validateConfig(config, { pauseOnDuplicatePublishTemplates: true });
+  return config;
+}
+
+export function migrateLegacyReliabilityDefaults(config) {
+  if (!config || typeof config !== 'object') return config;
+  const redis = config.rateLimit?.redis;
+  if (
+    redis
+    && Number(redis.operationTimeoutMs) === 1000
+    && redis.operationFailureThreshold === undefined
+  ) {
+    const migrated = structuredClone(config);
+    migrated.rateLimit.redis.operationTimeoutMs = 5000;
+    return migrated;
+  }
   return config;
 }
 
@@ -399,7 +418,8 @@ function validateSharedRateLimitConfig(config) {
   }
   if (!(Number(redis.connectTimeoutMs ?? 3000) > 0)
     || !(Number(redis.reconnectIntervalMs ?? 5000) > 0)
-    || !(Number(redis.operationTimeoutMs ?? 1000) > 0)
+    || !(Number(redis.operationTimeoutMs ?? 5000) > 0)
+    || !(Number(redis.operationFailureThreshold ?? 3) > 0)
     || !(Number(redis.circuitBreakMs ?? 5000) > 0)) {
     throw new Error('rateLimit.redis timeout and reconnect settings must be positive');
   }
@@ -571,6 +591,7 @@ function validateRuntimeSemantics(config) {
     ['sync.retryMaxMs', config.sync?.retryMaxMs],
     ['sync.mediaMaxBytes', config.sync?.mediaMaxBytes],
     ['sync.mediaMaxAgeHours', config.sync?.mediaMaxAgeHours],
+    ['sync.mediaFileIdMaxAgeHours', config.sync?.mediaFileIdMaxAgeHours],
     ['publish.requestTtlHours', config.publish?.requestTtlHours],
     ['publish.workerLeaseMs', config.publish?.workerLeaseMs],
     ['publish.workerIntervalMinutes', config.publish?.workerIntervalMinutes],
