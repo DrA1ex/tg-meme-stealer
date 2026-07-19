@@ -438,3 +438,177 @@ test('TelegramScanner fails synchronization when required native reaction enrich
     (error) => error.code === 'NATIVE_REACTIONS_UNAVAILABLE' && error.telegramFailureScope === 'source'
   );
 });
+
+test('TelegramScanner compares history reaction summaries while keeping getMessageReactions authoritative', async () => {
+  const message = {
+    id: 101,
+    reactions: {
+      results: [
+        { reaction: '👍', count: 4 },
+        { reaction: '👎', count: 1 }
+      ]
+    }
+  };
+  const history = [message];
+  history.next = null;
+  const reactionVerification = { compared: 0, matched: 0, mismatched: 0, examples: [] };
+  const scanner = new TelegramScanner({
+    client: {
+      getHistory: async () => history,
+      getMessageReactions: async () => [{
+        reactions: [
+          { reaction: '👍', count: 6 },
+          { reaction: '👎', count: 1 }
+        ]
+      }]
+    },
+    repository: {},
+    config: scannerConfig({
+      likes: [{ path: 'nativeReactions[]', transform: 'reactionCount', emojis: ['👍'] }],
+      dislikes: [{ path: 'nativeReactions[]', transform: 'reactionCount', emojis: ['👎'] }]
+    })
+  });
+
+  await scanner.getHistory({ limit: 100 }, scanner.config.parsing, { reactionVerification });
+
+  assert.deepEqual(message.nativeReactions, [
+    { reaction: '👍', count: 6 },
+    { reaction: '👎', count: 1 }
+  ]);
+  assert.deepEqual(reactionVerification, {
+    compared: 1,
+    matched: 0,
+    mismatched: 1,
+    examples: [{
+      messageId: 101,
+      history: { '👍': 4, '👎': 1 },
+      full: { '👍': 6, '👎': 1 }
+    }]
+  });
+});
+
+test('TelegramScanner records matching history and full reaction summaries', async () => {
+  const message = { id: 102, reactions: { results: [{ reaction: '🔥', count: 7 }] } };
+  const history = [message];
+  history.next = null;
+  const reactionVerification = { compared: 0, matched: 0, mismatched: 0, examples: [] };
+  const scanner = new TelegramScanner({
+    client: {
+      getHistory: async () => history,
+      getMessageReactions: async () => [{ reactions: [{ reaction: '🔥', count: 7 }] }]
+    },
+    repository: {},
+    config: scannerConfig({
+      likes: [{ path: 'nativeReactions[]', transform: 'reactionCount', emojis: ['🔥'] }],
+      dislikes: []
+    })
+  });
+
+  await scanner.getHistory({ limit: 100 }, scanner.config.parsing, { reactionVerification });
+
+  assert.deepEqual(reactionVerification, { compared: 1, matched: 1, mismatched: 0, examples: [] });
+});
+
+test('TelegramScanner treats an empty getMessageReactions result as authoritative', async () => {
+  const message = { id: 103, reactions: { results: [{ reaction: '👍', count: 2 }] } };
+  const history = [message];
+  history.next = null;
+  const scanner = new TelegramScanner({
+    client: {
+      getHistory: async () => history,
+      getMessageReactions: async () => [{}]
+    },
+    repository: {},
+    config: scannerConfig({
+      likes: [{ path: 'nativeReactions[]', transform: 'reactionCount', emojis: ['👍'] }],
+      dislikes: []
+    })
+  });
+
+  await scanner.getHistory({ limit: 100 });
+
+  assert.deepEqual(message.nativeReactions, []);
+  assert.deepEqual(message.reactionCounts, []);
+});
+
+test('TelegramScanner does not request full reactions for messages outside the sync window', async () => {
+  const recent = telegramMessage(201, '2026-07-10T00:00:00.000Z');
+  recent.reactions = { results: [{ reaction: '👍', count: 1 }] };
+  const old = telegramMessage(200, '2026-06-01T00:00:00.000Z');
+  old.reactions = { results: [{ reaction: '👍', count: 9 }] };
+  const history = [recent, old];
+  history.next = 'older';
+  const requestedIds = [];
+  const saved = [];
+  const scanner = new TelegramScanner({
+    client: {
+      getHistory: async () => history,
+      getMessageReactions: async (messages) => {
+        requestedIds.push(messages.map((message) => message.id));
+        return messages.map((message) => ({ reactions: message.reactions.results }));
+      }
+    },
+    repository: { upsertPosts: async (posts) => saved.push(...posts) },
+    config: {
+      telegram: { sourceChatId: -1001 },
+      parsing: {
+        likes: [{ path: 'nativeReactions[]', transform: 'reactionCount', emojis: ['👍'] }],
+        dislikes: []
+      },
+      sync: { pageSize: 100, maxPagesPerRun: 10, throttle: { enabled: false } }
+    }
+  });
+
+  const result = await scanner.scanSince(new Date('2026-07-01T00:00:00.000Z'));
+
+  assert.deepEqual(requestedIds, [[201]]);
+  assert.deepEqual(saved.map((post) => post.messageId), [201]);
+  assert.equal(result.reactionVerification.compared, 1);
+});
+
+test('TelegramScanner writes one parsed page through repository.upsertPosts', async () => {
+  const batches = [];
+  const scanner = new TelegramScanner({
+    client: {},
+    repository: {
+      upsertPosts: async (posts) => batches.push(posts.map((post) => post.messageId)),
+      upsertPost: async () => { throw new Error('single-row upsert should not be used'); }
+    },
+    config: scanConfig()
+  });
+  const page = historyPage([
+    telegramMessage(301, '2026-07-10T00:00:00.000Z'),
+    telegramMessage(300, '2026-07-09T00:00:00.000Z')
+  ], null);
+  scanner.getHistory = async () => page;
+
+  await scanner.scanSince(new Date('2026-07-01T00:00:00.000Z'));
+
+  assert.deepEqual(batches, [[301, 300]]);
+});
+
+test('TelegramScanner reconciliation uses repository.deletePosts when available', async () => {
+  const calls = [];
+  const scanner = new TelegramScanner({
+    client: {},
+    repository: {
+      listPostIdsSince: async () => [{ messageId: 1 }, { messageId: 2 }, { messageId: 3 }],
+      deletePosts: async (chatId, ids) => {
+        calls.push({ chatId, ids });
+        return ids.length;
+      },
+      deletePost: async () => { throw new Error('single-row delete should not be used'); }
+    },
+    config: scanConfig()
+  });
+
+  const result = await scanner.reconcileDeletedRecentPosts({
+    sinceDate: new Date('2026-07-01T00:00:00.000Z'),
+    seenIds: new Set([1]),
+    authoritativeComplete: true,
+    force: true
+  });
+
+  assert.equal(result.deleted, 2);
+  assert.deepEqual(calls, [{ chatId: -1001, ids: [2, 3] }]);
+});

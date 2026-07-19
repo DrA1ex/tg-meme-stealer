@@ -129,6 +129,13 @@ export function formatPaddedTable(rows) {
     .join('\n');
 }
 
+export function selectPreviewPosts(posts, limit = 1) {
+  return posts
+    .slice()
+    .sort((a, b) => b.likes - b.dislikes - (a.likes - a.dislikes) || b.likes - a.likes)
+    .slice(0, limit);
+}
+
 export function selectWeekPreviewPost(posts, now = new Date()) {
   return selectWeekPreviewPosts(posts, 1, now)[0] || null;
 }
@@ -142,7 +149,7 @@ export function selectWeekPreviewPosts(posts, limit = 1, now = new Date()) {
 }
 
 export function formatPreviewPost(post, templates = {}) {
-  if (!post) return 'No matching posts found for the last week.';
+  if (!post) return 'No matching posts found in the scanned sample.';
   return [
     formatPostCaption(post, 0, templates),
     '',

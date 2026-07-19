@@ -70,3 +70,9 @@ TEST_REDIS_URL=redis://127.0.0.1:6379 npm run test:redis
 2. Run `npm test` if touching shared config, runtime composition, database, parser, scanner, scheduler, publisher, or common retry/rate-limit behavior.
 3. Inspect `git diff` and `git status`; documentation/init work must not alter source code, secrets, or user-authored `openwiki/INSTRUCTIONS.md`.
 4. For workflow edits, verify the CI workflow name and workflow-run branch/conclusion conditions rather than relying on static YAML formatting alone.
+
+## Reaction verification coverage
+
+The scanner tests keep `getMessageReactions` authoritative while comparing it with summaries embedded in history. They cover matching summaries, mismatches, empty authoritative results, exclusion of messages outside the refresh window, and page-level database batching.
+
+See [Sync and reaction verification](sync-and-reactions.md) for the runtime contract.

@@ -1,4 +1,9 @@
-import { debugParseMessage, parseMessagesToPosts } from '../core/postParser.js';
+import {
+  debugParseMessage,
+  getReactionCount,
+  getReactionEmoji,
+  parseMessagesToPosts
+} from '../core/postParser.js';
 import { subtractDays } from '../core/date.js';
 import { getLogger } from '../core/logger.js';
 import { normalizeTelegramPeerId } from './peer.js';
@@ -59,7 +64,8 @@ export class TelegramScanner {
       deleted,
       stopReason: scan.stopReason,
       reconciliationBlocked: reconciliation.blocked,
-      missingRatio: reconciliation.missingRatio
+      missingRatio: reconciliation.missingRatio,
+      reactionVerification: scan.reactionVerification
     });
 
     return {
@@ -79,7 +85,8 @@ export class TelegramScanner {
       expectedRecent: reconciliation.checked,
       missingRecent: reconciliation.missing,
       missingRatio: reconciliation.missingRatio,
-      forcedReconciliation: reconciliation.forced
+      forcedReconciliation: reconciliation.forced,
+      reactionVerification: scan.reactionVerification
     };
   }
 
@@ -124,7 +131,8 @@ export class TelegramScanner {
       deleted,
       stopReason: scan.stopReason,
       reconciliationBlocked: reconciliation.blocked,
-      missingRatio: reconciliation.missingRatio
+      missingRatio: reconciliation.missingRatio,
+      reactionVerification: scan.reactionVerification
     });
 
     return {
@@ -147,7 +155,8 @@ export class TelegramScanner {
       expectedRecent: reconciliation.checked,
       missingRecent: reconciliation.missing,
       missingRatio: reconciliation.missingRatio,
-      forcedReconciliation: reconciliation.forced
+      forcedReconciliation: reconciliation.forced,
+      reactionVerification: scan.reactionVerification
     };
   }
 
@@ -161,7 +170,14 @@ export class TelegramScanner {
     while (true) {
       state.pages += 1;
       assertPaginationProgress({ pages: state.pages, maxPages, offset, seenCursors, operation: 'sync' });
-      const history = await this.getHistory({ limit: this.config.sync.pageSize, offset });
+      const history = await this.getHistory(
+        { limit: this.config.sync.pageSize, offset },
+        this.config.parsing,
+        {
+          reactionCandidateFilter: (message) => getMessageDate(message) >= sinceDate,
+          reactionVerification: state.reactionVerification
+        }
+      );
       const messages = [...history];
       state.fetched += messages.length;
 
@@ -214,20 +230,20 @@ export class TelegramScanner {
       parsing: this.config.parsing
     });
     state.matched += posts.length;
-    let saved = 0;
+    const toSave = [];
     let skippedOld = 0;
     for (const post of posts) {
       if (new Date(post.messageDate) >= sinceDate) {
-        await this.repository.upsertPost(post);
+        toSave.push(post);
         state.seenIds.add(post.messageId);
-        state.saved += 1;
-        saved += 1;
       } else {
         state.skippedOld += 1;
         skippedOld += 1;
       }
     }
-    return { matched: posts.length, saved, skippedOld };
+    await persistPosts(this.repository, toSave);
+    state.saved += toSave.length;
+    return { matched: posts.length, saved: toSave.length, skippedOld };
   }
 
   async scanBackfill({ sinceDate, updateSinceDate, existingIds }) {
@@ -240,7 +256,19 @@ export class TelegramScanner {
     while (true) {
       state.pages += 1;
       assertPaginationProgress({ pages: state.pages, maxPages, offset, seenCursors, operation: 'backfill' });
-      const history = await this.getHistory({ limit: this.config.sync.pageSize, offset });
+      const history = await this.getHistory(
+        { limit: this.config.sync.pageSize, offset },
+        this.config.parsing,
+        {
+          reactionCandidateFilter: (message) => {
+            const messageDate = getMessageDate(message);
+            if (messageDate < sinceDate) return false;
+            if (messageDate >= updateSinceDate) return true;
+            return !existingIds.has(Number(message?.id));
+          },
+          reactionVerification: state.reactionVerification
+        }
+      );
       const messages = [...history];
       state.fetched += messages.length;
 
@@ -295,6 +323,7 @@ export class TelegramScanner {
     });
     state.matched += posts.length;
     const page = { matched: posts.length, added: 0, updated: 0, skippedExistingOld: 0, skippedOld: 0 };
+    const toSave = [];
     for (const post of posts) {
       const action = getBackfillPostAction({ post, sinceDate, updateSinceDate, existingIds });
       if (action === 'skip-old') {
@@ -308,7 +337,7 @@ export class TelegramScanner {
         page.skippedExistingOld += 1;
         continue;
       }
-      await this.repository.upsertPost(post);
+      toSave.push(post);
       existingIds.add(post.messageId);
       if (action === 'add') {
         state.added += 1;
@@ -318,6 +347,7 @@ export class TelegramScanner {
         page.updated += 1;
       }
     }
+    await persistPosts(this.repository, toSave);
     return page;
   }
 
@@ -482,11 +512,7 @@ export class TelegramScanner {
       return { deleted: 0, checked: ids.length, missing: missingRows.length, missingRatio, blocked: true, reason: 'missing_ratio_exceeded', forced: false };
     }
 
-    let deleted = 0;
-    for (const row of missingRows) {
-      await this.repository.deletePost(this.config.telegram.sourceChatId, row.messageId);
-      deleted += 1;
-    }
+    const deleted = await deletePosts(this.repository, this.config.telegram.sourceChatId, missingRows.map((row) => row.messageId));
     this.logger.info('Deleted-post reconciliation finished', {
       checked: ids.length,
       missing: missingRows.length,
@@ -520,7 +546,7 @@ export class TelegramScanner {
     return pruned;
   }
 
-  async enrichMessagesWithNativeReactions(messages = [], parsing = this.config.parsing) {
+  async enrichMessagesWithNativeReactions(messages = [], parsing = this.config.parsing, options = {}) {
     if (!this.client || typeof this.client.getMessageReactions !== 'function') return messages;
     if (!needsNativeReactionEnrichment(parsing)) {
       this.logger.debug('Native reaction enrichment skipped', {
@@ -529,8 +555,22 @@ export class TelegramScanner {
       });
       return messages;
     }
-    const candidates = messages.filter((message) => message && hasReactionSummaryMarker(message) && !hasEnrichedNativeReactions(message));
+    const candidateFilter = typeof options.reactionCandidateFilter === 'function'
+      ? options.reactionCandidateFilter
+      : () => true;
+    const candidates = messages.filter((message) => (
+      message &&
+      candidateFilter(message) &&
+      hasReactionSummaryMarker(message) &&
+      !hasEnrichedNativeReactions(message)
+    ));
     if (!candidates.length) return messages;
+
+    const historyRowsByMessage = new Map();
+    for (const message of candidates) {
+      const rows = extractHistoryReactionRows(message);
+      historyRowsByMessage.set(message, rows);
+    }
 
     try {
       this.logger.debug('Requesting native reactions batch', {
@@ -544,10 +584,24 @@ export class TelegramScanner {
       for (let index = 0; index < candidates.length; index += 1) {
         const summary = reactionSummaries?.[index] || null;
         const reactions = extractMtcuteReactionRows(summary);
-        if (!reactions.length) continue;
         candidates[index].messageReactions = summary;
         candidates[index].nativeReactions = reactions;
         candidates[index].reactionCounts = reactions;
+      }
+
+      const verification = verifyReactionSummaries(candidates, historyRowsByMessage);
+      mergeReactionVerification(options.reactionVerification, verification);
+      if (verification.mismatched > 0) {
+        this.logger.warn('History reaction summary differs from getMessageReactions', {
+          compared: verification.compared,
+          matched: verification.matched,
+          mismatched: verification.mismatched,
+          examples: verification.examples
+        });
+      } else if (verification.compared > 0) {
+        this.logger.debug('History reaction summary matches getMessageReactions', {
+          compared: verification.compared
+        });
       }
 
       this.logger.debug('Native reactions enriched', {
@@ -567,7 +621,7 @@ export class TelegramScanner {
     return messages;
   }
 
-  async getHistory(params, parsing = this.config.parsing) {
+  async getHistory(params, parsing = this.config.parsing, options = {}) {
     const peerId = normalizeTelegramPeerId(this.config.telegram.sourceChatId);
     this.logger.info('Requesting history', {
       chatId: peerId,
@@ -578,7 +632,7 @@ export class TelegramScanner {
       () => this.client.getHistory(peerId, params),
       { label: 'getHistory', rateLimiter: this.throttle, kind: 'history', signal: this.signal, indeterminateOnTimeout: false, indeterminateOnAbort: false }
     );
-    await this.enrichMessagesWithNativeReactions([...history], parsing);
+    await this.enrichMessagesWithNativeReactions([...history], parsing, options);
     this.logger.debug('History request completed', { hasNext: Boolean(history.next) });
     return history;
   }
@@ -593,7 +647,8 @@ function createScanState() {
     saved: 0,
     skippedOld: 0,
     stopReason: 'unknown',
-    authoritativeComplete: false
+    authoritativeComplete: false,
+    reactionVerification: createReactionVerification()
   };
 }
 
@@ -670,6 +725,90 @@ function extractMtcuteReactionRows(summary) {
   if (Array.isArray(summary.raw?.results)) return summary.raw.results;
   if (Array.isArray(summary.raw?.reactions)) return summary.raw.reactions;
   return [];
+}
+
+function extractHistoryReactionRows(message) {
+  return extractMtcuteReactionRows(
+    message?.reactions ||
+    message?.raw?.reactions ||
+    message?.messageReactions ||
+    null
+  );
+}
+
+function verifyReactionSummaries(candidates, historyRowsByMessage) {
+  const result = createReactionVerification();
+  for (const message of candidates) {
+    const historyRows = historyRowsByMessage.get(message) || [];
+    const fullRows = Array.isArray(message?.nativeReactions) ? message.nativeReactions : [];
+    const historyMap = normalizeReactionRows(historyRows);
+    const fullMap = normalizeReactionRows(fullRows);
+    result.compared += 1;
+    if (mapsEqual(historyMap, fullMap)) {
+      result.matched += 1;
+      continue;
+    }
+    result.mismatched += 1;
+    if (result.examples.length < 5) {
+      result.examples.push({
+        messageId: Number(message?.id || 0),
+        history: Object.fromEntries(historyMap),
+        full: Object.fromEntries(fullMap)
+      });
+    }
+  }
+  return result;
+}
+
+function normalizeReactionRows(rows = []) {
+  const result = new Map();
+  for (const row of rows || []) {
+    const emoji = getReactionEmoji(row);
+    if (!emoji) continue;
+    result.set(emoji, (result.get(emoji) || 0) + getReactionCount(row));
+  }
+  return new Map([...result.entries()].sort(([left], [right]) => left.localeCompare(right)));
+}
+
+function mapsEqual(left, right) {
+  if (left.size !== right.size) return false;
+  for (const [key, value] of left) {
+    if (right.get(key) !== value) return false;
+  }
+  return true;
+}
+
+function createReactionVerification() {
+  return { compared: 0, matched: 0, mismatched: 0, examples: [] };
+}
+
+function mergeReactionVerification(target, source) {
+  if (!target || !source) return;
+  target.compared += source.compared;
+  target.matched += source.matched;
+  target.mismatched += source.mismatched;
+  for (const example of source.examples) {
+    if (target.examples.length >= 5) break;
+    target.examples.push(example);
+  }
+}
+
+async function persistPosts(repository, posts) {
+  if (!posts.length) return 0;
+  if (typeof repository.upsertPosts === 'function') return repository.upsertPosts(posts);
+  for (const post of posts) await repository.upsertPost(post);
+  return posts.length;
+}
+
+async function deletePosts(repository, chatId, messageIds) {
+  if (!messageIds.length) return 0;
+  if (typeof repository.deletePosts === 'function') return repository.deletePosts(chatId, messageIds);
+  let deleted = 0;
+  for (const messageId of messageIds) {
+    await repository.deletePost(chatId, messageId);
+    deleted += 1;
+  }
+  return deleted;
 }
 
 function getMessageDate(message) {

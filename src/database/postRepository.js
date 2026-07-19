@@ -4,6 +4,21 @@ import { openSqliteDatabase } from './sqliteDatabase.js';
 import { getLogger } from '../core/logger.js';
 import { runMigrations } from './migrations.js';
 
+const UPSERT_POST_SQL = `
+  INSERT INTO posts (
+    chat_id, message_id, author, text, likes, dislikes, data, message_date, collected_at, updated_at
+  )
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  ON CONFLICT(chat_id, message_id) DO UPDATE SET
+    author = excluded.author,
+    text = excluded.text,
+    likes = excluded.likes,
+    dislikes = excluded.dislikes,
+    data = excluded.data,
+    message_date = excluded.message_date,
+    updated_at = excluded.updated_at
+`;
+
 export class PostRepository {
   constructor(dbPath) {
     this.dbPath = path.resolve(dbPath);
@@ -22,39 +37,41 @@ export class PostRepository {
   }
 
   async upsertPost(post) {
+    await this.upsertPosts([post]);
+  }
+
+  async upsertPosts(posts = []) {
+    if (!Array.isArray(posts) || posts.length === 0) return 0;
     const now = new Date().toISOString();
-    await this.run(
-      `
-        INSERT INTO posts (
-          chat_id, message_id, author, text, likes, dislikes, data, message_date, collected_at, updated_at
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(chat_id, message_id) DO UPDATE SET
-          author = excluded.author,
-          text = excluded.text,
-          likes = excluded.likes,
-          dislikes = excluded.dislikes,
-          data = excluded.data,
-          message_date = excluded.message_date,
-          updated_at = excluded.updated_at
-      `,
-      [
-        String(post.chatId),
-        post.messageId,
-        post.author || '',
-        post.text || '',
-        post.likes || 0,
-        post.dislikes || 0,
-        JSON.stringify(post.data || {}),
-        post.messageDate,
-        now,
-        now
-      ]
-    );
+    this.db.transaction((db) => {
+      for (const post of posts) {
+        db.run(UPSERT_POST_SQL, serializePostForWrite(post, now));
+      }
+    });
+    return posts.length;
   }
 
   async deletePost(chatId, messageId) {
     await this.run('DELETE FROM posts WHERE chat_id = ? AND message_id = ?', [String(chatId), messageId]);
+  }
+
+  async deletePosts(chatId, messageIds = []) {
+    const ids = [...new Set((messageIds || []).map(Number).filter(Number.isSafeInteger))];
+    if (!ids.length) return 0;
+
+    let deleted = 0;
+    this.db.transaction((db) => {
+      for (let index = 0; index < ids.length; index += 500) {
+        const chunk = ids.slice(index, index + 500);
+        const placeholders = chunk.map(() => '?').join(', ');
+        const result = db.run(
+          `DELETE FROM posts WHERE chat_id = ? AND message_id IN (${placeholders})`,
+          [String(chatId), ...chunk]
+        );
+        deleted += Number(result.changes || 0);
+      }
+    });
+    return deleted;
   }
 
   async deletePostsOlderThan(chatId, beforeIso) {
@@ -841,6 +858,21 @@ export class PostRepository {
 
 function isUniqueConstraintError(error) {
   return error?.code === 'SQLITE_CONSTRAINT' || /SQLITE_CONSTRAINT|UNIQUE constraint/i.test(String(error?.message || error));
+}
+
+function serializePostForWrite(post, now) {
+  return [
+    String(post.chatId),
+    post.messageId,
+    post.author || '',
+    post.text || '',
+    post.likes || 0,
+    post.dislikes || 0,
+    JSON.stringify(post.data || {}),
+    post.messageDate,
+    now,
+    now
+  ];
 }
 
 async function withSqliteBusyRetry(operation, maxAttempts = 10) {

@@ -1,7 +1,6 @@
 import {
   createSetupDraft,
   formatDraftConfig,
-  saveDraftConfig,
   upsertPublishSource,
   validateSetupDraft,
   formatLastChange,
@@ -46,11 +45,34 @@ export async function checkAndSave(ctx) {
 }
 
 export async function done(ctx) {
+  const userId = ctx.from.id;
+  const activeSave = this.setupSaves.get(userId);
+  if (activeSave) return activeSave;
+
+  const operation = this.saveSetupSession(ctx);
+  this.setupSaves.set(userId, operation);
+  try {
+    return await operation;
+  } finally {
+    if (this.setupSaves.get(userId) === operation) this.setupSaves.delete(userId);
+  }
+}
+
+export async function saveSetupSession(ctx) {
   const draft = this.getDraft(ctx);
-  validateSetupDraft(draft, this.config);
-  const result = await saveDraftConfig(draft);
-  this.reloadConfig();
+  if (!draft) return;
+
+  // Disable stale Save buttons before asynchronous validation or filesystem work.
   await this.clearLastSetupKeyboard(ctx);
+  validateSetupDraft(draft, this.config);
+  const finalDraft = structuredClone(draft);
+  const result = await this.saveDraft(finalDraft);
+
+  // The durable side effect has completed. Close the setup session before any
+  // Telegram confirmation calls so a delivery failure cannot make Save
+  // repeatable from a stale button.
+  this.clearSetupSessionState(ctx.from.id);
+  this.reloadConfig();
   await ctx.reply([
     `Config saved: ${result.configPath}`,
     result.backupPath ? `Backup: ${result.backupPath}` : 'Backup: not needed (new config file)',
@@ -60,34 +82,35 @@ export async function done(ctx) {
     '',
     'Final config snippet:'
   ].join('\n'));
-  await replyJsonCode(ctx, JSON.parse(formatDraftConfig(draft)));
-  this.sessions.delete(ctx.from.id);
-  this.setupSuggestions.delete(ctx.from.id);
-  this.setupMeta.delete(ctx.from.id);
-  this.setupLastChange.delete(ctx.from.id);
-  this.setupTrafficPresets.delete(ctx.from.id);
-  this.setupSampleCache.delete(ctx.from.id);
-  this.setupCurrentView.delete(ctx.from.id);
-  this.setupScheduleWizards.delete(ctx.from.id);
-  this.setupTextPrompts.delete(ctx.from.id);
+  await replyJsonCode(ctx, JSON.parse(formatDraftConfig(finalDraft)));
 }
 
 export async function cancel(ctx) {
-  this.sessions.delete(ctx.from.id);
-  this.setupSuggestions.delete(ctx.from.id);
-  this.setupMeta.delete(ctx.from.id);
-  this.setupLastChange.delete(ctx.from.id);
-  this.setupTrafficPresets.delete(ctx.from.id);
-  this.setupSampleCache.delete(ctx.from.id);
-  this.setupCurrentView.delete(ctx.from.id);
-  this.setupScheduleWizards.delete(ctx.from.id);
-  this.setupTextPrompts.delete(ctx.from.id);
+  if (this.setupSaves.has(ctx.from.id)) {
+    await ctx.reply('Setup config is being saved and cannot be cancelled now.');
+    return;
+  }
+
+  this.clearSetupSessionState(ctx.from.id);
   await this.clearLastSetupKeyboard(ctx);
   await ctx.reply('Setup mode cancelled.');
 }
 
+
+export function clearSetupSessionState(userId) {
+  this.sessions.delete(userId);
+  this.setupSuggestions.delete(userId);
+  this.setupMeta.delete(userId);
+  this.setupLastChange.delete(userId);
+  this.setupTrafficPresets.delete(userId);
+  this.setupSampleCache.delete(userId);
+  this.setupCurrentView.delete(userId);
+  this.setupScheduleWizards.delete(userId);
+  this.setupTextPrompts.delete(userId);
+}
+
 export async function handleSetupText(ctx) {
-  if (!ctx?.from?.id || !this.sessions.has(ctx.from.id)) return;
+  if (!ctx?.from?.id || !this.sessions.has(ctx.from.id) || this.setupSaves.has(ctx.from.id)) return;
   const text = ctx.message?.text || '';
   if (text.startsWith('/')) return;
   const prompt = this.setupTextPrompts.get(ctx.from.id);
@@ -113,6 +136,11 @@ export async function handleSetupText(ctx) {
 }
 
 export async function withSession(ctx, handler) {
+  if (this.setupSaves.has(ctx.from.id)) {
+    await ctx.reply('Setup config is being saved. Wait for the result before continuing.');
+    return;
+  }
+
   if (!this.sessions.has(ctx.from.id)) {
     await ctx.reply('Setup mode is not active. Run /setup first.');
     return;
@@ -241,7 +269,9 @@ export const sessionMethods = {
   status,
   checkAndSave,
   done,
+  saveSetupSession,
   cancel,
+  clearSetupSessionState,
   handleSetupText,
   withSession,
   replyWithKeyboard,

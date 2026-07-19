@@ -5,6 +5,7 @@ export {
   formatPreviewPost,
   parseJsonArgument,
   saveDraftConfig,
+  selectPreviewPosts,
   selectWeekPreviewPosts,
   setPublishSources,
   setPublishTemplate,

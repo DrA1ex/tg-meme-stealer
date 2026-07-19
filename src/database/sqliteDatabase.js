@@ -3,7 +3,7 @@ import Database from 'better-sqlite3';
 export function openSqliteDatabase(filename) {
   const database = new Database(filename, { timeout: 5000 });
 
-  return {
+  const api = {
     run(sql, params = []) {
       const statement = database.prepare(sql);
       if (statement.reader) {
@@ -30,10 +30,23 @@ export function openSqliteDatabase(filename) {
       database.exec(sql);
     },
 
+    transaction(operation) {
+      if (typeof operation !== 'function') throw new TypeError('SQLite transaction operation must be a function');
+      return database.transaction(() => {
+        const result = operation(api);
+        if (result && typeof result.then === 'function') {
+          throw new TypeError('SQLite transaction operation must be synchronous');
+        }
+        return result;
+      })();
+    },
+
     close() {
       database.close();
     }
   };
+
+  return api;
 }
 
 function invoke(statement, method, params) {

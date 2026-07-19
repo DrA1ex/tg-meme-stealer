@@ -101,6 +101,11 @@ const PREFIX_HANDLERS = [
 export async function setupCommand(ctx) {
   const rawAction = getArgument(ctx.message.text).toLowerCase();
   const action = COMMAND_ALIASES.get(rawAction) || rawAction;
+
+  if (this.setupSaves.has(ctx.from.id)) {
+    await ctx.reply('Setup config is being saved. Wait for the result before continuing.');
+    return;
+  }
   if (!action) {
     await this.start(ctx);
     return;
@@ -132,9 +137,31 @@ export async function setupCommand(ctx) {
 
 export async function setupAction(ctx) {
   const action = ctx.match?.[1] || '';
-  await ctx.answerCbQuery().catch(() => {});
+  const userId = ctx.from.id;
 
   try {
+    if (this.setupSaves.has(userId)) {
+      await ctx.answerCbQuery('Setup config is already being saved.').catch(() => {});
+      return;
+    }
+
+    if (action === 'save' && !this.sessions.has(userId)) {
+      await ctx.answerCbQuery('Setup is already saved or no longer active.').catch(() => {});
+      return;
+    }
+
+    if (action === 'save') {
+      // Start the single-flight operation before acknowledging the callback, so
+      // another queued click already observes setupSaves and cannot join as a
+      // second error-reporting caller.
+      const savePromise = this.done(ctx);
+      await ctx.answerCbQuery('Saving config…').catch(() => {});
+      await savePromise;
+      return;
+    }
+
+    await ctx.answerCbQuery().catch(() => {});
+
     if (action === 'start' || action === 'restart') {
       await this.start(ctx);
       return;

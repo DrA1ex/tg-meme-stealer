@@ -44,3 +44,9 @@ If shutdown/network ambiguity leaves a header or post as `sending`, recovery mar
 
 
 Test this domain through `db.test.js`, `selection.test.js`, `sourceExpression.test.js`, `scanner.test.js`, `publicationReliability.test.js`, `publisherLifecycle.test.js`, and media tests. See [configuration-and-operations.md](configuration-and-operations.md) for operator recovery.
+
+## Reaction refresh
+
+Recent posts are intentionally refreshed on every sync because their reaction counts affect ranking. The scanner still uses `getMessageReactions` as the authoritative source and compares it with the summary already present in `getHistory` before any future request reduction is considered.
+
+See [Sync and reaction verification](sync-and-reactions.md) for request flow and failure behavior.

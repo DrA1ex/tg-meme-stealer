@@ -25,7 +25,9 @@ On Save or `/done`, setup logic:
 1. validates the draft when merged with current configuration;
 2. writes through a temporary file + synchronization + rename;
 3. keeps `config.json.old` and timestamped backup behavior where applicable;
-4. clears the in-memory session.
+4. closes the in-memory session immediately after the durable write succeeds.
+
+Save is single-flight per admin. The active inline keyboard is disabled before filesystem work, repeated Save clicks are ignored, and stale callbacks cannot recreate a session or repeat a completed write. If validation or persistence fails, the draft remains active and the setup keyboard is restored.
 
 Cancel drops the draft. Because this state is memory-only, bot/process restart discards unsaved work. The save mechanism protects configuration-file integrity, not live reload.
 
@@ -33,7 +35,7 @@ Cancel drops the draft. Because this state is memory-only, bot/process restart d
 
 ### Content rules
 
-Parser screens edit `parsing.filters`, `author`, `likes`, and `dislikes`. Diagnostics use real/cached source messages to offer suggestions, test rules, preview parsed posts, show compact/raw shape, inspect fields/reactions, and render parse traces. This is the right workflow for a new source chat because parsing assumptions differ by channel markup and reaction conventions.
+Parser screens edit `parsing.filters`, `author`, `likes`, and `dislikes`. Diagnostics use real/cached source messages to offer suggestions, test rules, preview parsed posts, show compact/raw shape, inspect fields/reactions, and render parse traces. Content Preview selects examples from the scanned matched sample; it does not impose the publication schedule's one-week window. This is the right workflow for a new source chat because parsing assumptions differ by channel markup and reaction conventions.
 
 ### Publishing rules
 

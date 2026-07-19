@@ -1,4 +1,4 @@
-import { loadConfig } from './setupAssistant/deps.js';
+import { loadConfig, saveDraftConfig } from './setupAssistant/deps.js';
 import { routingMethods } from './setupAssistant/routing.js';
 import { sessionMethods } from './setupAssistant/session.js';
 import { technicalFlowMethods } from './setupAssistant/technicalFlow.js';
@@ -8,12 +8,13 @@ import { sampleFlowMethods } from './setupAssistant/sampleFlow.js';
 import { commandFlowMethods } from './setupAssistant/commandFlow.js';
 
 export class SetupAssistant {
-  constructor({ scanner, mediaDownloader, config, configLoader = loadConfig, botRateLimiter = null }) {
+  constructor({ scanner, mediaDownloader, config, configLoader = loadConfig, saveDraft = saveDraftConfig, botRateLimiter = null }) {
     this.scanner = scanner;
     this.mediaDownloader = mediaDownloader;
     this.runtimeConfig = config;
     this.config = structuredClone(config);
     this.configLoader = configLoader;
+    this.saveDraft = saveDraft;
     this.botRateLimiter = botRateLimiter;
     this.sessions = new Map();
     this.setupMessages = new Map();
@@ -25,6 +26,7 @@ export class SetupAssistant {
     this.setupCurrentView = new Map();
     this.setupScheduleWizards = new Map();
     this.setupTextPrompts = new Map();
+    this.setupSaves = new Map();
   }
 
   register(bot) {

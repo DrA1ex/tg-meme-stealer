@@ -39,3 +39,9 @@ Explaining recent history: `5ba007f` introduced bounded graceful shutdown, `89a9
 
 
 See [data-and-publishing.md](data-and-publishing.md) for the durable state model and [testing.md](testing.md) for change checks.
+
+## Sync write path
+
+The scanner reads source history sequentially, verifies native reaction summaries with `getMessageReactions`, assembles cross-page albums, and writes each parsed page in one SQLite transaction. Deleted-post reconciliation also uses bounded batch deletes.
+
+See [Sync and reaction verification](sync-and-reactions.md).

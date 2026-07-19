@@ -282,6 +282,7 @@ function formatManualJobResult(label, result) {
 }
 
 function formatSyncResult(result) {
+  const verification = result.reactionVerification || {};
   return compactLines([
     'Sync finished',
     result.isInitial === true ? 'mode: initial' : result.isInitial === false ? 'mode: refresh' : null,
@@ -293,11 +294,13 @@ function formatSyncResult(result) {
     formatStatLine('skipped old', result.skippedOld),
     formatStatLine('deleted', result.deleted),
     formatStatLine('seen', result.seen),
-    formatStatLine('stop reason', result.stopReason)
+    formatStatLine('stop reason', result.stopReason),
+    formatReactionVerification(verification)
   ]);
 }
 
 function formatBackfillResult(result) {
+  const verification = result.reactionVerification || {};
   const matchedButNotStored = sumNumbers(result.skippedOld, result.skippedExistingOld);
   return compactLines([
     'Backfill finished',
@@ -316,8 +319,15 @@ function formatBackfillResult(result) {
       : null,
     formatStatLine('deleted', result.deleted),
     formatStatLine('seen', result.seen),
-    formatStatLine('stop reason', result.stopReason)
+    formatStatLine('stop reason', result.stopReason),
+    formatReactionVerification(verification)
   ]);
+}
+
+function formatReactionVerification(verification) {
+  const compared = Number(verification?.compared || 0);
+  if (compared <= 0) return null;
+  return `reaction summary check: ${Number(verification.matched || 0)} matched, ${Number(verification.mismatched || 0)} mismatched, ${compared} compared`;
 }
 
 function compactLines(lines) {

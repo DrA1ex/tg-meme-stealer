@@ -13,6 +13,6 @@ tmp/
 *.sqlite-wal
 
 config.json
-config.json.old
+config.json.*.bak
 
 ecosystem.config.json

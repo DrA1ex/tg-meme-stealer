@@ -127,7 +127,7 @@ function plainCtx({ replies = [], edits = [] } = {}) {
   };
 }
 
-test('setup preview passes freshly scanned messages to the media downloader', async () => {
+test('setup preview uses matched sample posts even when they are older than one week', async () => {
   const replies = [];
   const edits = [];
   const sent = [];
@@ -136,7 +136,7 @@ test('setup preview passes freshly scanned messages to the media downloader', as
   const post = {
     chatId: -1001,
     messageId: 77,
-    messageDate: new Date().toISOString(),
+    messageDate: '2020-01-01T00:00:00.000Z',
     text: 'Preview post',
     author: 'Alice',
     likes: 10,
@@ -184,4 +184,169 @@ test('setup preview passes freshly scanned messages to the media downloader', as
   assert.equal(captured[0].mediaContext.sourceMessagesById.get(77), message);
   assert.equal(sent.length, 1);
   assert.match(sent[0][1], /Preview post/);
+});
+
+
+test('setup save ignores repeated clicks and stale callbacks', async () => {
+  const replies = [];
+  const callbackAnswers = [];
+  const saveGate = deferred();
+  let saveCalls = 0;
+  const baseConfig = {
+    telegram: {
+      apiId: 123,
+      apiHash: 'hash',
+      sessionFile: 'sessions/user.session',
+      sourceChatId: -1001,
+      adminId: 99,
+      publishChannelId: -1002,
+      botToken: 'token'
+    },
+    database: { path: 'data/posts.sqlite' },
+    parsing: { filters: [], author: [], likes: [], dislikes: [] },
+    publish: {
+      dryRun: true,
+      sources: [{ key: 'best', where: 'true' }],
+      template: [{
+        source: 'best',
+        key: 'daily_best',
+        enabled: true,
+        schedule: { type: 'daily', time: '10:00' },
+        windowHours: 24,
+        posts: { min: 1, target: 5, max: 5 },
+        reactions: { strategy: 'likes', min: 0, includeAbove: 999999 },
+        template: 'Daily {{count}}'
+      }]
+    },
+    templates: {
+      publish: { postCaption: '{{text}}', unknownAuthor: 'unknown', maxTextLength: 700 },
+      stats: { summary: 'Stats', topPost: 'Top' }
+    }
+  };
+  const assistant = new SetupAssistant({
+    scanner: {},
+    mediaDownloader: {},
+    config: baseConfig,
+    configLoader: () => baseConfig,
+    saveDraft: async () => {
+      saveCalls += 1;
+      await saveGate.promise;
+      return { configPath: '/tmp/config.json', backupPath: null };
+    }
+  });
+  assistant.sessions.set(1, structuredClone({ parsing: baseConfig.parsing, publish: baseConfig.publish, templates: baseConfig.templates }));
+  assistant.setupMessages.set(1, { chatId: 200, messageId: 300 });
+
+  const makeCtx = () => ({
+    from: { id: 1 },
+    chat: { id: 200 },
+    callbackQuery: { message: { message_id: 300, chat: { id: 200 } } },
+    match: ['setup:save', 'save'],
+    answerCbQuery: async (text) => callbackAnswers.push(text || ''),
+    telegram: { editMessageReplyMarkup: async () => {} },
+    reply: async (...args) => {
+      replies.push(args);
+      return { message_id: replies.length, chat: { id: 200 } };
+    }
+  });
+
+  const first = assistant.setupAction(makeCtx());
+  await waitUntil(() => saveCalls === 1);
+  const second = assistant.setupAction(makeCtx());
+
+  assert.equal(saveCalls, 1);
+  assert.ok(assistant.setupSaves.has(1));
+
+  saveGate.resolve();
+  await Promise.all([first, second]);
+
+  assert.equal(saveCalls, 1);
+  assert.equal(assistant.sessions.has(1), false);
+  assert.equal(assistant.setupSaves.has(1), false);
+  assert.ok(callbackAnswers.includes('Setup config is already being saved.'));
+
+  await assistant.setupAction(makeCtx());
+
+  assert.equal(saveCalls, 1);
+  assert.ok(callbackAnswers.includes('Setup is already saved or no longer active.'));
+});
+
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+async function waitUntil(predicate, timeoutMs = 1000) {
+  const startedAt = Date.now();
+  while (!predicate()) {
+    if (Date.now() - startedAt > timeoutMs) throw new Error('Timed out waiting for condition');
+    await new Promise((resolve) => setTimeout(resolve, 1));
+  }
+}
+
+test('setup save failure unlocks the draft and keeps the session editable', async () => {
+  const replies = [];
+  const baseConfig = {
+    telegram: {
+      apiId: 123,
+      apiHash: 'hash',
+      sessionFile: 'sessions/user.session',
+      sourceChatId: -1001,
+      adminId: 99,
+      publishChannelId: -1002,
+      botToken: 'token'
+    },
+    database: { path: 'data/posts.sqlite' },
+    parsing: { filters: [], author: [], likes: [], dislikes: [] },
+    publish: {
+      dryRun: true,
+      sources: [{ key: 'best', where: 'true' }],
+      template: [{
+        source: 'best',
+        key: 'daily_best',
+        enabled: true,
+        schedule: { type: 'daily', time: '10:00' },
+        windowHours: 24,
+        posts: { min: 1, target: 5, max: 5 },
+        reactions: { strategy: 'likes', min: 0, includeAbove: 999999 },
+        template: 'Daily {{count}}'
+      }]
+    },
+    templates: {
+      publish: { postCaption: '{{text}}', unknownAuthor: 'unknown', maxTextLength: 700 },
+      stats: { summary: 'Stats', topPost: 'Top' }
+    }
+  };
+  const assistant = new SetupAssistant({
+    scanner: {},
+    mediaDownloader: {},
+    config: baseConfig,
+    configLoader: () => baseConfig,
+    saveDraft: async () => { throw new Error('disk full'); }
+  });
+  assistant.sessions.set(1, structuredClone({ parsing: baseConfig.parsing, publish: baseConfig.publish, templates: baseConfig.templates }));
+  assistant.setupMessages.set(1, { chatId: 200, messageId: 300 });
+
+  await assistant.setupAction({
+    from: { id: 1 },
+    chat: { id: 200 },
+    callbackQuery: { message: { message_id: 300, chat: { id: 200 } } },
+    match: ['setup:save', 'save'],
+    answerCbQuery: async () => {},
+    telegram: { editMessageReplyMarkup: async () => {} },
+    reply: async (...args) => {
+      replies.push(args);
+      return { message_id: replies.length, chat: { id: 200 } };
+    }
+  });
+
+  assert.equal(assistant.sessions.has(1), true);
+  assert.equal(assistant.setupSaves.has(1), false);
+  assert.match(replies.at(-1)[0], /Setup error: disk full/);
+  assert.match(JSON.stringify(replies.at(-1)[1].reply_markup.inline_keyboard), /setup:save/);
 });

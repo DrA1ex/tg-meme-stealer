@@ -825,3 +825,45 @@ test('PostRepository keeps header delivery checkpoint for restart recovery', asy
     await fs.rm(dbPath, { force: true });
   }
 });
+
+test('PostRepository batches post upserts and deletes without changing results', async () => {
+  const dbPath = path.join(os.tmpdir(), `tg-memes-${process.pid}-${Date.now()}-batch-posts.sqlite`);
+  await fs.rm(dbPath, { force: true });
+  const repository = new PostRepository(dbPath);
+  await repository.init();
+  try {
+    const written = await repository.upsertPosts([
+      post({ messageId: 501, likes: 1, dislikes: 0 }),
+      post({ messageId: 502, likes: 2, dislikes: 0 }),
+      post({ messageId: 503, likes: 3, dislikes: 0 })
+    ]);
+    assert.equal(written, 3);
+
+    await repository.upsertPosts([
+      post({ messageId: 502, likes: 20, dislikes: 1 }),
+      post({ messageId: 504, likes: 4, dislikes: 0 })
+    ]);
+
+    const rows = await repository.all(
+      'SELECT message_id AS messageId, likes FROM posts WHERE chat_id = ? ORDER BY message_id',
+      ['-1001']
+    );
+    assert.deepEqual(rows, [
+      { messageId: 501, likes: 1 },
+      { messageId: 502, likes: 20 },
+      { messageId: 503, likes: 3 },
+      { messageId: 504, likes: 4 }
+    ]);
+
+    const deleted = await repository.deletePosts(-1001, [501, 503, 503, Number.NaN]);
+    assert.equal(deleted, 2);
+    const remaining = await repository.all(
+      'SELECT message_id AS messageId FROM posts WHERE chat_id = ? ORDER BY message_id',
+      ['-1001']
+    );
+    assert.deepEqual(remaining, [{ messageId: 502 }, { messageId: 504 }]);
+  } finally {
+    await repository.close();
+    await fs.rm(dbPath, { force: true });
+  }
+});

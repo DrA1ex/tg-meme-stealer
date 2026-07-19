@@ -28,3 +28,9 @@ Use this page to enter the implementation by concern rather than by file name.
 - Add configuration only with default, schema validation, setup persistence/formatting if user-editable, and targeted tests.
 
 See [architecture.md](architecture.md) for boundary rationale and [testing.md](testing.md) for the test matrix.
+
+## Sync and reaction refresh
+
+- `src/telegram/scanner.js` — history pagination, reaction enrichment and verification, parsing, reconciliation, preview scans, and backfill scanning.
+- `src/database/postRepository.js` — transactional `upsertPosts()` and bounded `deletePosts()` used by sync.
+- `openwiki/sync-and-reactions.md` — request flow, verification counters, and failure behavior.

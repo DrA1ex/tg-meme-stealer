@@ -2,7 +2,7 @@ import {
   addParsingRule,
   formatPreviewPost,
   parseJsonArgument,
-  selectWeekPreviewPosts,
+  selectPreviewPosts,
   setPublishSources,
   setPublishTemplate,
   upsertPublishSource,
@@ -137,7 +137,7 @@ export async function preview(ctx) {
 
 export async function sendPreview(ctx, { postCount, messageCount }) {
   const result = await this.scanner.previewRecent(messageCount, this.getDraft(ctx), { includeMessages: true });
-  const posts = selectWeekPreviewPosts(result.posts, postCount);
+  const posts = selectPreviewPosts(result.posts, postCount);
   const sourceMessagesById = new Map((result.messages || []).map((message) => [Number(message?.id), message]));
   const draft = this.getDraft(ctx);
   this.markPreviewed(ctx);
