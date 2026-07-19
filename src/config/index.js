@@ -127,7 +127,6 @@ const CONFIG_SCHEMA = {
     maxMissingRatio: NUMBER,
     mediaMaxBytes: NUMBER,
     mediaMaxAgeHours: NUMBER,
-    mediaFileIdMaxAgeHours: NUMBER,
     throttle: {
       enabled: BOOLEAN,
       historyMinMs: NUMBER,
@@ -198,13 +197,23 @@ export function loadConfig() {
   const userConfigPath = path.resolve('config.json');
   const defaultConfig = JSON.parse(fs.readFileSync(defaultPath, 'utf8'));
   const userConfig = fs.existsSync(userConfigPath)
-    ? migrateLegacyReliabilityDefaults(
-        migrateOldPublishSelections(JSON.parse(fs.readFileSync(userConfigPath, 'utf8')))
+    ? migrateRemovedMediaFileIdConfig(
+        migrateLegacyReliabilityDefaults(
+          migrateOldPublishSelections(JSON.parse(fs.readFileSync(userConfigPath, 'utf8')))
+        )
       )
     : {};
   const config = applyEnv(deepMerge(defaultConfig, userConfig), process.env);
   validateConfig(config, { pauseOnDuplicatePublishTemplates: true });
   return config;
+}
+
+
+export function migrateRemovedMediaFileIdConfig(config) {
+  if (!config || typeof config !== 'object' || config.sync?.mediaFileIdMaxAgeHours === undefined) return config;
+  const migrated = structuredClone(config);
+  delete migrated.sync.mediaFileIdMaxAgeHours;
+  return migrated;
 }
 
 export function migrateLegacyReliabilityDefaults(config) {
@@ -592,7 +601,6 @@ function validateRuntimeSemantics(config) {
     ['sync.retryMaxMs', config.sync?.retryMaxMs],
     ['sync.mediaMaxBytes', config.sync?.mediaMaxBytes],
     ['sync.mediaMaxAgeHours', config.sync?.mediaMaxAgeHours],
-    ['sync.mediaFileIdMaxAgeHours', config.sync?.mediaFileIdMaxAgeHours],
     ['publish.requestTtlHours', config.publish?.requestTtlHours],
     ['publish.workerLeaseMs', config.publish?.workerLeaseMs],
     ['publish.workerIntervalMinutes', config.publish?.workerIntervalMinutes],

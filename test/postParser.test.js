@@ -421,14 +421,20 @@ test('grouped post parsing takes caption, markup, and sender from their respecti
 });
 
 
-test('buildMediaReference persists portable mtcute file ids and declared size', () => {
+test('buildMediaReference stores only durable source metadata and declared size', () => {
   const reference = buildMediaReference({
     id: 42,
-    media: { type: 'photo', fileId: 'mtcute-portable-id', fileSize: 12345 }
+    media: { type: 'photo', fileSize: 12345, fileId: 'transient-reference', file_id: 'legacy-reference' }
   });
 
-  assert.equal(reference.fileId, 'mtcute-portable-id');
-  assert.match(reference.fileIdCapturedAt, /^\d{4}-\d{2}-\d{2}T/);
-  assert.equal(reference.fileSize, 12345);
-  assert.equal(reference.messageId, 42);
+  assert.deepEqual(reference, {
+    type: 'telegram_photo',
+    messageId: 42,
+    groupedId: null,
+    mediaKind: 'photo',
+    photoId: null,
+    documentId: null,
+    mimeType: null,
+    fileSize: 12345
+  });
 });

@@ -398,11 +398,6 @@ export class SelectionPublisher {
       request.status = 'running';
     }
 
-    if (request.status === 'created') {
-      const headerResult = await this.sendPublicationHeader(request, selection, lease);
-      if (headerResult?.stopped) return headerResult;
-    }
-
     let rows = await this.repository.listPublicationPosts(request.id);
     for (const delivered of rows.filter((row) => row.sendState === 'delivered')) {
       const post = selection.posts[delivered.position - 1];
@@ -435,6 +430,20 @@ export class SelectionPublisher {
     }
 
     const rowByPosition = new Map(rows.map((row) => [row.position, row]));
+    const pendingPosts = selection.posts.filter((_post, index) => {
+      const existing = rowByPosition.get(index + 1);
+      return existing?.sendState !== 'sent' && existing?.sendState !== 'failed';
+    });
+    const mediaContext = pendingPosts.length > 0
+      && typeof this.mediaDownloader?.preparePublicationMediaContext === 'function'
+      ? await this.mediaDownloader.preparePublicationMediaContext(pendingPosts, { source: 'scheduled-publication' })
+      : null;
+
+    if (request.status === 'created') {
+      const headerResult = await this.sendPublicationHeader(request, selection, lease);
+      if (headerResult?.stopped) return headerResult;
+    }
+
     let consecutiveFailures = 0;
     let skippedPosts = rows.filter((row) => row.sendState === 'failed').length;
 
@@ -484,7 +493,8 @@ export class SelectionPublisher {
                 error,
                 ownerId: this.workerId
               });
-            }
+            },
+            mediaContext
           ),
           {
             label: `publish post ${position}`,
@@ -781,7 +791,7 @@ export class SelectionPublisher {
     return { stopped: true, failed: true, consecutiveFailures };
   }
 
-  async publishPost(post, index, onBeforeSend, signal = this.signal, onRetryableError = null) {
+  async publishPost(post, index, onBeforeSend, signal = this.signal, onRetryableError = null, mediaContext = null) {
     this.logger.info('Publishing post', {
       targetChatId: this.config.telegram.publishChannelId,
       sourceChatId: post.chatId,
@@ -799,7 +809,8 @@ export class SelectionPublisher {
       operationTimeoutMs: this.config.rateLimit?.telegramOperationTimeoutMs,
       signal,
       onBeforeSend,
-      onRetryableError
+      onRetryableError,
+      mediaContext
     });
   }
 

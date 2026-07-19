@@ -57,11 +57,11 @@ TEST_REDIS_URL=redis://127.0.0.1:6379 npm run test:redis
 
 ## What to test beyond the happy path
 
-- **SQLite changes:** include a migration/upgrade fixture and test state reads/writes, not only new schema creation. The current migration suite verifies version advancement and a v1 upgrade.
-- **Publication changes:** exercise duplicate request prevention, lease loss, retries, cancellation, and uncertain `sending` behavior. Do not make tests assert automatic resend after a possible side effect.
+- **SQLite changes:** include a migration/upgrade fixture and test state reads/writes, not only new schema creation. The migration suite verifies version advancement, delivery-state upgrades, durable pending-error storage, and recursive removal of legacy media file references from posts and publication snapshots.
+- **Publication changes:** exercise duplicate request prevention, lease loss, retries, cancellation, uncertain `sending` behavior, and one shared bounded source-history prefetch per attempt. Do not make tests assert automatic resend after a possible side effect.
 - **Scanner changes:** test authoritative versus incomplete scans and deletion-safety threshold behavior. For shared throttling changes, also cover the full `SyncWorker → TelegramScanner → TelegramThrottle → Redis` path with separate clients.
 - **Scheduler changes:** test startup order, missed-run boundaries, first-send gates, timezone/local-time calculations, and timer rescheduling after errors.
-- **Setup changes:** test both callback UI and text-command routes when they expose the same capability.
+- **Setup changes:** test both callback UI and text-command routes when they expose the same capability. Media preview must reuse the freshly scanned in-memory Telegram messages rather than persist or re-resolve media references.
 - **Shutdown/concurrency changes:** confirm queued work is rejected/cancelled and active operations honor signals/deadlines.
 
 ## Pre-handoff checks

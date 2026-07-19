@@ -64,8 +64,7 @@
     "retryMaxMs": 60000,
     "maxMissingRatio": 0.3,
     "mediaMaxBytes": 536870912,
-    "mediaMaxAgeHours": 24,
-    "mediaFileIdMaxAgeHours": 0.5
+    "mediaMaxAgeHours": 24
   },
   "parsing": {
     "filters": [

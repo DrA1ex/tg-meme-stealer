@@ -464,9 +464,10 @@ test('PostRepository applies numbered migrations and exposes the reliability sch
       { version: 1, name: '0000_initial' },
       { version: 2, name: '0001_publication_reliability' },
       { version: 3, name: '0002_delivery_commit_state' },
-      { version: 4, name: '0003_pending_error_logs' }
+      { version: 4, name: '0003_pending_error_logs' },
+      { version: 5, name: '0004_remove_media_file_ids' }
     ]);
-    assert.equal(version[0].user_version, 4);
+    assert.equal(version[0].user_version, 5);
     assert.ok(publicationColumns.some((column) => column.name === 'last_progress_at'));
     assert.ok(publicationColumns.some((column) => column.name === 'next_attempt_at'));
     assert.ok(publicationColumns.some((column) => column.name === 'header_message_id'));
@@ -521,9 +522,72 @@ test('PostRepository upgrades a 0000_initial database without losing rows', asyn
     const columns = await repository.all('PRAGMA table_info(publication_posts)');
     const version = await repository.all('PRAGMA user_version');
     assert.equal(row.title, 'Legacy');
-    assert.equal(version[0].user_version, 4);
+    assert.equal(version[0].user_version, 5);
     assert.ok(columns.some((column) => column.name === 'attempt_count'));
     assert.ok(columns.some((column) => column.name === 'last_error_code'));
+  } finally {
+    await repository.close();
+    await fs.rm(dbPath, { force: true });
+  }
+});
+
+
+
+test('0004_remove_media_file_ids scrubs stored post and publication snapshots', async () => {
+  const dbPath = path.join(os.tmpdir(), `tg-memes-${process.pid}-${Date.now()}-remove-file-ids.sqlite`);
+  await fs.rm(dbPath, { force: true });
+
+  let repository = new PostRepository(dbPath);
+  await repository.init();
+  await repository.close();
+
+  const db = openSqliteDatabase(dbPath);
+  const now = '2026-07-18T00:00:00.000Z';
+  await db.run(
+    `INSERT INTO posts (
+      chat_id, message_id, author, text, likes, dislikes, data,
+      message_date, collected_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      '-1001', 10, 'Alice', 'Post', 1, 0,
+      JSON.stringify({ media: [{ messageId: 10, fileId: 'old', file_id: 'older', fileIdCapturedAt: now, fileSize: 12 }] }),
+      now, now, now
+    ]
+  );
+  await db.run(
+    `INSERT INTO publications (
+      key, selection_key, title, period_start, period_end, status,
+      created_at, updated_at, data
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      'remove-file-id-test', 'best.day', 'Test', now, now, 'created', now, now,
+      JSON.stringify({ selection: { posts: [{ data: { media: [{ fileId: 'snapshot', fileIdCapturedAt: now }] } }] } })
+    ]
+  );
+  await db.run(
+    `INSERT INTO pending_error_logs (timestamp, type, scope, message, error, fields)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+    [now, 'TEST', 'media', 'Test', null, JSON.stringify({ nested: { fileId: 'logged' }, keep: true })]
+  );
+  await db.exec('PRAGMA user_version = 4');
+  await db.close();
+
+  repository = new PostRepository(dbPath);
+  await repository.init();
+  try {
+    const posts = await repository.all('SELECT data FROM posts WHERE chat_id = ? AND message_id = ?', ['-1001', 10]);
+    const publications = await repository.all('SELECT data FROM publications WHERE key = ?', ['remove-file-id-test']);
+    const logs = await repository.all('SELECT fields FROM pending_error_logs WHERE type = ?', ['TEST']);
+    const version = await repository.all('PRAGMA user_version');
+
+    assert.deepEqual(JSON.parse(posts[0].data), {
+      media: [{ messageId: 10, fileSize: 12 }]
+    });
+    assert.deepEqual(JSON.parse(publications[0].data), {
+      selection: { posts: [{ data: { media: [{}] } }] }
+    });
+    assert.deepEqual(JSON.parse(logs[0].fields), { nested: {}, keep: true });
+    assert.equal(version[0].user_version, 5);
   } finally {
     await repository.close();
     await fs.rm(dbPath, { force: true });

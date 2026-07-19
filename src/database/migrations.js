@@ -107,6 +107,14 @@ const MIGRATIONS = [
         ON pending_error_logs(type, timestamp, id);
       `);
     }
+  },
+  {
+    name: '0004_remove_media_file_ids',
+    async up(db) {
+      await scrubJsonColumn(db, 'posts', 'rowid', 'data');
+      await scrubJsonColumn(db, 'publications', 'id', 'data');
+      await scrubJsonColumn(db, 'pending_error_logs', 'id', 'fields');
+    }
   }
 ];
 
@@ -142,4 +150,32 @@ async function ensureColumn(db, table, column, definition) {
   const columns = await db.all(`PRAGMA table_info(${table})`);
   if (columns.some((item) => item.name === column)) return;
   await db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+}
+
+
+async function scrubJsonColumn(db, table, idColumn, jsonColumn) {
+  const rows = await db.all(`SELECT ${idColumn} AS migration_id, ${jsonColumn} AS json_value FROM ${table}`);
+  for (const row of rows) {
+    let parsed;
+    try {
+      parsed = JSON.parse(row.json_value || '{}');
+    } catch {
+      continue;
+    }
+    const scrubbed = removeMediaFileIds(parsed);
+    const serialized = JSON.stringify(scrubbed);
+    if (serialized === row.json_value) continue;
+    await db.run(`UPDATE ${table} SET ${jsonColumn} = ? WHERE ${idColumn} = ?`, [serialized, row.migration_id]);
+  }
+}
+
+function removeMediaFileIds(value) {
+  if (Array.isArray(value)) return value.map(removeMediaFileIds);
+  if (!value || typeof value !== 'object') return value;
+  const result = {};
+  for (const [key, child] of Object.entries(value)) {
+    if (key === 'fileId' || key === 'file_id' || key === 'fileIdCapturedAt') continue;
+    result[key] = removeMediaFileIds(child);
+  }
+  return result;
 }

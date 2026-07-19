@@ -132,7 +132,7 @@ test('setup preview passes freshly scanned messages to the media downloader', as
   const edits = [];
   const sent = [];
   const captured = [];
-  const message = { id: 77, media: { type: 'photo', fileId: 'fresh-preview-location' } };
+  const message = { id: 77, media: { type: 'photo', marker: 'fresh-preview-location' } };
   const post = {
     chatId: -1001,
     messageId: 77,

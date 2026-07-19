@@ -26,11 +26,11 @@ test('MediaDownloader.cleanupFiles deletes temporary media files', async () => {
   await assert.rejects(fs.access(filePath));
 });
 
-test('MediaDownloader.loadMessage passes numeric peer ids to mtcute', async () => {
+test('MediaDownloader.loadMessage reads the source message through history with a numeric peer id', async () => {
   const calls = [];
   const downloader = new MediaDownloader({
     client: {
-      getMessages: async (...args) => {
+      getHistory: async (...args) => {
         calls.push(args);
         return [{ id: 10 }];
       }
@@ -42,14 +42,15 @@ test('MediaDownloader.loadMessage passes numeric peer ids to mtcute', async () =
   });
 
   assert.deepEqual(await downloader.loadMessage('-1001341205233', 10), { id: 10 });
-  assert.deepEqual(calls, [[-1001341205233, [10]]]);
+  assert.deepEqual(calls, [[-1001341205233, { limit: 2, offset: { id: 11, date: 0 } }]]);
 });
+
 
 test('MediaDownloader streams media into unique per-attempt directories', async () => {
   const { Readable } = await import('node:stream');
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'tg-memes-media-stream-'));
   const client = {
-    getMessages: async (_chatId, ids) => [{ id: ids[0], media: { fileSize: 4 } }],
+    getHistory: async () => [{ id: 10, media: { fileSize: 4 } }],
     downloadAsNodeStream: () => Readable.from([Buffer.from('data')])
   };
   const downloader = new MediaDownloader({
@@ -80,7 +81,7 @@ test('MediaDownloader aborts oversized streams and removes the partial attempt d
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'tg-memes-media-limit-'));
   const downloader = new MediaDownloader({
     client: {
-      getMessages: async () => [{ id: 10, media: {} }],
+      getHistory: async () => [{ id: 10, media: {} }],
       downloadAsNodeStream: () => Readable.from([Buffer.alloc(8), Buffer.alloc(8)])
     },
     config: {
@@ -102,7 +103,7 @@ test('MediaDownloader rejects declared oversized media before starting a downloa
   let downloads = 0;
   const downloader = new MediaDownloader({
     client: {
-      getMessages: async () => [{ id: 10, media: { fileSize: 101 } }],
+      getHistory: async () => [{ id: 10, media: { fileSize: 101 } }],
       downloadAsNodeStream: () => { downloads += 1; throw new Error('must not download'); }
     },
     config: {
@@ -148,7 +149,7 @@ test('MediaDownloader removes an empty attempt directory when referenced media c
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'tg-memes-media-empty-'));
   const downloader = new MediaDownloader({
     client: {
-      getMessages: async () => []
+      getHistory: async () => []
     },
     config: {
       logging: { logLevel: 'silent' },
@@ -170,201 +171,21 @@ test('MediaDownloader removes an empty attempt directory when referenced media c
   await fs.rm(dir, { recursive: true, force: true });
 });
 
-test('MediaDownloader uses a recently captured portable file id without a history lookup', async () => {
-  const { Readable } = await import('node:stream');
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'tg-memes-media-file-id-'));
-  const locations = [];
-  const now = Date.parse('2026-07-18T06:00:00.000Z');
+
+
+
+
+
+
+
+
+
+
+
+
+test('MediaDownloader marks an unrecoverable source history lookup as publication-wide source failure', async () => {
   const downloader = new MediaDownloader({
     client: {
-      getMessages: async () => assert.fail('fresh portable media must not load the source message'),
-      getHistory: async () => assert.fail('fresh portable media must not load source history'),
-      downloadAsNodeStream: (location) => {
-        locations.push(location);
-        return Readable.from([Buffer.from('portable')]);
-      }
-    },
-    config: {
-      logging: { logLevel: 'silent' },
-      sync: {
-        mediaDir: dir,
-        mediaMaxBytes: 100,
-        mediaMaxAgeHours: 24,
-        mediaFileIdMaxAgeHours: 0.5,
-        throttle: { enabled: false }
-      }
-    },
-    nowFn: () => now
-  });
-  const capturedAt = new Date(now - 60_000).toISOString();
-  const media = {
-    messageId: 10,
-    mediaKind: 'photo',
-    fileId: 'stored-file-id',
-    fileIdCapturedAt: capturedAt,
-    fileSize: 8
-  };
-
-  const files = await downloader.downloadPostMedia({
-    chatId: -1001,
-    messageId: 10,
-    data: { media: [media] }
-  });
-
-  assert.deepEqual(locations, ['stored-file-id']);
-  assert.equal(media.fileId, 'stored-file-id');
-  assert.equal(media.fileIdCapturedAt, capturedAt);
-  assert.equal(await fs.readFile(files[0].path, 'utf8'), 'portable');
-  await downloader.cleanupFiles(files);
-  await fs.rm(dir, { recursive: true, force: true });
-});
-
-test('MediaDownloader treats legacy portable file ids without a capture timestamp as stale', async () => {
-  const { Readable } = await import('node:stream');
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'tg-memes-media-legacy-file-id-'));
-  const locations = [];
-  const downloader = new MediaDownloader({
-    client: {
-      getHistory: async () => [{
-        id: 10,
-        media: { type: 'photo', fileId: 'fresh-file-id', fileSize: 6 }
-      }],
-      downloadAsNodeStream: (location) => {
-        locations.push(location);
-        return Readable.from([Buffer.from('legacy')]);
-      }
-    },
-    config: {
-      logging: { logLevel: 'silent' },
-      sync: {
-        mediaDir: dir,
-        mediaMaxBytes: 100,
-        mediaMaxAgeHours: 24,
-        throttle: { enabled: false }
-      }
-    }
-  });
-  const media = {
-    messageId: 10,
-    mediaKind: 'photo',
-    fileId: 'legacy-file-id',
-    fileSize: 6
-  };
-
-  const files = await downloader.downloadPostMedia({
-    chatId: -1001,
-    messageId: 10,
-    data: { media: [media] }
-  });
-
-  assert.equal(locations.length, 1);
-  assert.equal(typeof locations[0], 'object');
-  assert.equal(locations[0].fileId, 'fresh-file-id');
-  assert.equal(media.fileId, 'fresh-file-id');
-  assert.match(media.fileIdCapturedAt, /^\d{4}-\d{2}-\d{2}T/);
-  await downloader.cleanupFiles(files);
-  await fs.rm(dir, { recursive: true, force: true });
-});
-
-test('MediaDownloader refreshes legacy or stale portable file ids before download', async () => {
-  const { Readable } = await import('node:stream');
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'tg-memes-media-stale-file-id-'));
-  const now = Date.parse('2026-07-18T06:00:00.000Z');
-  const locations = [];
-  const historyCalls = [];
-  const downloader = new MediaDownloader({
-    client: {
-      getMessages: async () => assert.fail('stale portable media must use the stable history path'),
-      getHistory: async (peerId, params) => {
-        historyCalls.push({ peerId, params });
-        return [{
-          id: 10,
-          media: {
-            type: 'photo',
-            fileId: 'refreshed-file-id',
-            fileSize: 9
-          }
-        }];
-      },
-      downloadAsNodeStream: (location) => {
-        locations.push(location);
-        return Readable.from([Buffer.from('refreshed')]);
-      }
-    },
-    config: {
-      logging: { logLevel: 'silent' },
-      sync: {
-        mediaDir: dir,
-        mediaMaxBytes: 100,
-        mediaMaxAgeHours: 24,
-        throttle: { enabled: false }
-      }
-    },
-    nowFn: () => now
-  });
-  const media = {
-    messageId: 10,
-    mediaKind: 'photo',
-    fileId: 'stale-file-id',
-    fileIdCapturedAt: new Date(now - 7 * 60 * 60 * 1000).toISOString(),
-    fileSize: 9
-  };
-
-  const files = await downloader.downloadPostMedia({
-    chatId: -1001,
-    messageId: 10,
-    data: { media: [media] }
-  });
-
-  assert.deepEqual(historyCalls, [{
-    peerId: -1001,
-    params: { limit: 2, offset: { id: 11, date: 0 } }
-  }]);
-  assert.deepEqual(locations, [{
-    type: 'photo',
-    fileId: 'refreshed-file-id',
-    fileSize: 9
-  }]);
-  assert.equal(media.fileId, 'refreshed-file-id');
-  assert.equal(media.fileIdCapturedAt, new Date(now).toISOString());
-  assert.equal(await fs.readFile(files[0].path, 'utf8'), 'refreshed');
-  await downloader.cleanupFiles(files);
-  await fs.rm(dir, { recursive: true, force: true });
-});
-
-test('MediaDownloader falls back to history when direct channel lookup returns CHANNEL_INVALID', async () => {
-  const calls = [];
-  const downloader = new MediaDownloader({
-    client: {
-      getMessages: async () => {
-        calls.push('getMessages');
-        throw new Error('Telegram API error 400: CHANNEL_INVALID');
-      },
-      getHistory: async (peerId, params) => {
-        calls.push({ peerId, params });
-        return [{ id: 10, media: { type: 'photo' } }];
-      }
-    },
-    config: {
-      logging: { logLevel: 'silent' },
-      sync: { mediaDir: os.tmpdir(), throttle: { enabled: false } }
-    }
-  });
-
-  const message = await downloader.loadMessage('-1001341205233', 10);
-
-  assert.equal(message.id, 10);
-  assert.equal(calls[0], 'getMessages');
-  assert.deepEqual(calls[1], {
-    peerId: -1001341205233,
-    params: { limit: 2, offset: { id: 11, date: 0 } }
-  });
-});
-
-test('MediaDownloader marks an unrecoverable legacy source lookup as publication-wide source failure', async () => {
-  const downloader = new MediaDownloader({
-    client: {
-      getMessages: async () => { throw new Error('CHANNEL_INVALID'); },
       getHistory: async () => { throw new Error('CHANNEL_PRIVATE'); }
     },
     config: {
@@ -379,28 +200,26 @@ test('MediaDownloader marks an unrecoverable legacy source lookup as publication
   );
 });
 
-test('MediaDownloader logs an early FILE_REFERENCE_EXPIRED as ERROR and refreshes through history', async () => {
+
+test('MediaDownloader logs FILE_REFERENCE_EXPIRED as ERROR and refreshes the source message once', async () => {
   const { Readable } = await import('node:stream');
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'tg-memes-media-refresh-file-id-'));
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'tg-memes-media-refresh-location-'));
+  const firstLocation = { type: 'photo', generation: 1, fileSize: 9 };
+  const refreshedLocation = { type: 'photo', generation: 2, fileSize: 9 };
   const locations = [];
   const errors = [];
   let historyCalls = 0;
-  const now = Date.parse('2026-07-18T06:00:00.000Z');
   const unsubscribe = subscribeToErrorLogs((event) => errors.push(event));
   const downloader = new MediaDownloader({
     client: {
-      getMessages: async () => assert.fail('media refresh must use source history'),
       getHistory: async (_peerId, params) => {
-        assert.deepEqual(params, { limit: 2, offset: { id: 11, date: 0 } });
         historyCalls += 1;
-        return [{
-          id: 10,
-          media: { type: 'photo', fileId: 'refreshed-history-location', fileSize: 9 }
-        }];
+        assert.deepEqual(params, { limit: 2, offset: { id: 11, date: 0 } });
+        return [{ id: 10, media: historyCalls === 1 ? firstLocation : refreshedLocation }];
       },
       downloadAsNodeStream: (location) => {
         locations.push(location);
-        if (location === 'stored-file-id') {
+        if (location === firstLocation) {
           return Readable.from((async function* fail() {
             throw new Error('Telegram API error 400: FILE_REFERENCE_EXPIRED');
           })());
@@ -410,35 +229,19 @@ test('MediaDownloader logs an early FILE_REFERENCE_EXPIRED as ERROR and refreshe
     },
     config: {
       logging: { logLevel: 'silent' },
-      sync: {
-        mediaDir: dir,
-        mediaMaxBytes: 100,
-        mediaMaxAgeHours: 24,
-        mediaFileIdMaxAgeHours: 0.5,
-        throttle: { enabled: false }
-      }
-    },
-    nowFn: () => now
+      sync: { mediaDir: dir, mediaMaxBytes: 100, mediaMaxAgeHours: 24, throttle: { enabled: false } }
+    }
   });
-  const media = {
-    messageId: 10,
-    mediaKind: 'photo',
-    fileId: 'stored-file-id',
-    fileIdCapturedAt: new Date(now - 60_000).toISOString(),
-    fileSize: 9
-  };
 
   try {
     const files = await downloader.downloadPostMedia({
       chatId: -1001,
       messageId: 10,
-      data: { media: [media] }
+      data: { media: [{ messageId: 10, mediaKind: 'photo', fileSize: 9 }] }
     });
 
-    assert.equal(historyCalls, 1);
-    assert.equal(locations[0], 'stored-file-id');
-    assert.equal(locations[1].fileId, 'refreshed-history-location');
-    assert.equal(media.fileId, 'refreshed-history-location');
+    assert.equal(historyCalls, 2);
+    assert.deepEqual(locations, [firstLocation, refreshedLocation]);
     assert.equal(await fs.readFile(files[0].path, 'utf8'), 'refreshed');
     assert.equal(errors.length, 1);
     assert.equal(errors[0].level, 'error');
@@ -450,6 +253,68 @@ test('MediaDownloader logs an early FILE_REFERENCE_EXPIRED as ERROR and refreshe
   }
 });
 
+
+
+test('MediaDownloader batches nearby publication message lookups through source history', async () => {
+  const calls = [];
+  const downloader = new MediaDownloader({
+    client: {
+      getHistory: async (peerId, params) => {
+        calls.push({ peerId, params });
+        return [105, 104, 103, 102, 101].map((id) => ({ id, media: { type: 'photo', marker: id } }));
+      }
+    },
+    config: {
+      logging: { logLevel: 'silent' },
+      sync: { mediaDir: os.tmpdir(), throttle: { enabled: false } }
+    }
+  });
+
+  const context = await downloader.preparePublicationMediaContext([
+    { chatId: -1001, messageId: 105, data: { media: [{ messageId: 105, mediaKind: 'photo' }] } },
+    { chatId: -1001, messageId: 103, data: { media: [{ messageId: 103, mediaKind: 'photo' }] } },
+    { chatId: -1001, messageId: 101, data: { media: [{ messageId: 101, mediaKind: 'photo' }] } }
+  ]);
+
+  assert.deepEqual(calls, [{
+    peerId: -1001,
+    params: { limit: 5, offset: { id: 106, date: 0 } }
+  }]);
+  assert.deepEqual([...context.sourceMessagesByChatId.get('-1001').keys()].sort((a, b) => b - a), [105, 103, 101]);
+  assert.equal(context.sourceMessagesComplete, true);
+});
+
+test('MediaDownloader splits distant publication messages into bounded history batches', async () => {
+  const calls = [];
+  const downloader = new MediaDownloader({
+    client: {
+      getHistory: async (peerId, params) => {
+        calls.push({ peerId, params });
+        if (params.offset.id === 301) {
+          return [
+            { id: 300, media: { type: 'photo' } },
+            { id: 250, media: { type: 'photo' } }
+          ];
+        }
+        return [{ id: 100, media: { type: 'photo' } }];
+      }
+    },
+    config: {
+      logging: { logLevel: 'silent' },
+      sync: { mediaDir: os.tmpdir(), throttle: { enabled: false } }
+    }
+  });
+
+  const messages = await downloader.loadMessagesViaHistoryBatched(-1001, [300, 250, 100]);
+
+  assert.deepEqual([...messages.keys()].sort((a, b) => b - a), [300, 250, 100]);
+  assert.equal(calls.length, 2);
+  assert.deepEqual(calls.map((call) => call.params), [
+    { limit: 51, offset: { id: 301, date: 0 } },
+    { limit: 2, offset: { id: 101, date: 0 } }
+  ]);
+});
+
 test('MediaDownloader retains its attempt directory until a timed-out background stream settles', async () => {
   const { Readable } = await import('node:stream');
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'tg-memes-media-read-timeout-'));
@@ -457,7 +322,7 @@ test('MediaDownloader retains its attempt directory until a timed-out background
   const finished = new Promise((resolve) => { operationFinished = resolve; });
   const downloader = new MediaDownloader({
     client: {
-      getHistory: async () => [{ id: 10, media: { type: 'photo', fileId: 'current-file-id', fileSize: 9 } }],
+      getHistory: async () => [{ id: 10, media: { type: 'photo', fileSize: 9 } }],
       downloadAsNodeStream: () => Readable.from((async function* delayed() {
         await new Promise((resolve) => setTimeout(resolve, 30));
         yield Buffer.from('late-data');
@@ -475,7 +340,7 @@ test('MediaDownloader retains its attempt directory until a timed-out background
     downloader.downloadPostMedia({
       chatId: -1001,
       messageId: 10,
-      data: { media: [{ messageId: 10, mediaKind: 'photo', fileId: 'portable-file-id', fileIdCapturedAt: new Date().toISOString(), fileSize: 9 }] }
+      data: { media: [{ messageId: 10, mediaKind: 'photo', fileSize: 9 }] }
     }),
     (error) => error.code === 'TELEGRAM_OPERATION_TIMEOUT' && error.indeterminate === false
   );
@@ -498,7 +363,7 @@ async function waitUntil(predicate, timeoutMs = 1000) {
 test('MediaDownloader uses transient setup messages without an extra history lookup', async () => {
   const { Readable } = await import('node:stream');
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'tg-memes-media-setup-preview-'));
-  const location = { type: 'photo', fileId: 'setup-fresh-location', fileSize: 7 };
+  const location = { type: 'photo', marker: 'setup-fresh-location', fileSize: 7 };
   let historyCalls = 0;
   const downloader = new MediaDownloader({
     client: {
@@ -535,8 +400,8 @@ test('MediaDownloader uses transient setup messages without an extra history loo
 test('MediaDownloader refreshes a transient setup message only when its media reference already expired', async () => {
   const { Readable } = await import('node:stream');
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'tg-memes-media-setup-refresh-'));
-  const staleLocation = { type: 'photo', fileId: 'setup-stale-location', fileSize: 7 };
-  const refreshedLocation = { type: 'photo', fileId: 'setup-refreshed-location', fileSize: 7 };
+  const staleLocation = { type: 'photo', marker: 'setup-stale-location', fileSize: 7 };
+  const refreshedLocation = { type: 'photo', marker: 'setup-refreshed-location', fileSize: 7 };
   let historyCalls = 0;
   const downloader = new MediaDownloader({
     client: {
@@ -573,4 +438,190 @@ test('MediaDownloader refreshes a transient setup message only when its media re
   assert.equal(await fs.readFile(files[0].path, 'utf8'), 'preview');
   await downloader.cleanupFiles(files);
   await fs.rm(dir, { recursive: true, force: true });
+});
+
+test('MediaDownloader fetches arbitrary publication message IDs through one direct getMessages call', async () => {
+  const directCalls = [];
+  let historyCalls = 0;
+  const downloader = new MediaDownloader({
+    client: {
+      getMessages: async (peerId, ids) => {
+        directCalls.push({ peerId, ids });
+        return [
+          { id: 300, media: { marker: 300 } },
+          null,
+          { id: 100, media: { marker: 100 } }
+        ];
+      },
+      getHistory: async () => { historyCalls += 1; return []; }
+    },
+    config: {
+      logging: { logLevel: 'silent' },
+      sync: { mediaDir: os.tmpdir(), throttle: { enabled: false } }
+    }
+  });
+
+  const messages = await downloader.loadMessagesBatched('-1001', [100, 300, 250]);
+
+  assert.deepEqual(directCalls, [{ peerId: -1001, ids: [300, 250, 100] }]);
+  assert.deepEqual([...messages.keys()].sort((a, b) => b - a), [300, 100]);
+  assert.equal(historyCalls, 0);
+});
+
+test('MediaDownloader refreshes the peer and retries direct message lookup once', async () => {
+  let directCalls = 0;
+  const resolved = [];
+  let historyCalls = 0;
+  const downloader = new MediaDownloader({
+    client: {
+      getMessages: async () => {
+        directCalls += 1;
+        if (directCalls === 1) throw new Error('Telegram API error 400: CHANNEL_INVALID');
+        return [{ id: 10, media: { marker: 'direct-after-refresh' } }];
+      },
+      resolvePeer: async (...args) => resolved.push(args),
+      getHistory: async () => { historyCalls += 1; return []; }
+    },
+    config: {
+      logging: { logLevel: 'silent' },
+      sync: { mediaDir: os.tmpdir(), throttle: { enabled: false } }
+    }
+  });
+
+  const messages = await downloader.loadMessagesBatched(-1001, [10]);
+
+  assert.equal(directCalls, 2);
+  assert.deepEqual(resolved, [[-1001, true]]);
+  assert.equal(messages.get(10)?.media?.marker, 'direct-after-refresh');
+  assert.equal(historyCalls, 0);
+});
+
+test('MediaDownloader disables broken direct lookup for a peer and reuses authoritative history fallback', async () => {
+  let directCalls = 0;
+  let resolveCalls = 0;
+  const historyCalls = [];
+  const downloader = new MediaDownloader({
+    client: {
+      getMessages: async () => {
+        directCalls += 1;
+        throw new Error('Telegram API error 400: CHANNEL_INVALID');
+      },
+      resolvePeer: async () => { resolveCalls += 1; },
+      getHistory: async (peerId, params) => {
+        historyCalls.push({ peerId, params });
+        return [{ id: 10, media: { marker: 'history' } }];
+      }
+    },
+    config: {
+      logging: { logLevel: 'silent' },
+      sync: { mediaDir: os.tmpdir(), throttle: { enabled: false } }
+    }
+  });
+
+  const first = await downloader.loadMessagesBatched(-1001, [10]);
+  const second = await downloader.loadMessagesBatched(-1001, [10]);
+
+  assert.equal(first.get(10)?.media?.marker, 'history');
+  assert.equal(second.get(10)?.media?.marker, 'history');
+  assert.equal(directCalls, 2);
+  assert.equal(resolveCalls, 1);
+  assert.equal(historyCalls.length, 2);
+});
+
+test('MediaDownloader treats missing IDs in a completed history range as authoritative', async () => {
+  const calls = [];
+  const downloader = new MediaDownloader({
+    client: {
+      getHistory: async (peerId, params) => {
+        calls.push({ peerId, params });
+        return [
+          { id: 105, media: { marker: 105 } },
+          { id: 103, media: { marker: 103 } },
+          { id: 101, media: { marker: 101 } }
+        ];
+      }
+    },
+    config: {
+      logging: { logLevel: 'silent' },
+      sync: { mediaDir: os.tmpdir(), throttle: { enabled: false } }
+    }
+  });
+
+  const messages = await downloader.loadMessagesViaHistoryBatched(-1001, [105, 104, 103, 102, 101]);
+
+  assert.deepEqual([...messages.keys()].sort((a, b) => b - a), [105, 103, 101]);
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0].params, { limit: 5, offset: { id: 106, date: 0 } });
+});
+
+test('MediaDownloader paginates history only until the requested range becomes authoritative', async () => {
+  const calls = [];
+  const pages = [
+    [{ id: 105, media: {} }, { id: 104, media: {} }],
+    [{ id: 103, media: {} }, { id: 101, media: {} }]
+  ];
+  const downloader = new MediaDownloader({
+    client: {
+      getHistory: async (peerId, params) => {
+        calls.push({ peerId, params });
+        return pages.shift() || [];
+      }
+    },
+    config: {
+      logging: { logLevel: 'silent' },
+      sync: { mediaDir: os.tmpdir(), throttle: { enabled: false } }
+    }
+  });
+
+  const messages = await downloader.loadMessagesViaHistoryBatched(-1001, [105, 103, 101]);
+
+  assert.deepEqual([...messages.keys()].sort((a, b) => b - a), [105, 103, 101]);
+  assert.deepEqual(calls.map((call) => call.params), [
+    { limit: 5, offset: { id: 106, date: 0 } },
+    { limit: 3, offset: { id: 104, date: 0 } }
+  ]);
+});
+
+test('MediaDownloader splits direct getMessages lookups into Telegram-sized batches', async () => {
+  const calls = [];
+  const downloader = new MediaDownloader({
+    client: {
+      getMessages: async (peerId, ids) => {
+        calls.push({ peerId, ids });
+        return ids.map((id) => ({ id, media: { marker: id } }));
+      }
+    },
+    config: {
+      logging: { logLevel: 'silent' },
+      sync: { mediaDir: os.tmpdir(), throttle: { enabled: false } }
+    }
+  });
+  const ids = Array.from({ length: 205 }, (_, index) => index + 1);
+
+  const messages = await downloader.loadMessagesBatched(-1001, ids);
+
+  assert.deepEqual(calls.map((call) => call.ids.length), [100, 100, 5]);
+  assert.equal(messages.size, 205);
+  assert.equal(messages.get(205)?.media?.marker, 205);
+  assert.equal(messages.get(1)?.media?.marker, 1);
+});
+
+test('MediaDownloader does not hide definitive source errors behind history fallback', async () => {
+  let historyCalls = 0;
+  const downloader = new MediaDownloader({
+    client: {
+      getMessages: async () => { throw new Error('Telegram API error 400: CHANNEL_PRIVATE'); },
+      getHistory: async () => { historyCalls += 1; return []; }
+    },
+    config: {
+      logging: { logLevel: 'silent' },
+      sync: { mediaDir: os.tmpdir(), throttle: { enabled: false } }
+    }
+  });
+
+  await assert.rejects(
+    downloader.loadMessagesBatched(-1001, [10]),
+    (error) => error.telegramFailureScope === 'source' && /CHANNEL_PRIVATE/.test(error.message)
+  );
+  assert.equal(historyCalls, 0);
 });

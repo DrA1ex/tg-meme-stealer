@@ -8,15 +8,47 @@ import { normalizeTelegramPeerId } from './peer.js';
 import { withTelegramRetry } from './retry.js';
 import { TelegramThrottle } from './throttle.js';
 
+const HISTORY_BATCH_LIMIT = 100;
+
 export class MediaDownloader {
-  constructor({ client, config, throttle = new TelegramThrottle(config), signal = null, nowFn = Date.now }) {
+  constructor({ client, config, throttle = new TelegramThrottle(config), signal = null }) {
     this.client = client;
     this.config = config;
     this.throttle = throttle;
     this.signal = signal;
-    this.nowFn = nowFn;
     this.logger = getLogger('media');
     this.staleCleanupPromise = null;
+    this.directMessageLookupDisabledPeers = new Set();
+  }
+
+  async preparePublicationMediaContext(posts, { source = 'scheduled-publication' } = {}) {
+    const idsByChat = collectMediaMessageIdsByChat(posts);
+    const sourceMessagesByChatId = new Map();
+    let requestedMessages = 0;
+    let loadedMessages = 0;
+
+    for (const [chatKey, group] of idsByChat) {
+      requestedMessages += group.messageIds.length;
+      const messages = await this.loadMessagesBatched(group.chatId, group.messageIds);
+      loadedMessages += messages.size;
+      sourceMessagesByChatId.set(chatKey, messages);
+    }
+
+    if (requestedMessages > 0) {
+      this.logger.info('Prepared source media messages for publication', {
+        source,
+        chats: idsByChat.size,
+        requestedMessages,
+        loadedMessages,
+        missingMessages: requestedMessages - loadedMessages
+      });
+    }
+
+    return {
+      source,
+      sourceMessagesByChatId,
+      sourceMessagesComplete: true
+    };
   }
 
   async downloadPostMedia(post, options = {}) {
@@ -26,49 +58,32 @@ export class MediaDownloader {
     const attemptDir = await fs.mkdtemp(path.join(mediaDir, 'publication-'));
     const files = [];
     const mediaItems = post.data?.media || [];
+    const messagesById = getProvidedMessagesForChat(options, post.chatId);
+    const messageIds = collectPostMediaMessageIds(post, mediaItems);
+    const missingIds = messageIds.filter((messageId) => !messagesById.has(messageId));
 
-    const portableFileIds = mediaItems.filter((item) => Boolean(item?.fileId)).length;
-    const providedMessagesById = normalizeMessageMap(options?.sourceMessagesById);
-    const freshPortableFileIds = mediaItems.filter((item) => {
-      const messageId = Number(item?.messageId || post.messageId);
-      return !providedMessagesById.has(messageId) && this.isPortableFileIdFresh(item);
-    }).length;
+    if (missingIds.length > 0 && options?.sourceMessagesComplete !== true) {
+      const loaded = await this.loadMessagesBatched(post.chatId, missingIds);
+      for (const [messageId, message] of loaded) messagesById.set(messageId, message);
+    }
+
     this.logger.info('Downloading post media', {
       chatId: post.chatId,
       messageId: post.messageId,
       mediaItems: mediaItems.length,
-      portableFileIds,
-      freshPortableFileIds,
-      providedMessages: providedMessagesById.size,
+      providedMessages: messagesById.size,
+      missingMessages: messageIds.filter((messageId) => !messagesById.has(messageId)).length,
+      source: String(options?.source || 'history'),
       attemptDir
     });
 
     try {
-      // Setup previews can pass the exact messages they just scanned. Scheduled
-      // publications may use a stored portable file ID only inside the configured
-      // short freshness window. Everything else is refreshed through history.
-      const refreshLocationIds = [...new Set(mediaItems
-        .filter((item) => {
-          const messageId = Number(item?.messageId || post.messageId);
-          return !providedMessagesById.has(messageId) && !this.isPortableFileIdFresh(item);
-        })
-        .map((item) => Number(item?.messageId || post.messageId))
-        .filter(Number.isInteger))];
-      const messagesById = new Map(providedMessagesById);
-      if (refreshLocationIds.length) {
-        const refreshedMessages = await this.loadRefreshMessages(post.chatId, refreshLocationIds);
-        for (const [messageId, message] of refreshedMessages) messagesById.set(messageId, message);
-      }
-
       for (let index = 0; index < mediaItems.length; index += 1) {
         const media = mediaItems[index];
         const messageId = Number(media.messageId || post.messageId);
-        const providedMessage = providedMessagesById.get(messageId) || null;
-        const usePortableFileId = !providedMessage && this.isPortableFileIdFresh(media);
         const message = messagesById.get(messageId) || null;
-        let location = providedMessage?.media || (usePortableFileId ? media.fileId : message?.media);
+        let location = message?.media;
         if (!location) throw new SourceMediaNotFoundError(post.chatId, messageId);
-        if (!usePortableFileId) this.rememberPortableFileId(media, location);
 
         const maxBytes = positiveNumber(this.config.sync?.mediaMaxBytes, 512 * 1024 * 1024);
         let declaredBytes = positiveNumber(media.fileSize, 0) || getDeclaredMediaSize(location);
@@ -82,19 +97,16 @@ export class MediaDownloader {
           bytes = await this.downloadToPath(location, filePath, maxBytes);
         } catch (error) {
           if (!isFileReferenceError(error)) throw error;
-          this.logger.error('Media file reference expired before its configured freshness window; refreshing from source history', {
+          this.logger.error('Media file reference expired after source message lookup; refreshing once', {
             errorCode: 'FILE_REFERENCE_EXPIRED',
             chatId: post.chatId,
             messageId,
-            source: providedMessage ? String(options?.source || 'provided-messages') : usePortableFileId ? 'stored-file-id' : 'history',
-            capturedAt: media.fileIdCapturedAt || null,
-            maxAgeHours: positiveNumber(this.config.sync?.mediaFileIdMaxAgeHours, 0.5),
+            source: String(options?.source || 'history'),
             error: error?.message || String(error)
           });
           const refreshed = await this.loadMessageViaHistory(post.chatId, messageId);
           location = refreshed?.media;
           if (!location) throw new SourceMediaNotFoundError(post.chatId, messageId);
-          this.rememberPortableFileId(media, location);
           declaredBytes = getDeclaredMediaSize(location);
           if (declaredBytes > maxBytes) throw new MediaTooLargeError(declaredBytes, maxBytes);
           bytes = await this.downloadToPath(location, filePath, maxBytes);
@@ -107,9 +119,7 @@ export class MediaDownloader {
           messageId,
           kind,
           bytes,
-          locationSource: providedMessage
-            ? String(options?.source || 'provided-messages')
-            : usePortableFileId ? 'stored-file-id' : 'history'
+          locationSource: String(options?.source || 'history')
         });
       }
 
@@ -128,22 +138,6 @@ export class MediaDownloader {
       }
       throw error;
     }
-  }
-
-  isPortableFileIdFresh(media) {
-    if (!media?.fileId) return false;
-    const capturedAt = Date.parse(media.fileIdCapturedAt || '');
-    if (!Number.isFinite(capturedAt)) return false;
-    const maxAgeMs = positiveNumber(this.config.sync?.mediaFileIdMaxAgeHours, 0.5) * 60 * 60 * 1000;
-    const ageMs = this.nowFn() - capturedAt;
-    return ageMs >= -5 * 60 * 1000 && ageMs <= maxAgeMs;
-  }
-
-  rememberPortableFileId(media, location) {
-    const fileId = getPortableMediaFileId(location);
-    if (!fileId || !media) return;
-    media.fileId = fileId;
-    media.fileIdCapturedAt = new Date(this.nowFn()).toISOString();
   }
 
   async downloadToPath(location, filePath, maxBytes) {
@@ -173,68 +167,168 @@ export class MediaDownloader {
     });
   }
 
-  async loadRefreshMessages(chatId, messageIds) {
+  async loadMessagesBatched(chatId, messageIds) {
     const peerId = normalizeTelegramPeerId(chatId);
-    if (typeof this.client.getHistory === 'function') {
-      return this.loadMessagesViaHistory(peerId, messageIds);
-    }
-    return this.loadMessages(peerId, messageIds);
-  }
+    const ids = normalizeMessageIds(messageIds);
+    if (ids.length === 0) return new Map();
 
-  async loadMessages(chatId, messageIds) {
-    const peerId = normalizeTelegramPeerId(chatId);
-    this.logger.info('Requesting messages for legacy media references', { chatId: peerId, messageIds });
-    try {
-      const messages = await withTelegramRetry(
-        () => this.client.getMessages(peerId, messageIds),
-        { label: 'getMessages', rateLimiter: this.throttle, kind: 'media', signal: this.signal, indeterminateOnTimeout: false, indeterminateOnAbort: false }
-      );
-      return new Map(messages.filter(Boolean).map((message) => [Number(message.id), message]));
-    } catch (error) {
-      if (!isChannelResolutionError(error) || typeof this.client.getHistory !== 'function') {
-        markSourcePeerError(error, chatId);
-        throw error;
-      }
-
-      this.logger.warn('Direct channel message lookup failed; retrying through history', {
-        chatId: peerId,
-        messageIds,
-        error: error?.message || String(error)
-      });
-      return this.loadMessagesViaHistory(peerId, messageIds);
-    }
-  }
-
-  async loadMessagesViaHistory(peerId, messageIds) {
-    const result = new Map();
-    for (const messageId of messageIds) {
+    const peerKey = normalizeChatKey(peerId);
+    if (typeof this.client.getMessages === 'function' && !this.directMessageLookupDisabledPeers.has(peerKey)) {
       try {
-        const history = await withTelegramRetry(
-          () => this.client.getHistory(peerId, {
-            limit: 2,
-            offset: { id: Number(messageId) + 1, date: 0 }
-          }),
-          { label: 'getHistoryForMedia', rateLimiter: this.throttle, kind: 'media', signal: this.signal, indeterminateOnTimeout: false, indeterminateOnAbort: false }
-        );
-        const message = [...history].find((item) => Number(item?.id) === Number(messageId));
-        if (message) result.set(Number(messageId), message);
+        return await this.loadMessagesViaDirectLookup(peerId, ids);
       } catch (error) {
-        markSourcePeerError(error, peerId);
-        throw error;
+        if (!isDirectMessageLookupPeerError(error)) {
+          markSourcePeerError(error, peerId);
+          throw error;
+        }
+
+        const recovered = await this.retryDirectLookupAfterPeerRefresh(peerId, ids, error);
+        if (recovered) return recovered;
+
+        this.directMessageLookupDisabledPeers.add(peerKey);
+        this.logger.warn('Direct source message lookup disabled for peer; using history fallback', {
+          chatId: peerId,
+          messageIds: ids.length,
+          error: error?.message || String(error)
+        });
       }
+    }
+
+    return this.loadMessagesViaHistoryBatched(peerId, ids);
+  }
+
+  async loadMessagesViaDirectLookup(peerId, messageIds) {
+    const result = new Map();
+    for (const ids of chunkMessageIds(messageIds, HISTORY_BATCH_LIMIT)) {
+      const messages = await withTelegramRetry(
+        () => this.client.getMessages(peerId, ids),
+        {
+          label: 'getMessagesForMedia',
+          rateLimiter: this.throttle,
+          kind: 'media',
+          signal: this.signal,
+          indeterminateOnTimeout: false,
+          indeterminateOnAbort: false
+        }
+      );
+      for (const [messageId, message] of mapRequestedMessages(ids, messages)) result.set(messageId, message);
     }
     return result;
   }
 
+  async retryDirectLookupAfterPeerRefresh(peerId, messageIds, originalError) {
+    if (typeof this.client.resolvePeer !== 'function') return null;
+    try {
+      await withTelegramRetry(
+        () => this.client.resolvePeer(peerId, true),
+        {
+          label: 'resolvePeerForMedia',
+          rateLimiter: this.throttle,
+          kind: 'media',
+          signal: this.signal,
+          indeterminateOnTimeout: false,
+          indeterminateOnAbort: false
+        }
+      );
+      return await this.loadMessagesViaDirectLookup(peerId, messageIds);
+    } catch (error) {
+      if (!isDirectMessageLookupPeerError(error)) {
+        markSourcePeerError(error, peerId);
+        throw error;
+      }
+      this.logger.warn('Direct source message lookup still unavailable after peer refresh', {
+        chatId: peerId,
+        messageIds: messageIds.length,
+        initialError: originalError?.message || String(originalError),
+        error: error?.message || String(error)
+      });
+      return null;
+    }
+  }
+
+  async loadMessagesViaHistoryBatched(chatId, messageIds) {
+    const peerId = normalizeTelegramPeerId(chatId);
+    const ids = normalizeMessageIds(messageIds);
+    const result = new Map();
+
+    for (const batch of buildHistoryBatches(ids)) {
+      const wanted = new Set(batch.messageIds);
+      let offsetId = batch.maxId + 1;
+      let authoritative = false;
+      let pages = 0;
+
+      while (!authoritative && pages < HISTORY_BATCH_LIMIT) {
+        pages += 1;
+        const limit = Math.max(2, Math.min(HISTORY_BATCH_LIMIT, offsetId - batch.minId));
+        const history = await this.getHistoryForMedia(peerId, {
+          limit,
+          offset: { id: offsetId, date: 0 }
+        });
+        const normalized = [...(history || [])].filter((message) => Number.isInteger(Number(message?.id)));
+        for (const message of normalized) {
+          const messageId = Number(message.id);
+          if (wanted.has(messageId)) result.set(messageId, message);
+        }
+
+        if (normalized.length === 0) {
+          authoritative = true;
+          break;
+        }
+        const lowestId = Math.min(...normalized.map((message) => Number(message.id)));
+        if (lowestId <= batch.minId) {
+          authoritative = true;
+          break;
+        }
+        if (lowestId >= offsetId) {
+          const error = new Error(`Source history pagination did not advance for chat ${peerId}`);
+          error.code = 'SOURCE_HISTORY_STALLED';
+          markSourcePeerError(error, peerId);
+          throw error;
+        }
+        offsetId = lowestId;
+      }
+
+      if (!authoritative) {
+        const error = new Error(`Source history range could not be completed for chat ${peerId}`);
+        error.code = 'SOURCE_HISTORY_INCOMPLETE';
+        markSourcePeerError(error, peerId);
+        throw error;
+      }
+    }
+
+    return result;
+  }
+
+  async getHistoryForMedia(peerId, params) {
+    try {
+      return await withTelegramRetry(
+        () => this.client.getHistory(peerId, params),
+        {
+          label: 'getHistoryForMedia',
+          rateLimiter: this.throttle,
+          kind: 'media',
+          signal: this.signal,
+          indeterminateOnTimeout: false,
+          indeterminateOnAbort: false
+        }
+      );
+    } catch (error) {
+      markSourcePeerError(error, peerId);
+      throw error;
+    }
+  }
+
   async loadMessage(chatId, messageId) {
-    const messages = await this.loadMessages(chatId, [messageId]);
-    return messages.get(Number(messageId)) || null;
+    return this.loadMessageViaHistory(chatId, messageId);
   }
 
   async loadMessageViaHistory(chatId, messageId) {
     const peerId = normalizeTelegramPeerId(chatId);
-    const messages = await this.loadMessagesViaHistory(peerId, [Number(messageId)]);
-    return messages.get(Number(messageId)) || null;
+    const history = await this.getHistoryForMedia(peerId, {
+      limit: 2,
+      offset: { id: Number(messageId) + 1, date: 0 }
+    });
+    return [...(history || [])].find((item) => Number(item?.id) === Number(messageId)) || null;
   }
 
   cleanupAttemptAfterOperation(attemptDir, operationSettled) {
@@ -335,27 +429,10 @@ function markSourcePeerError(error, chatId) {
   error.sourceChatId = chatId;
 }
 
-function isChannelResolutionError(error) {
-  return /CHANNEL_INVALID|CHANNEL_PRIVATE|PEER_ID_INVALID|peer .*not found|not found in local cache/i.test(
-    String(error?.message || error?.description || error)
-  );
-}
-
-
 function isFileReferenceError(error) {
   return /FILE_REFERENCE_(?:EXPIRED|INVALID|EMPTY)|FILEREF_UPGRADE_NEEDED/i.test(
     String(error?.message || error?.description || error)
   );
-}
-
-function getPortableMediaFileId(media) {
-  if (!media) return null;
-  try {
-    const value = media.fileId || media.file_id;
-    return typeof value === 'string' && value ? value : null;
-  } catch {
-    return null;
-  }
 }
 
 function getDeclaredMediaSize(media) {
@@ -375,6 +452,69 @@ function getDeclaredMediaSize(media) {
   return 0;
 }
 
+function collectMediaMessageIdsByChat(posts = []) {
+  const result = new Map();
+  for (const post of posts || []) {
+    const mediaItems = post?.data?.media || [];
+    if (mediaItems.length === 0) continue;
+    const chatId = post.chatId;
+    const chatKey = normalizeChatKey(chatId);
+    const current = result.get(chatKey) || { chatId, ids: new Set() };
+    for (const messageId of collectPostMediaMessageIds(post, mediaItems)) current.ids.add(messageId);
+    result.set(chatKey, current);
+  }
+  return new Map([...result.entries()].map(([chatKey, group]) => [chatKey, {
+    chatId: group.chatId,
+    messageIds: [...group.ids].sort((a, b) => b - a)
+  }]));
+}
+
+function collectPostMediaMessageIds(post, mediaItems = post?.data?.media || []) {
+  return normalizeMessageIds(mediaItems.map((media) => Number(media?.messageId || post?.messageId)));
+}
+
+function buildHistoryBatches(messageIds) {
+  const batches = [];
+  let current = [];
+  for (const messageId of normalizeMessageIds(messageIds)) {
+    if (current.length === 0) {
+      current.push(messageId);
+      continue;
+    }
+    const maxId = current[0];
+    if (current.length < HISTORY_BATCH_LIMIT && maxId - messageId < HISTORY_BATCH_LIMIT) {
+      current.push(messageId);
+      continue;
+    }
+    batches.push(createHistoryBatch(current));
+    current = [messageId];
+  }
+  if (current.length > 0) batches.push(createHistoryBatch(current));
+  return batches;
+}
+
+function createHistoryBatch(messageIds) {
+  const maxId = messageIds[0];
+  const minId = messageIds.at(-1);
+  return {
+    maxId,
+    minId,
+    messageIds: [...messageIds],
+    limit: Math.max(2, Math.min(HISTORY_BATCH_LIMIT, maxId - minId + 1))
+  };
+}
+
+function getProvidedMessagesForChat(options, chatId) {
+  const chatKey = normalizeChatKey(chatId);
+  const byChat = options?.sourceMessagesByChatId;
+  if (byChat instanceof Map) {
+    return normalizeMessageMap(byChat.get(chatKey) ?? byChat.get(chatId) ?? byChat.get(String(chatId)));
+  }
+  if (byChat && typeof byChat === 'object') {
+    return normalizeMessageMap(byChat[chatKey] ?? byChat[chatId] ?? byChat[String(chatId)]);
+  }
+  return normalizeMessageMap(options?.sourceMessagesById);
+}
 
 function normalizeMessageMap(value) {
   if (value instanceof Map) {
@@ -386,6 +526,42 @@ function normalizeMessageMap(value) {
   return new Map(Object.entries(value)
     .map(([messageId, message]) => [Number(messageId), message])
     .filter(([messageId, message]) => Number.isInteger(messageId) && message));
+}
+
+function normalizeMessageIds(values) {
+  return [...new Set((values || [])
+    .map(Number)
+    .filter((value) => Number.isInteger(value) && value > 0))]
+    .sort((a, b) => b - a);
+}
+
+function chunkMessageIds(messageIds, limit) {
+  const ids = normalizeMessageIds(messageIds);
+  const chunks = [];
+  for (let index = 0; index < ids.length; index += limit) chunks.push(ids.slice(index, index + limit));
+  return chunks;
+}
+
+function mapRequestedMessages(messageIds, messages) {
+  const wanted = new Set(normalizeMessageIds(messageIds));
+  const result = new Map();
+  for (const [index, message] of [...(messages || [])].entries()) {
+    if (!message) continue;
+    const messageId = Number(message?.id ?? messageIds[index]);
+    if (wanted.has(messageId)) result.set(messageId, message);
+  }
+  return result;
+}
+
+function isDirectMessageLookupPeerError(error) {
+  const value = [error?.name, error?.code, error?.errorMessage, error?.message, error?.description]
+    .filter(Boolean)
+    .join(' ');
+  return /CHANNEL_INVALID|PEER_ID_INVALID|CHAT_ID_INVALID|MtPeerNotFoundError|peer .*not found in local cache/i.test(value);
+}
+
+function normalizeChatKey(chatId) {
+  return String(normalizeTelegramPeerId(chatId));
 }
 
 function positiveNumber(value, fallback) {

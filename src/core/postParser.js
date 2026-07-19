@@ -292,7 +292,6 @@ export function buildMediaReference(message) {
     ? message.media
     : message?.document || message?.media?.document;
   const kind = getMediaKind(message);
-  const fileId = getPortableMediaFileId(message?.media);
   return {
     type: kind === 'text' ? 'telegram_text' : `telegram_${kind}`,
     messageId: Number(message.id),
@@ -301,22 +300,11 @@ export function buildMediaReference(message) {
     photoId: photo?.id ? String(photo.id) : null,
     documentId: document?.id ? String(document.id) : null,
     mimeType: document?.mimeType || null,
-    fileId,
-    fileIdCapturedAt: fileId ? new Date().toISOString() : null,
     fileSize: getPortableMediaFileSize(message?.media)
   };
 }
 
 
-function getPortableMediaFileId(media) {
-  if (!media) return null;
-  try {
-    const value = media.fileId || media.file_id;
-    return typeof value === 'string' && value ? value : null;
-  } catch {
-    return null;
-  }
-}
 
 function getPortableMediaFileSize(media) {
   const candidates = [

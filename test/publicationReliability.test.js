@@ -77,6 +77,35 @@ test('a successful post resets the consecutive unknown-error streak', async () =
   assert.equal(state.sentPosts[0].position, 4);
 });
 
+
+
+test('publication prepares source messages once and passes the shared media context to every post', async () => {
+  const state = createHarness(2);
+  const mediaContext = {
+    source: 'scheduled-publication',
+    sourceMessagesByChatId: new Map(),
+    sourceMessagesComplete: true
+  };
+  let prepareCalls = 0;
+  state.publisher.mediaDownloader.preparePublicationMediaContext = async (posts, options) => {
+    prepareCalls += 1;
+    assert.deepEqual(posts, state.request.data.selection.posts);
+    assert.deepEqual(options, { source: 'scheduled-publication' });
+    return mediaContext;
+  };
+  state.publisher.publishPost = async (_post, index, onBeforeSend, _signal, _onRetryableError, actualContext) => {
+    assert.equal(actualContext, mediaContext);
+    await onBeforeSend();
+    return { message_id: 100 + index };
+  };
+
+  const result = await state.publisher.processPublicationRequest(state.request);
+
+  assert.deepEqual(result, { published: true, skippedPosts: 0 });
+  assert.equal(prepareCalls, 1);
+  assert.equal(state.sentPosts.length, 2);
+});
+
 test('lease loss before a post side effect stops the worker without rewriting request state', async () => {
   const state = createHarness(1, {
     markPublicationPostSending: async () => {
@@ -402,4 +431,71 @@ test('a missing temporary file stops the publication as an infrastructure failur
   assert.equal(state.attempts, 1);
   assert.equal(state.failedPublication?.id, 77);
   assert.equal(state.finished, null);
+});
+
+test('publication prefetches source media only for posts that still need sending', async () => {
+  const state = createHarness(3, {
+    listPublicationPosts: async () => [
+      { position: 1, sendState: 'sent' },
+      { position: 2, sendState: 'failed', lastErrorCode: 'MEDIA_TOO_LARGE', lastError: 'too large' },
+      { position: 3, sendState: 'pending' }
+    ]
+  });
+  let preparedPosts = null;
+  state.publisher.mediaDownloader.preparePublicationMediaContext = async (posts) => {
+    preparedPosts = posts;
+    return { source: 'scheduled-publication', sourceMessagesByChatId: new Map(), sourceMessagesComplete: true };
+  };
+  state.publisher.publishPost = async (post, index, onBeforeSend) => {
+    assert.equal(post.messageId, 3);
+    assert.equal(index, 2);
+    await onBeforeSend();
+    return { message_id: 103 };
+  };
+
+  const result = await state.publisher.processPublicationRequest(state.request);
+
+  assert.deepEqual(result, { published: true, skippedPosts: 1 });
+  assert.deepEqual(preparedPosts.map((post) => post.messageId), [3]);
+});
+
+test('publication skips media prefetch when every snapshot post is already terminal', async () => {
+  const state = createHarness(2, {
+    listPublicationPosts: async () => [
+      { position: 1, sendState: 'sent' },
+      { position: 2, sendState: 'failed', lastErrorCode: 'MEDIA_TOO_LARGE', lastError: 'too large' }
+    ]
+  });
+  let prepareCalls = 0;
+  state.publisher.mediaDownloader.preparePublicationMediaContext = async () => { prepareCalls += 1; };
+  state.publisher.publishPost = async () => assert.fail('no post should be sent');
+
+  const result = await state.publisher.processPublicationRequest(state.request);
+
+  assert.deepEqual(result, { published: true, skippedPosts: 1 });
+  assert.equal(prepareCalls, 0);
+});
+
+test('created publication prepares pending source media before sending its header', async () => {
+  const state = createHarness(1);
+  state.request.status = 'created';
+  const events = [];
+  state.publisher.mediaDownloader.preparePublicationMediaContext = async () => {
+    events.push('prefetch');
+    return { source: 'scheduled-publication', sourceMessagesByChatId: new Map(), sourceMessagesComplete: true };
+  };
+  state.publisher.sendPublicationHeader = async () => {
+    events.push('header');
+    return { sent: true };
+  };
+  state.publisher.publishPost = async (_post, _index, onBeforeSend) => {
+    events.push('post');
+    await onBeforeSend();
+    return { message_id: 101 };
+  };
+
+  const result = await state.publisher.processPublicationRequest(state.request);
+
+  assert.deepEqual(result, { published: true, skippedPosts: 0 });
+  assert.deepEqual(events, ['prefetch', 'header', 'post']);
 });
